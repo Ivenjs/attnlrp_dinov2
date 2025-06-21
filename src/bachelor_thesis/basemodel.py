@@ -1,10 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms as T
+from torchvision.models import MobileNet_V3_Large_Weights
 import timm
+from torchvision.models import vision_transformer
 from timm.layers.classifier import ClassifierHead, NormMlpClassifierHead
-from timm.data import create_transform, resolve_data_config
-from typing import Any, Literal, Optional, Union
+from timm.data import create_transform, resolve_model_data_config
+from typing import Any, Literal, Optional, Union, Tuple
 import logging 
 
 logging.basicConfig(level=logging.INFO)
@@ -132,11 +135,74 @@ def get_embedding_layer(id: str, feature_dim: int, embedding_dim: int, dropout_p
 BACKBONE_NAME = 'vit_giant_patch14_dinov2.lvd142m'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+
+def extract_clean_state_dict_for_wrapper(checkpoint, wrapper_key="model_wrapper.", model_key="model."):
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    cleaned_state_dict = {k.replace(wrapper_key, ''): v for k, v in state_dict.items()}
+    return cleaned_state_dict
+
+def load_finetuned_timm_wrapper(
+    checkpoint_path: str,
+    backbone_name: str,
+    embedding_size: int,
+    image_size: int,
+    device: str = "cuda",
+) -> Tuple[TimmWrapper, Any]:
+    """
+    Loads a finetuned TimmWrapper model from a checkpoint for inference.
+
+    This function correctly reconstructs the model architecture using the TimmWrapper
+    class before loading the saved state_dict.
+
+    Parameters:
+    - checkpoint_path (str): Path to the .pth checkpoint file.
+    - backbone_name (str): The name of the timm backbone used during training (e.g., 'vit_large_patch14_dinov2.lvd142m').
+    - embedding_size (int): The output dimension of the custom head used during training.
+    - device (str): Device to load the model on.
+
+    Returns:
+    - tuple: (model, transforms_object)
+    """
+    print("--- Loading Finetuned TimmWrapper Model ---")
+
+    checkpoint_best = torch.load(checkpoint_path, map_location=device)
+    # 1. Re-create the exact model architecture that was saved.
+    #    This is the crucial step.
+    print(f"Building model architecture with backbone '{backbone_name}' and embedding size {embedding_size}...")
+    model_wrapper = TimmWrapper(
+        backbone_name=backbone_name,
+        embedding_size=embedding_size,
+        img_size=image_size
+    )
+    
+    cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
+    msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
+    print(f"State dict loading message: {msg}")
+
+    model_wrapper.to(device)
+    model_wrapper.eval()
+
+
+    
+    # 5. Get the correct preprocessing transforms for the timm backbone.
+    data_config = resolve_model_data_config(model_wrapper.model)
+    transforms = create_transform(**data_config, is_training=False)
+    print("Associated model transforms created successfully.")
+    
+    print("--- Model loading complete ---")
+    return model_wrapper, transforms
+
 def load_model(model_path: str, img_size: int) -> TimmWrapper:
     """Load a pre-trained model"""
     torch.backends.cudnn.benchmark = True  # Enable CUDNN benchmarking
 
     # Initialize Timm Wrapper Model
+    """
+    embedding_size = 518 is almost certainly wrong. 
+    For dinov2_vitg14, the embedding dimension is 1536. 
+    The wrapper is likely misconfigured and might either fail or produce incorrect results.
+    """
     embedding_size = 518  
     dropout_p = 0.0  
     embedding_id = "linear" 
@@ -161,49 +227,75 @@ def load_model(model_path: str, img_size: int) -> TimmWrapper:
     
     return embedding_model
 
-def load_timm_model_with_transforms(model_path: str, img_size: int) -> tuple[TimmWrapper, Any]:
-    if not torch.cuda.is_available() and device == "cuda":
-        logger.warning("CUDA not available, switching to CPU.")
-        device = "cpu"
-        
-    torch.backends.cudnn.benchmark = True
 
-    # --- 1. Initialize the Model Structure ---
-    # These parameters should match the model you saved in model_path
-    embedding_size = 518
-    
-    # We initialize the model structure on the CPU first.
-    model = TimmWrapper(
-        backbone_name=BACKBONE_NAME,
-        embedding_size=embedding_size,
-        img_size=img_size
-    )
 
-    # --- 2. Load the Trained Weights ---
-    # Load state dict, removing "module." prefix if it was saved from DataParallel/DDP
-    state_dict = torch.load(model_path, map_location='cpu')
-    state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(state_dict)
+def get_vit_imagenet(device="cuda"):
+    """
+    Load a pre-trained Vision Transformer (ViT) model with ImageNet weights.
 
-    # --- 3. Finalize Model for Inference ---
-    model.to(device) # Move the fully-loaded model to the target device
+    Parameters:
+    device (str): Device to load the model on ('cuda' or 'cpu')
+
+    Returns:
+    tuple: (model, weights) - The ViT model and its pre-trained weights
+    """
+    weights =vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
+    model = vision_transformer.vit_b_16(weights=weights)
     model.eval()
-    
-    # This is a key step for saving memory during inference
+    model.to(device)
+
+    # Deactivate gradients on parameters to save memory
     for param in model.parameters():
         param.requires_grad = False
 
-    # --- 4. Get the Preprocessing Transforms ---
-    # 'timm' provides a convenient way to get the correct transforms for a given model.
-    # We use the base model (model.model) to get its pretrained configuration.
-    data_config = resolve_data_config({}, model=model.model)
-    transforms = create_transform(**data_config, is_training=False)
+    return model, weights
 
-    logger.info(f"Model loaded on {device}. Image size: {img_size}x{img_size}")
-    logger.info(f"Preprocessing transforms created: {transforms}")
+def load_dino_with_transforms(checkpoint_path, model_name="dinov2_vitg14", device="cuda")  -> tuple[torch.nn.Module, Any]:
+    """
+    Load a finetuned DINOv2 model and its corresponding preprocessing transforms.
 
-    return model, transforms
+    Parameters:
+    - checkpoint_path (str): Path to the .pth or .pt checkpoint file.
+    - model_name (str): The name of the base DINOv2 model. This function works for
+                        'dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', and 'dinov2_vitg14'.
+    - device (str): Device to load the model on ('cuda' or 'cpu').
 
+    Returns:
+    - tuple: (model, transforms_object)
+    """
+    print(f"Loading base DINOv2 model: {model_name}...")
+    model = torch.hub.load('facebookresearch/dinov2', model_name)
+    
+    # ... (rest of the weight loading logic is identical) ...
+    print(f"Loading finetuned weights from: {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if 'model' in checkpoint: state_dict = checkpoint['model']
+    elif 'state_dict' in checkpoint: state_dict = checkpoint['state_dict']
+    elif 'teacher' in checkpoint: state_dict = checkpoint['teacher']
+    else: state_dict = checkpoint
+    msg = model.load_state_dict(state_dict, strict=False)
+    print(f"State dict loading message: {msg}")
+    model.eval().to(device)
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # This resolution is optimal for ALL standard DINOv2 models, as they all use a 14x14 patch size.
+    # 518 is a multiple of 14 (518 = 37 * 14).
+    img_size = 518
+    
+    custom_transforms = T.Compose([
+        T.Resize(img_size, interpolation=T.InterpolationMode.BICUBIC),
+        T.CenterCrop(img_size),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    
+    class DINOv2Transforms:
+        def __call__(self, img):
+            return custom_transforms(img)
+
+    print("Finetuned DINOv2 model and transforms loaded successfully.")
+    return model, DINOv2Transforms()
 
 if __name__ == "__main__":
     print("This is a module for loading and using a Timm model with specific configurations.")
