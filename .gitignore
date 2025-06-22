@@ -11,6 +11,9 @@ src/gorillawatch/runs/
 berlin_zoo_data/
 src/gorillawatch/data/out/
 src/gorillawatch/data/runs/
+seg_test_in/*
+seg_test_out/*
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
