@@ -5,8 +5,12 @@ from PIL import Image
 from torchvision import transforms
 import os
 from zennit.image import imgify
+from lxt.efficient import monkey_patch_zennit
+
 from zennit.composites import LayerMapComposite
 import zennit.rules as z_rules
+
+monkey_patch_zennit(verbose=True) # is this needed?
 
 import datetime
 
@@ -37,7 +41,7 @@ def get_relevances(save_heatmaps: bool = False) -> tuple[torch.Tensor, list[torc
     )
 
     # 2. Apply our custom patches for LRP rules
-    model_wrapper.model = patch_dinov2_for_lrp(model_wrapper.model)
+    model_wrapper.model = patch_dinov2_for_lrp(model_wrapper.model, "cp_lrp") # for vision transformer models, use "cp_lrp"
 
 
     # patch custom BatchNorm1d forward method

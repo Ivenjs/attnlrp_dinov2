@@ -51,8 +51,41 @@ Identity()
 """
 
 # -------------------------------------------------------------------
-# Forward Pass for timm Attention (same as before)
+# Forward Pass for timm Attention
 # -------------------------------------------------------------------
+def dino_attention_forward_cp(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    Custom forward pass for timm.models.vision_transformer.Attention
+    with CP-LRP rules applied (stop_gradient on q and k).
+    """
+    B, N, C = x.shape
+    qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+    q, k, v = qkv.unbind(0)
+    q, k = self.q_norm(q), self.k_norm(k)
+
+    # --- CP-LRP Rule: Stop gradient flow to q and k ---
+    q = stop_gradient(q)
+    k = stop_gradient(k)
+    # ----------------------------------------------------
+
+    # The rest of the forward pass is standard
+    if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+        x = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.attn_drop.p if self.training else 0.,
+        )
+    else: # Manual implementation
+        q = q * self.scale
+        attn = torch.matmul(q, k.transpose(-2, -1))
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+        x = torch.matmul(attn, v)
+
+    x = x.transpose(1, 2).reshape(B, N, C)
+    x = self.proj(x)
+    x = self.proj_drop(x)
+    return x
+
 def dino_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     Custom forward pass for timm.models.vision_transformer.Attention
@@ -62,7 +95,7 @@ def dino_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
     q, k, v = qkv.unbind(0)
     q, k = self.q_norm(q), self.k_norm(k)
-
+    
     if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
         q = divide_gradient(q, 2)
         k = divide_gradient(k, 2)
@@ -184,16 +217,23 @@ class safe_identity_rule_implicit_fn(Function):
 # -------------------------------------------------------------------
 # The Master Patching Function
 # -------------------------------------------------------------------
-def patch_dinov2_for_lrp(model: nn.Module):
+def patch_dinov2_for_lrp(model: nn.Module, attention_mode: str) -> nn.Module:
     """
     Applies LRP patches to a timm-based DinoV2 model in-place,
     handling Attention, GluMlp, LayerScale, and LayerNorm.
     """
     print("Patching DinoV2 model for LRP...")
     
+    if attention_mode == "attn_lrp":
+        attn_patch_fn = dino_attention_forward
+    elif attention_mode == "cp_lrp":
+        attn_patch_fn = dino_attention_forward_cp
+    else:
+        raise ValueError("attention_mode must be 'attn_lrp' or 'cp_lrp'")
+    
     for i, block in enumerate(model.blocks):
         # Patch Attention
-        block.attn.forward = types.MethodType(dino_attention_forward, block.attn)
+        block.attn.forward = types.MethodType(attn_patch_fn, block.attn)
         
         # Patch LayerNorms
         block.norm1.forward = types.MethodType(dino_layernorm_forward, block.norm1)
@@ -222,7 +262,6 @@ def patch_dinov2_for_lrp(model: nn.Module):
     return model
 
 
-# separate since we add this custtom batchnorm after we create the timm model
 def dino_batchnorm1d_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     Custom forward pass for nn.BatchNorm1d with LRP rule (stop_gradient).
