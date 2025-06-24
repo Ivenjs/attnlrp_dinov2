@@ -1,16 +1,18 @@
+import logging
+from typing import Any, Literal, Optional, Tuple, Union
+
+import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
-import timm
-from torchvision.models import vision_transformer
-from timm.layers.classifier import ClassifierHead, NormMlpClassifierHead
 from timm.data import create_transform, resolve_model_data_config
-from typing import Any, Literal, Optional, Union, Tuple
-import logging 
+from timm.layers.classifier import ClassifierHead, NormMlpClassifierHead
+from torchvision.models import vision_transformer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 class TimmWrapper(nn.Module):
     def __init__(
@@ -34,22 +36,21 @@ class TimmWrapper(nn.Module):
             self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, img_size=img_size)
         else:
             self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0)
-        
+
         # Load pretrained weights if specified
         if load_pretrained:
             print(f"Loading pretrained weights from {pretrained_weights_path}")
-            self.model.load_state_dict(torch.load(pretrained_weights_path,  weights_only=True), strict=True)
-        
+            self.model.load_state_dict(torch.load(pretrained_weights_path, weights_only=True), strict=True)
+
         self.num_features = self.model.num_features
 
         self.reset_if_necessary(pool_mode)
-        
-         # added proper initialization for more stable training
+
+        # added proper initialization for more stable training
         self.embedding_layer = get_embedding_layer(
             id=embedding_id, feature_dim=self.num_features, embedding_dim=embedding_size, dropout_p=dropout_p
         )
         self.pool_mode = pool_mode
-        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.model.forward_features(x)
@@ -84,6 +85,7 @@ class TimmWrapper(nn.Module):
         else:
             logger.info("No pooling layer reset necessary.")
 
+
 def get_global_pooling_layer(id: str, num_features: int, format: Literal["NCHW", "NHWC"] = "NCHW") -> torch.nn.Module:
     if id == "gem":
         return FormatWrapper(GeM(), format)
@@ -93,6 +95,7 @@ def get_global_pooling_layer(id: str, num_features: int, format: Literal["NCHW",
         return FormatWrapper(GAP(), format)
     else:
         return nn.Identity()
+
 
 class GeM(nn.Module):
     def __init__(self, p: float = 3.0, eps: float = 1e-6) -> None:
@@ -119,6 +122,7 @@ class GeM(nn.Module):
             + str(self.eps)
             + ")"
         )
+
 
 class GeM_adapted(nn.Module):
     def __init__(
@@ -150,6 +154,7 @@ class GeM_adapted(nn.Module):
             + ")"
         )
 
+
 class GAP(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -159,6 +164,7 @@ class GAP(nn.Module):
 
     def __repr__(self) -> str:
         return self.__class__.__name__ + "()"
+
 
 class FormatWrapper(nn.Module):
     def __init__(self, pool: nn.Module, format: Literal["NCHW", "NHWC"] = "NCHW") -> None:
@@ -176,13 +182,14 @@ class FormatWrapper(nn.Module):
         else:
             raise ValueError(f"Unknown format {self.format}")
         return self.pool(x)
-    
+
+
 def get_embedding_layer(id: str, feature_dim: int, embedding_dim: int, dropout_p: float = 0.0) -> torch.nn.Module:
     def init_linear_layer(layer):
         """Helper function to initialize linear layers"""
         nn.init.xavier_uniform_(layer.weight)
         nn.init.zeros_(layer.bias)
-        
+
     if id == "linear":
         embedding_layer = nn.Linear(feature_dim, embedding_dim)
         init_linear_layer(embedding_layer)
@@ -192,11 +199,7 @@ def get_embedding_layer(id: str, feature_dim: int, embedding_dim: int, dropout_p
         layer2 = nn.Linear(feature_dim, embedding_dim)
         init_linear_layer(layer1)
         init_linear_layer(layer2)
-        return nn.Sequential(
-            layer1,
-            nn.ReLU(),
-            layer2
-        )
+        return nn.Sequential(layer1, nn.ReLU(), layer2)
     elif "linear_norm_dropout" in id:
         linear_layer = nn.Linear(feature_dim, embedding_dim)
         init_linear_layer(linear_layer)
@@ -222,17 +225,18 @@ def get_embedding_layer(id: str, feature_dim: int, embedding_dim: int, dropout_p
             nn.BatchNorm1d(embedding_dim),
         )
     else:
-        return nn.Identity()      
-            
-BACKBONE_NAME = 'vit_giant_patch14_dinov2.lvd142m'
+        return nn.Identity()
+
+
+BACKBONE_NAME = "vit_giant_patch14_dinov2.lvd142m"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-
 def extract_clean_state_dict_for_wrapper(checkpoint, wrapper_key="model_wrapper.", model_key="model."):
-    state_dict = checkpoint.get('state_dict', checkpoint)
-    cleaned_state_dict = {k.replace(wrapper_key, ''): v for k, v in state_dict.items()}
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    cleaned_state_dict = {k.replace(wrapper_key, ""): v for k, v in state_dict.items()}
     return cleaned_state_dict
+
 
 def load_finetuned_timm_wrapper(
     checkpoint_path: str,
@@ -262,12 +266,8 @@ def load_finetuned_timm_wrapper(
     # 1. Re-create the exact model architecture that was saved.
     #    This is the crucial step.
     print(f"Building model architecture with backbone '{backbone_name}' and embedding size {embedding_size}...")
-    model_wrapper = TimmWrapper(
-        backbone_name=backbone_name,
-        embedding_size=embedding_size,
-        img_size=image_size
-    )
-    
+    model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, img_size=image_size)
+
     cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
     msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
     print(f"State dict loading message: {msg}")
@@ -275,15 +275,14 @@ def load_finetuned_timm_wrapper(
     model_wrapper.to(device)
     model_wrapper.eval()
 
-
-    
     # 5. Get the correct preprocessing transforms for the timm backbone.
     data_config = resolve_model_data_config(model_wrapper.model)
     transforms = create_transform(**data_config, is_training=False)
     print("Associated model transforms created successfully.")
-    
+
     print("--- Model loading complete ---")
     return model_wrapper, transforms
+
 
 def load_model(model_path: str, img_size: int) -> TimmWrapper:
     """Load a pre-trained model"""
@@ -295,20 +294,20 @@ def load_model(model_path: str, img_size: int) -> TimmWrapper:
     For dinov2_vitg14, the embedding dimension is 1536. 
     The wrapper is likely misconfigured and might either fail or produce incorrect results.
     """
-    embedding_size = 518  
-    dropout_p = 0.0  
-    embedding_id = "linear" 
+    embedding_size = 518
+    dropout_p = 0.0
+    embedding_id = "linear"
     pool_mode = "none"
-    
+
     embedding_model = TimmWrapper(
         backbone_name=BACKBONE_NAME,
         embedding_size=embedding_size,
         embedding_id=embedding_id,
         dropout_p=dropout_p,
         pool_mode=pool_mode,
-        img_size=img_size
-    ).to(DEVICE)    
-    
+        img_size=img_size,
+    ).to(DEVICE)
+
     # Load the model weights
     state_dict = torch.load(model_path, map_location=DEVICE, weights_only=False)
     # remove the prefix "module." from the keys of the state_dict
@@ -316,9 +315,8 @@ def load_model(model_path: str, img_size: int) -> TimmWrapper:
     embedding_model.load_state_dict(state_dict)
     embedding_model = embedding_model.to(memory_format=torch.channels_last)
     embedding_model.eval()
-    
-    return embedding_model
 
+    return embedding_model
 
 
 def get_vit_imagenet(device="cuda"):
@@ -331,7 +329,7 @@ def get_vit_imagenet(device="cuda"):
     Returns:
     tuple: (model, weights) - The ViT model and its pre-trained weights
     """
-    weights =vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
+    weights = vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
     model = vision_transformer.vit_b_16(weights=weights)
     model.eval()
     model.to(device)
@@ -342,7 +340,10 @@ def get_vit_imagenet(device="cuda"):
 
     return model, weights
 
-def load_dino_with_transforms(checkpoint_path, model_name="dinov2_vitg14", device="cuda")  -> tuple[torch.nn.Module, Any]:
+
+def load_dino_with_transforms(
+    checkpoint_path, model_name="dinov2_vitg14", device="cuda"
+) -> tuple[torch.nn.Module, Any]:
     """
     Load a finetuned DINOv2 model and its corresponding preprocessing transforms.
 
@@ -356,15 +357,19 @@ def load_dino_with_transforms(checkpoint_path, model_name="dinov2_vitg14", devic
     - tuple: (model, transforms_object)
     """
     print(f"Loading base DINOv2 model: {model_name}...")
-    model = torch.hub.load('facebookresearch/dinov2', model_name)
-    
+    model = torch.hub.load("facebookresearch/dinov2", model_name)
+
     # ... (rest of the weight loading logic is identical) ...
     print(f"Loading finetuned weights from: {checkpoint_path}...")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    if 'model' in checkpoint: state_dict = checkpoint['model']
-    elif 'state_dict' in checkpoint: state_dict = checkpoint['state_dict']
-    elif 'teacher' in checkpoint: state_dict = checkpoint['teacher']
-    else: state_dict = checkpoint
+    if "model" in checkpoint:
+        state_dict = checkpoint["model"]
+    elif "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    elif "teacher" in checkpoint:
+        state_dict = checkpoint["teacher"]
+    else:
+        state_dict = checkpoint
     msg = model.load_state_dict(state_dict, strict=False)
     print(f"State dict loading message: {msg}")
     model.eval().to(device)
@@ -374,20 +379,23 @@ def load_dino_with_transforms(checkpoint_path, model_name="dinov2_vitg14", devic
     # This resolution is optimal for ALL standard DINOv2 models, as they all use a 14x14 patch size.
     # 518 is a multiple of 14 (518 = 37 * 14).
     img_size = 518
-    
-    custom_transforms = T.Compose([
-        T.Resize(img_size, interpolation=T.InterpolationMode.BICUBIC),
-        T.CenterCrop(img_size),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    
+
+    custom_transforms = T.Compose(
+        [
+            T.Resize(img_size, interpolation=T.InterpolationMode.BICUBIC),
+            T.CenterCrop(img_size),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+
     class DINOv2Transforms:
         def __call__(self, img):
             return custom_transforms(img)
 
     print("Finetuned DINOv2 model and transforms loaded successfully.")
     return model, DINOv2Transforms()
+
 
 if __name__ == "__main__":
     print("This is a module for loading and using a Timm model with specific configurations.")

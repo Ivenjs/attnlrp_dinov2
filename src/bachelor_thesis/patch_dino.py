@@ -1,13 +1,12 @@
-import torch
-import torch.nn as nn
 import types
 
-from timm.layers.mlp import GluMlp
-from timm.layers.layer_scale import LayerScale
-
+import torch
+import torch.nn as nn
 from lxt.efficient.rules import divide_gradient, identity_rule_implicit, stop_gradient
-
+from timm.layers.layer_scale import LayerScale
+from timm.layers.mlp import GluMlp
 from torch.autograd import Function
+
 """
 === DINO Transformer Block[0] Structure Overview ===
 
@@ -50,6 +49,7 @@ LayerScale()
 Identity()
 """
 
+
 # -------------------------------------------------------------------
 # Forward Pass for timm Attention
 # -------------------------------------------------------------------
@@ -69,12 +69,14 @@ def dino_attention_forward_cp(self, x: torch.Tensor) -> torch.Tensor:
     # ----------------------------------------------------
 
     # The rest of the forward pass is standard
-    if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+    if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
         x = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.attn_drop.p if self.training else 0.,
+            q,
+            k,
+            v,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
         )
-    else: # Manual implementation
+    else:  # Manual implementation
         q = q * self.scale
         attn = torch.matmul(q, k.transpose(-2, -1))
         attn = attn.softmax(dim=-1)
@@ -85,6 +87,7 @@ def dino_attention_forward_cp(self, x: torch.Tensor) -> torch.Tensor:
     x = self.proj(x)
     x = self.proj_drop(x)
     return x
+
 
 def dino_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
@@ -95,28 +98,31 @@ def dino_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
     q, k, v = qkv.unbind(0)
     q, k = self.q_norm(q), self.k_norm(k)
-    
-    if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+
+    if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
         q = divide_gradient(q, 2)
         k = divide_gradient(k, 2)
         x = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.attn_drop.p if self.training else 0.,
+            q,
+            k,
+            v,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
         )
         x = divide_gradient(x, 2)
-    else: # Manual implementation
+    else:  # Manual implementation
         q = q * self.scale
         attn = torch.matmul(q, k.transpose(-2, -1))
-        attn = divide_gradient(attn, 2) # <-- Uniform Rule
+        attn = divide_gradient(attn, 2)  # <-- Uniform Rule
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
         x = torch.matmul(attn, v)
-        x = divide_gradient(x, 2) # <-- Uniform Rule
+        x = divide_gradient(x, 2)  # <-- Uniform Rule
 
     x = x.transpose(1, 2).reshape(B, N, C)
     x = self.proj(x)
     x = self.proj_drop(x)
     return x
+
 
 # -------------------------------------------------------------------
 # Custom Forward Pass for Gated MLP (GluMlp)
@@ -131,7 +137,7 @@ def dino_glumlp_forward(self, x: torch.Tensor) -> torch.Tensor:
 
     # --- LRP Rule 1: Identity rule on activation ---
     gate = identity_rule_implicit(self.act, x_gate)
-    #gate = safe_identity_rule_implicit(self.act, x_gate)    
+    # gate = safe_identity_rule_implicit(self.act, x_gate)
     # ---------------------------------------------
 
     # Apply dropout if needed
@@ -151,6 +157,7 @@ def dino_glumlp_forward(self, x: torch.Tensor) -> torch.Tensor:
     x = self.drop2(x)
     return x
 
+
 # -------------------------------------------------------------------
 # Custom Forward Pass for LayerScale
 # -------------------------------------------------------------------
@@ -165,6 +172,7 @@ def dino_layerscale_forward(self, x: torch.Tensor) -> torch.Tensor:
     return divide_gradient(x * self.gamma, 2)
     # --------------------------------------------------------------
 
+
 # -------------------------------------------------------------------
 # Custom Forward Pass for LayerNorm
 # -------------------------------------------------------------------
@@ -174,7 +182,7 @@ def dino_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     mean = x.mean(dim=-1, keepdim=True)
     var = torch.var(x, dim=-1, keepdim=True, unbiased=False)
-    
+
     # --- LRP Rule: Stop gradient on variance ---
     x = (x - mean) / stop_gradient(torch.sqrt(var + self.eps))
     # ------------------------------------------
@@ -183,11 +191,13 @@ def dino_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.weight * x + self.bias
     return x
 
+
 def safe_identity_rule_implicit(fn, input):
     """
     A more numerically stable version of the identity rule.
     """
     return safe_identity_rule_implicit_fn.apply(fn, input)
+
 
 class safe_identity_rule_implicit_fn(Function):
     @staticmethod
@@ -202,7 +212,7 @@ class safe_identity_rule_implicit_fn(Function):
             # We add epsilon to the magnitude of the input to avoid issues near zero,
             # and then restore the original sign. This prevents division by a tiny number.
             safe_divisor = torch.sign(input) * torch.max(torch.abs(input), torch.tensor(epsilon, device=input.device))
-            
+
             ctx.save_for_backward(output / safe_divisor)
         return output
 
@@ -213,7 +223,8 @@ class safe_identity_rule_implicit_fn(Function):
             print("WARNING: NaN or Inf detected in safe_identity_rule backward pass. Returning zero gradient.")
             return None, torch.zeros_like(out_relevance[0]), None
         return None, gradient, None
-    
+
+
 # -------------------------------------------------------------------
 # The Master Patching Function
 # -------------------------------------------------------------------
@@ -223,22 +234,22 @@ def patch_dinov2_for_lrp(model: nn.Module, attention_mode: str) -> nn.Module:
     handling Attention, GluMlp, LayerScale, and LayerNorm.
     """
     print("Patching DinoV2 model for LRP...")
-    
+
     if attention_mode == "attn_lrp":
         attn_patch_fn = dino_attention_forward
     elif attention_mode == "cp_lrp":
         attn_patch_fn = dino_attention_forward_cp
     else:
         raise ValueError("attention_mode must be 'attn_lrp' or 'cp_lrp'")
-    
+
     for i, block in enumerate(model.blocks):
         # Patch Attention
         block.attn.forward = types.MethodType(attn_patch_fn, block.attn)
-        
+
         # Patch LayerNorms
         block.norm1.forward = types.MethodType(dino_layernorm_forward, block.norm1)
         block.norm2.forward = types.MethodType(dino_layernorm_forward, block.norm2)
-        
+
         # Patch GluMlp
         if isinstance(block.mlp, GluMlp):
             block.mlp.forward = types.MethodType(dino_glumlp_forward, block.mlp)
@@ -246,18 +257,18 @@ def patch_dinov2_for_lrp(model: nn.Module, attention_mode: str) -> nn.Module:
             print(f"  - WARNING: Block {i} does not contain a GluMlp. Skipping MLP patch.")
 
         # Patch LayerScales
-        if hasattr(block, 'ls1') and isinstance(block.ls1, LayerScale):
+        if hasattr(block, "ls1") and isinstance(block.ls1, LayerScale):
             block.ls1.forward = types.MethodType(dino_layerscale_forward, block.ls1)
-        if hasattr(block, 'ls2') and isinstance(block.ls2, LayerScale):
+        if hasattr(block, "ls2") and isinstance(block.ls2, LayerScale):
             block.ls2.forward = types.MethodType(dino_layerscale_forward, block.ls2)
-        
+
         print(f"  - Patched block {i}: Attention, Norms, GluMlp, LayerScales")
 
     # Patch the final LayerNorm after the blocks
-    if hasattr(model, 'norm') and isinstance(model.norm, nn.LayerNorm):
+    if hasattr(model, "norm") and isinstance(model.norm, nn.LayerNorm):
         model.norm.forward = types.MethodType(dino_layernorm_forward, model.norm)
         print("  - Patched final model.norm LayerNorm")
-        
+
     print("Patching complete.")
     return model
 
@@ -272,7 +283,7 @@ def dino_batchnorm1d_forward(self, x: torch.Tensor) -> torch.Tensor:
         # Use running mean and var in eval mode
         mean = self.running_mean
         var = self.running_var
-        
+
         # Reshape mean and var to be broadcastable with input
         view_shape = (1, -1) + (1,) * (x.dim() - 2)
         mean = mean.view(view_shape)
@@ -289,6 +300,5 @@ def dino_batchnorm1d_forward(self, x: torch.Tensor) -> torch.Tensor:
         # Fallback to original forward in training mode
         # Note: LRP is typically done in eval mode.
         return torch.nn.functional.batch_norm(
-            x, self.running_mean, self.running_var, self.weight, self.bias,
-            self.training, self.momentum, self.eps
+            x, self.running_mean, self.running_var, self.weight, self.bias, self.training, self.momentum, self.eps
         )

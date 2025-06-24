@@ -1,16 +1,16 @@
-import torch
 import itertools
+
+import torch
+import zennit.rules as z_rules
+from lxt.efficient import monkey_patch, monkey_patch_zennit
 from PIL import Image
 from torchvision.models import vision_transformer
-
-from zennit.image import imgify
 from zennit.composites import LayerMapComposite
-import zennit.rules as z_rules
-
-from lxt.efficient import monkey_patch, monkey_patch_zennit
+from zennit.image import imgify
 
 monkey_patch(vision_transformer, verbose=True)
 monkey_patch_zennit(verbose=True)
+
 
 def get_vit_imagenet(device="cuda"):
     """
@@ -22,7 +22,7 @@ def get_vit_imagenet(device="cuda"):
     Returns:
     tuple: (model, weights) - The ViT model and its pre-trained weights
     """
-    weights =vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
+    weights = vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
     model = vision_transformer.vit_b_16(weights=weights)
     model.eval()
     model.to(device)
@@ -32,6 +32,7 @@ def get_vit_imagenet(device="cuda"):
         param.requires_grad = False
 
     return model, weights
+
 
 # Load the pre-trained ViT model
 model, weights = get_vit_imagenet()
@@ -52,10 +53,12 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
 
     # Define rules for the Conv2d and Linear layers using 'zennit'
     # LayerMapComposite maps specific layer types to specific LRP rule implementations
-    zennit_comp = LayerMapComposite([
-        (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
-        (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
-    ])
+    zennit_comp = LayerMapComposite(
+        [
+            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
+            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+        ]
+    )
 
     # Register the composite rules with the model
     zennit_comp.register(model)
@@ -73,7 +76,7 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
 
     # Print the top 5 predictions and their labels
     for i, class_idx in enumerate(top5_classes):
-        print(f'Top {i+1} predicted class: {class_idx}, label: {top5_labels[i]}')
+        print(f"Top {i + 1} predicted class: {class_idx}, label: {top5_labels[i]}")
 
     # Backward pass for the highest probability class
     # This initiates the LRP computation through the network
@@ -94,4 +97,4 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
 
 # Visualize all heatmaps in a grid (3×5) and save to a file
 # vmin and vmax control the color mapping range
-imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save('vit_heatmap.png')
+imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save("vit_heatmap.png")

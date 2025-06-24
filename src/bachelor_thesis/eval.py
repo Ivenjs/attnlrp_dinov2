@@ -1,21 +1,18 @@
-import torch.nn.functional as F
-import torch
-from basemodel import TimmWrapper
 import numpy as np
+import torch
+import torch.nn.functional as F
+from basemodel import TimmWrapper
 
 PATCH_SIZE = 14  # Size of the patches to average over
 
+
 def srg(relevance: torch.Tensor, input_tensor: torch.Tensor, model: TimmWrapper) -> float:
     relevance_per_pixel = torch.abs(relevance).sum(dim=1, keepdim=True)
-    
-    patch_relevance = F.avg_pool2d(
-        relevance_per_pixel,
-        kernel_size=PATCH_SIZE,
-        stride=PATCH_SIZE
-    )
-    
+
+    patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=PATCH_SIZE, stride=PATCH_SIZE)
+
     patch_relevance_flat = patch_relevance.flatten()
-    
+
     # Sort the patch relevances to get the indices for flipping
     # `torch.argsort` gives you the indices that would sort the tensor.
     # By default, it's in ascending order (Least Informative First).
@@ -25,10 +22,10 @@ def srg(relevance: torch.Tensor, input_tensor: torch.Tensor, model: TimmWrapper)
 
     # For MIF, reverse the order.
     mif_order = torch.flip(sorted_indices, dims=[0])
-    
+
     lif_curve = _perturbation_exp(model, input_tensor, lif_order)
     mif_curve = _perturbation_exp(model, input_tensor, mif_order)
-    
+
     initial_score = lif_curve[0]
     lif_curve_norm = lif_curve / initial_score
     mif_curve_norm = mif_curve / initial_score
@@ -43,7 +40,8 @@ def srg(relevance: torch.Tensor, input_tensor: torch.Tensor, model: TimmWrapper)
 
     print(f"Symmetric Relevance Gain (SRG): {srg_score:.4f}")
     return srg_score
-    
+
+
 def _perturbation_exp(model: TimmWrapper, input_tensor: torch.Tensor, flipping_order: torch.Tensor) -> torch.Tensor:
     """
     Runs the pixel-flipping experiment for a given order.
@@ -58,13 +56,13 @@ def _perturbation_exp(model: TimmWrapper, input_tensor: torch.Tensor, flipping_o
     step_size = num_patches // num_steps
 
     perturbed_tensor = input_tensor.clone()
-    
+
     # Baseline: random noise
     baseline = torch.rand_like(input_tensor)
 
     # Store the model's confidence at each step
     outputs = []
-    
+
     # Get the initial model output on the original image
     with torch.no_grad():
         initial_output = model(input_tensor)
@@ -93,14 +91,15 @@ def _perturbation_exp(model: TimmWrapper, input_tensor: torch.Tensor, flipping_o
 
             # Replace the patch area in the perturbed tensor with the baseline
             perturbed_tensor[:, :, r_start:r_end, c_start:c_end] = baseline[:, :, r_start:r_end, c_start:c_end]
-            
+
         # Get the new model output on the perturbed image
         with torch.no_grad():
             current_output = model(perturbed_tensor)
             current_confidence = torch.max(current_output).item()
         outputs.append(current_confidence)
-        
+
     return torch.tensor(outputs)
+
 
 def attention_inside_mask(mask: np.ndarray, relevance: torch.Tensor) -> float:
     """
@@ -109,12 +108,12 @@ def attention_inside_mask(mask: np.ndarray, relevance: torch.Tensor) -> float:
         relevance (torch.Tensor): Tensor of shape (H, W) or (1, H, W) with relevance scores.
 
     Returns:
-        Tuple[float, float, float]: 
+        Tuple[float, float, float]:
             (total_fraction, positive_fraction, negative_fraction)
     """
     if relevance.dim() == 4:
-        relevance = relevance.squeeze(0)  
-        
+        relevance = relevance.squeeze(0)
+
     # Sanity check
     assert relevance.shape[1:] == mask.shape, "Mask and relevance must have the same shape"
 
