@@ -302,3 +302,45 @@ def dino_batchnorm1d_forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.batch_norm(
             x, self.running_mean, self.running_var, self.weight, self.bias, self.training, self.momentum, self.eps
         )
+
+
+class ConservationChecker(BasicHook):
+    def __init__(self):
+        super().__init__(
+            # No forward change
+            input_modifiers=[lambda x: x],
+            output_modifiers=[lambda x: x],
+            param_modifiers=[lambda p, _: p],
+            gradient_mapper=lambda grad_out, outputs: grad_out,
+            reducer=lambda inputs, grads: grads[0],
+            name = "conservation_checker"
+        )
+        self.rin = None
+        self.rout = None
+
+    def backward(self, module, grad_input, grad_output):
+        self.rin = grad_output[0].sum().item()
+        if grad_output[0] is not None and grad_input[0] is not None:
+            self.rout = grad_input[0].sum().item()
+        module_name = module.__class__.__name__
+        diff = self.rin - self.rout
+        if diff > 1e-5:
+            print(f"Conservation violation in {module_name}: Rin: {self.rin}, Rout: {self.rout}, Difference: {diff}")
+            print(module)
+            print("---" * 20)
+        print(f"ConservationChecker({module_name}): Rin: {self.rin}, Rout: {self.rout}, Difference: {diff}")
+...
+for name, module in self.model.named_modules():
+            checker = ConservationChecker()
+            handle = module.register_backward_hook(checker.backward)
+            checkers[module] = (name, checker, handle)
+...
+batch_violations = {}
+for module, (name, checker, handle) in checkers.items():
+    if checker.rin is None or checker.rout is None:
+            continue
+    diff = checker.rin - checker.rout
+    print(f"Layer: {name}, Rin: {checker.rin}, Rout: {checker.rout}, Diff: {diff}")
+    if abs(diff) > 1e-5:
+         batch_violations[name] = diff
+    handle.remove()
