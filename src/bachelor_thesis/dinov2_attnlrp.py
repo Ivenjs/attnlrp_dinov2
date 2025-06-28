@@ -1,16 +1,14 @@
 import itertools
 import os
 
-import timm
 import torch
 import zennit.rules as z_rules
 from lxt.efficient import monkey_patch_zennit
 from PIL import Image
-from torchvision import transforms
 from zennit.composites import LayerMapComposite
 from zennit.image import imgify
 
-monkey_patch_zennit(verbose=True)  # is this needed?
+monkey_patch_zennit(verbose=True)  # is this needed? seems to be
 
 import datetime
 import types
@@ -107,6 +105,8 @@ def get_relevances(save_heatmaps: bool = False) -> tuple[torch.Tensor, list[torc
         heatmap = relevance.sum(1)
 
         denom = abs(heatmap).max()
+        
+        #TODO:for blue squared: you forgot to cast the model to bfloat16 and to set bfloat16 in bitsandbytes (:
         if denom == 0 or torch.isnan(denom):
             print("Warning: Zero or NaN max in heatmap. Skipping normalization.")
             # fill heatmap with ones
