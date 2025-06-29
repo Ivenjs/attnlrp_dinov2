@@ -8,6 +8,8 @@ from torchvision.models import vision_transformer
 from zennit.composites import LayerMapComposite
 from zennit.image import imgify
 
+from patch_dino import ConservationChecker
+
 monkey_patch(vision_transformer, verbose=True)
 monkey_patch_zennit(verbose=True)
 
@@ -33,9 +35,42 @@ def get_vit_imagenet(device="cuda"):
 
     return model, weights
 
+def check_for_relevance_violations(checkers: dict[str, ConservationChecker]):
+    batch_violations = {}
+    for name, checker in checkers.items():
+        if checker.rin is None or checker.rout is None:
+            continue
+        
+        diff = checker.rin - checker.rout
+        print(f"Layer: {checker.module_name:<30} | R_in: {checker.rin:>12.6f}, R_out: {checker.rout:>12.6f}, Diff: {diff:>12.6f}")
+        if not torch.isclose(torch.tensor(checker.rin), torch.tensor(checker.rout)):
+            batch_violations[name] = diff
+            
+    if not batch_violations:
+        print("✅ All checked layers are conservative.")
+    else:
+        print("🔥 Found conservation violations in the following layers:")
+        for name, diff in batch_violations.items():
+            print(f"  - {name}: Difference = {diff}")
+
 
 # Load the pre-trained ViT model
 model, weights = get_vit_imagenet()
+
+# register relevance chcker
+checkers = {}
+handles = {}
+for name, module in model.named_modules():
+    """# Only attach to modules that have parameters or perform computation
+    if list(module.children()): # Skip container modules like the top-level Sequential
+        continue
+    if not any(p.requires_grad for p in module.parameters()) and not isinstance(module, (nn.ReLU, nn.Flatten)):
+        continue # Skip layers with no params like ReLU, Flatten if you want"""
+        
+    checker = ConservationChecker(f"{name} ({module.__class__.__name__})")
+    handle = module.register_backward_hook(checker.hook)
+    checkers[name] = checker
+    handles[name] = handle
 
 # Load and preprocess the input image
 image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image.png").convert("RGB")
@@ -83,6 +118,9 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
     y[0, top5_classes[0]].backward()
 
     # Remove the registered composite to prevent interference in future iterations
+    
+    check_for_relevance_violations(checkers)
+    
     zennit_comp.remove()
 
     # Calculate the relevance by computing Gradient * Input
@@ -96,5 +134,11 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
     heatmaps.append(heatmap[0].detach().cpu().numpy())
 
 # Visualize all heatmaps in a grid (3×5) and save to a file
-# vmin and vmax control the color mapping range
+# vmin and vmax control the color mapping range# In get_relevances(), after the loop:
+for handle in handles.values():
+    handle.remove()
+print("Removed all conservation checker hooks.")
+
 imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save("vit_heatmap.png")
+
+

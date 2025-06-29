@@ -15,7 +15,7 @@ import types
 
 from basemodel import load_finetuned_timm_wrapper
 # Import our custom patching function
-from patch_dino import dino_batchnorm1d_forward, patch_dinov2_for_lrp
+from patch_dino import dino_batchnorm1d_forward, patch_dinov2_for_lrp, ConservationChecker
 
 # 1. Load the DinoV2 model using timm
 CHECKPOINT_PATH = (
@@ -53,6 +53,22 @@ def get_relevances(save_heatmaps: bool = False) -> tuple[torch.Tensor, list[torc
     # For a standard ReLU, this is good practice:
     #   if isinstance(module, torch.nn.ReLU):
     #       ...
+
+    # register relevance chcker
+    checkers = {}
+    handles = {}
+    for name, module in model_wrapper.model.named_modules():
+        """# Only attach to modules that have parameters or perform computation
+        if list(module.children()): # Skip container modules like the top-level Sequential
+            continue
+        if not any(p.requires_grad for p in module.parameters()) and not isinstance(module, (nn.ReLU, nn.Flatten)):
+            continue # Skip layers with no params like ReLU, Flatten if you want"""
+            
+        checker = ConservationChecker(f"{name} ({module.__class__.__name__})")
+        handle = module.register_backward_hook(checker.hook)
+        checkers[name] = checker
+        handles[name] = handle
+
 
     # 3. Prepare your input image
     image = Image.open("/workspaces/bachelor_thesis_code/seg_test_in/NN00_R019_20221212_281_378_287939.png").convert(
@@ -98,6 +114,11 @@ def get_relevances(save_heatmaps: bool = False) -> tuple[torch.Tensor, list[torc
         # Get relevance map
         relevance = input_tensor * input_tensor.grad
         relevances.append(relevance)
+        
+        #conservation rules violations?
+        check_for_relevance_violations(checkers)
+        
+        
         # Clean up hooks for the next iteration
         zennit_comp.remove()
 
@@ -122,9 +143,32 @@ def get_relevances(save_heatmaps: bool = False) -> tuple[torch.Tensor, list[torc
         os.makedirs(save_path, exist_ok=True)
         current_dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save(f"{save_path}/dinov2_heatmap{current_dt}.png")
-
+        
+    #TODO: remove conservation checker and maybe also the lrp patches from the model?
+    for handle in handles.values():
+        handle.remove()
+    print("Removed all conservation checker hooks.")
     return relevances, heatmaps
 
-
+def check_for_relevance_violations(checkers: dict[str, ConservationChecker]):
+    batch_violations = {}
+    for name, checker in checkers.items():
+        if checker.rin is None or checker.rout is None:
+            continue
+        
+        diff = checker.rin - checker.rout
+        print(f"Layer: {checker.module_name:<30} | R_in: {checker.rin:>12.6f}, R_out: {checker.rout:>12.6f}, Diff: {diff:>12.6f}")
+        if not torch.isclose(torch.tensor(checker.rin), torch.tensor(checker.rout)):
+            batch_violations[name] = diff
+            
+    if not batch_violations:
+        print("✅ All checked layers are conservative.")
+    else:
+        print("🔥 Found conservation violations in the following layers:")
+        for name, diff in batch_violations.items():
+            print(f"  - {name}: Difference = {diff}")
+            
 if __name__ == "__main__":
     get_relevances(save_heatmaps=SAVE_HEATMAPS)
+    
+

@@ -304,43 +304,28 @@ def dino_batchnorm1d_forward(self, x: torch.Tensor) -> torch.Tensor:
         )
 
 
-class ConservationChecker(BasicHook):
-    def __init__(self):
-        super().__init__(
-            # No forward change
-            input_modifiers=[lambda x: x],
-            output_modifiers=[lambda x: x],
-            param_modifiers=[lambda p, _: p],
-            gradient_mapper=lambda grad_out, outputs: grad_out,
-            reducer=lambda inputs, grads: grads[0],
-            name = "conservation_checker"
-        )
+class ConservationChecker:
+    def __init__(self, module_name):
+        self.module_name = module_name
         self.rin = None
         self.rout = None
 
-    def backward(self, module, grad_input, grad_output):
-        self.rin = grad_output[0].sum().item()
-        if grad_output[0] is not None and grad_input[0] is not None:
+    def hook(self, module, grad_input, grad_output):
+        # grad_output is a tuple of gradients. We are interested in the first one.
+        if grad_output[0] is not None:
+            self.rin = grad_output[0].sum().item()
+        
+        # grad_input is also a tuple.
+        if grad_input[0] is not None:
             self.rout = grad_input[0].sum().item()
-        module_name = module.__class__.__name__
-        diff = self.rin - self.rout
-        if diff > 1e-5:
-            print(f"Conservation violation in {module_name}: Rin: {self.rin}, Rout: {self.rout}, Difference: {diff}")
-            print(module)
-            print("---" * 20)
-        print(f"ConservationChecker({module_name}): Rin: {self.rin}, Rout: {self.rout}, Difference: {diff}")
-...
-for name, module in self.model.named_modules():
-            checker = ConservationChecker()
-            handle = module.register_backward_hook(checker.backward)
-            checkers[module] = (name, checker, handle)
-...
-batch_violations = {}
-for module, (name, checker, handle) in checkers.items():
-    if checker.rin is None or checker.rout is None:
-            continue
-    diff = checker.rin - checker.rout
-    print(f"Layer: {name}, Rin: {checker.rin}, Rout: {checker.rout}, Diff: {diff}")
-    if abs(diff) > 1e-5:
-         batch_violations[name] = diff
-    handle.remove()
+        else:
+            # For the very first layer, grad_input might be None
+            self.rout = self.rin 
+
+        if self.rin is not None and self.rout is not None:
+            diff = self.rin - self.rout
+            if not torch.isclose(torch.tensor(self.rin), torch.tensor(self.rout)):
+                 print(
+                    f"Conservation violation in {self.module_name}: "
+                    f"R_in={self.rin:.6f}, R_out={self.rout:.6f}, Diff={diff:.6f}"
+                )
