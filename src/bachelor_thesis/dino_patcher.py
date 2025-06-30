@@ -49,6 +49,56 @@ LayerScale()
 Identity()
 """
 
+class DINOPatcher:
+    def __init__(self, model_wrapper, attention_mode="cp_lrp"):
+        self.wrapper = model_wrapper
+        self.attention_mode = attention_mode
+        self.original_forwards = {}
+
+    def __enter__(self):
+        if self.attention_mode == "attn_lrp":
+            attn_patch_fn = dino_attention_forward
+        else:
+            attn_patch_fn = dino_attention_forward_cp
+
+        for name, module in self.wrapper.model.named_modules():
+            key = f"model.{name}" 
+
+            if isinstance(module, Attention):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(attn_patch_fn, module)
+
+            elif isinstance(module, nn.LayerNorm):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(dino_layernorm_forward, module)
+
+            elif isinstance(module, GluMlp):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(dino_glumlp_forward, module)
+
+            elif isinstance(module, LayerScale):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(dino_layerscale_forward, module)
+
+        for name, module in self.wrapper.embedding_layer.named_modules():
+            key = f"embedding_layer.{name}"
+            if isinstance(module, nn.BatchNorm1d):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(dino_batchnorm1d_forward, module)
+                print(f"  - Patched {key} ({module.__class__.__name__})")
+
+        return self.wrapper 
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if not self.original_forwards:
+            return
+
+        # We need to iterate over the whole wrapper to find the modules by name
+        for name, module in self.wrapper.named_modules():
+            if name in self.original_forwards:
+                module.forward = self.original_forwards[name]
+        
+
 
 # -------------------------------------------------------------------
 # Forward Pass for timm Attention
