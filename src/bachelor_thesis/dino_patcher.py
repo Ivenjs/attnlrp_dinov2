@@ -5,6 +5,7 @@ import torch.nn as nn
 from lxt.efficient.rules import divide_gradient, identity_rule_implicit, stop_gradient
 from timm.layers.layer_scale import LayerScale
 from timm.layers.mlp import GluMlp
+from timm.models.vision_transformer import Attention 
 from torch.autograd import Function
 
 """
@@ -242,37 +243,8 @@ def dino_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def safe_identity_rule_implicit(fn, input):
-    """
-    A more numerically stable version of the identity rule.
-    """
-    return safe_identity_rule_implicit_fn.apply(fn, input)
 
 
-class safe_identity_rule_implicit_fn(Function):
-    @staticmethod
-    def forward(ctx, fn, input):
-        output = fn(input)
-        if input.requires_grad:
-            # The original library's epsilon is very small (1e-10).
-            # We use a larger one and a sign check for stability.
-            epsilon = 1e-9
-
-            # Key change: Use a safe divisor
-            # We add epsilon to the magnitude of the input to avoid issues near zero,
-            # and then restore the original sign. This prevents division by a tiny number.
-            safe_divisor = torch.sign(input) * torch.max(torch.abs(input), torch.tensor(epsilon, device=input.device))
-
-            ctx.save_for_backward(output / safe_divisor)
-        return output
-
-    @staticmethod
-    def backward(ctx, *out_relevance):
-        gradient = ctx.saved_tensors[0] * out_relevance[0]
-        if torch.isnan(gradient).any() or torch.isinf(gradient).any():
-            print("WARNING: NaN or Inf detected in safe_identity_rule backward pass. Returning zero gradient.")
-            return None, torch.zeros_like(out_relevance[0]), None
-        return None, gradient, None
 
 
 # -------------------------------------------------------------------
@@ -352,29 +324,3 @@ def dino_batchnorm1d_forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.batch_norm(
             x, self.running_mean, self.running_var, self.weight, self.bias, self.training, self.momentum, self.eps
         )
-
-class ConservationChecker:
-    def __init__(self, module_name):
-        self.module_name = module_name
-        self.rin = None
-        self.rout = None
-
-    def hook(self, module, grad_input, grad_output):
-        # grad_output is a tuple of gradients. We are interested in the first one.
-        if grad_output[0] is not None:
-            self.rin = grad_output[0].sum().item()
-        
-        # grad_input is also a tuple.
-        if grad_input[0] is not None:
-            self.rout = grad_input[0].sum().item()
-        else:
-            # For the very first layer, grad_input might be None
-            self.rout = self.rin 
-
-        if self.rin is not None and self.rout is not None:
-            diff = self.rin - self.rout
-            if not torch.isclose(torch.tensor(self.rin), torch.tensor(self.rout)):
-                 print(
-                    f"Conservation violation in {self.module_name}: "
-                    f"R_in={self.rin:.6f}, R_out={self.rout:.6f}, Diff={diff:.6f}"
-                )

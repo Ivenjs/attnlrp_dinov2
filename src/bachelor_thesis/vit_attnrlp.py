@@ -8,7 +8,8 @@ from torchvision.models import vision_transformer
 from zennit.composites import LayerMapComposite
 from zennit.image import imgify
 
-from patch_dino import ConservationChecker
+from lrp_helpers import ConservationChecker
+
 
 monkey_patch(vision_transformer, verbose=True)
 monkey_patch_zennit(verbose=True)

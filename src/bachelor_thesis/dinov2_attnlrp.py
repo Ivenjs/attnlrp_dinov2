@@ -15,7 +15,8 @@ import types
 
 from basemodel import load_finetuned_timm_wrapper
 # Import our custom patching function
-from patch_dino import dino_batchnorm1d_forward, patch_dinov2_for_lrp, ConservationChecker
+from dino_patcher import dino_batchnorm1d_forward, DINOPatcher
+from lrp_helpers import ConservationChecker
 
 # 1. Load the DinoV2 model using timm
 CHECKPOINT_PATH = (
