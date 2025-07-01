@@ -1,15 +1,16 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from basemodel import TimmWrapper
-from dino_patcher import DINOPatcher
 from tqdm import tqdm
+
+from basemodel import TimmWrapper
+from knn_helpers import compute_knn_proxy_score
+
 
 PATCH_SIZE = 14  # Size of the patches to average over
 
 # Assume these are defined elsewhere
 # from my_project import TimmWrapper, LRPPatcher
-# PATCH_SIZE = 14 # For ViT-B/16, patch size is 16. For DinoV2 Giant, it's 14.
 
 def calculate_auc(curve: torch.Tensor) -> float:
     """Calculates the Area Under the Curve using the mean, as in the paper."""
@@ -17,8 +18,71 @@ def calculate_auc(curve: torch.Tensor) -> float:
     # This is equivalent to the mean of the curve points.
     return torch.mean(curve).item()
 
+def _run_knn_perturbation(
+    model: torch.nn.Module, # UN-PATCHED model
+    input_tensor: torch.Tensor,
+    patch_order: torch.Tensor,
+    perturbation_type: str,
+    patch_size: int,
+    # k-NN specific args
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    ground_truth_label: str,
+    k_neighbors: int,
+    baseline_value: float = 0.0,
+    num_steps: int = 50 # Use stepped evaluation for speed
+) -> torch.Tensor:
+    """
+    Runs a perturbation experiment, tracking the k-NN proxy score at each step.
+    """
+    model.eval()
+    
+    # Calculate the initial, unperturbed k-NN proxy score
+    with torch.no_grad():
+        initial_embedding = model(input_tensor)
+        initial_score = compute_knn_proxy_score(
+            initial_embedding, db_embeddings, db_labels, ground_truth_label, k_neighbors
+        )
+
+    num_patches = len(patch_order)
+    h, w = input_tensor.shape[-2:]
+    num_patches_w = w // patch_size
+    step_size = max(1, num_patches // num_steps)
+    
+    output_curve = torch.zeros(num_steps + 1, device=input_tensor.device)
+    output_curve[0] = initial_score
+
+    if perturbation_type == 'deletion':
+        perturbed_tensor = input_tensor.clone()
+    else: # insertion
+        perturbed_tensor = torch.full_like(input_tensor, baseline_value)
+
+    for step in tqdm(range(num_steps), desc=f"{perturbation_type.capitalize()} Eval"):
+        start_idx = step * step_size
+        end_idx = min((step + 1) * step_size, num_patches)
+        patches_to_process = patch_order[start_idx:end_idx]
+
+        for patch_idx in patches_to_process:
+            row = (patch_idx // num_patches_w) * patch_size
+            col = (patch_idx % num_patches_w) * patch_size
+            
+            if perturbation_type == 'deletion':
+                perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = baseline_value
+            else: # insertion
+                original_patch = input_tensor[..., row:row+patch_size, col:col+patch_size]
+                perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = original_patch
+
+        with torch.no_grad():
+            current_embedding = model(perturbed_tensor)
+            score = compute_knn_proxy_score(
+                current_embedding, db_embeddings, db_labels, ground_truth_label, k_neighbors
+            )
+            output_curve[step + 1] = score
+            
+    return output_curve
+
 def _run_perturbation(
-    model: torch.nn.Module, # Expects the UN-PATCHED model
+    model: TimmWrapper, # Expects the UN-PATCHED model
     input_tensor: torch.Tensor,
     patch_order: torch.Tensor,
     perturbation_type: str, # Either 'deletion' (MoRF/Flipping) or 'insertion' (LeRF with reversed logic)
@@ -40,7 +104,7 @@ def _run_perturbation(
 
     num_patches = len(patch_order)
     h, w = input_tensor.shape[-2:]
-    num_patches_h = h // patch_size
+    #num_patches_h = h // patch_size
     num_patches_w = w // patch_size
 
     # The curve will have N+1 points: 0% perturbed to 100% perturbed
@@ -146,6 +210,49 @@ def srg(
     # plt.ylabel('Model Score')
     # plt.title('Deletion Metric Curves')
     # plt.show()
+
+    return delta_a_f
+
+def srg_knn(
+    relevance_map: torch.Tensor,
+    input_tensor: torch.Tensor,
+    model: torch.nn.Module, # UN-PATCHED model
+    patch_size: int,
+    # k-NN specific args
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    ground_truth_label: str,
+    k_neighbors: int
+) -> float:
+    """
+    Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
+    A higher score is better.
+    """
+    relevance_per_pixel = torch.abs(relevance_map).sum(dim=1, keepdim=True)
+    patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=patch_size, stride=patch_size)
+    patch_relevance_flat = patch_relevance.flatten()
+
+    lerf_order = torch.argsort(patch_relevance_flat, descending=False)
+    morf_order = torch.argsort(patch_relevance_flat, descending=True)
+
+    morf_curve = _run_knn_perturbation(
+        model, input_tensor, morf_order, 'deletion', patch_size, 
+        db_embeddings, db_labels, ground_truth_label, k_neighbors
+    )
+    lerf_curve = _run_knn_perturbation(
+        model, input_tensor, lerf_order, 'deletion', patch_size,
+        db_embeddings, db_labels, ground_truth_label, k_neighbors
+    )
+    
+    auc_morf = calculate_auc(morf_curve)
+    auc_lerf = calculate_auc(lerf_curve)
+    
+    delta_a_f = auc_lerf - auc_morf
+    
+    print(f"\n--- Faithfulness Score (∆A_F) ---")
+    print(f"Area under LeRF curve: {auc_lerf:.4f}")
+    print(f"Area under MoRF curve: {auc_morf:.4f}")
+    print(f"Final Score (A_LeRF - A_MoRF): {delta_a_f:.4f}")
 
     return delta_a_f
 
