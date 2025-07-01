@@ -26,6 +26,9 @@ class LRPConservationChecker:
     Args:
         model (nn.Module): The PyTorch model to inspect.
     """
+    # TODO: This only works if you disable all bias terms in all linear layers and also 
+    # replace the softmax with nn.Identity just for the sake of testing conservation
+    
     def __init__(self, model: nn.Module):
         self.model = model
         self.handles: List[torch.utils.hooks.RemovableHandle] = []
