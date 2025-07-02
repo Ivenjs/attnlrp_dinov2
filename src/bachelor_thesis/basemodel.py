@@ -19,6 +19,7 @@ class TimmWrapper(nn.Module):
         self,
         backbone_name: str,
         embedding_size: int,
+        dtype: torch.dtype = torch.float32,
         embedding_id: Literal["linear", "mlp", "linear_norm_dropout", "mlp_norm_dropout"] = "linear",
         dropout_p: float = 0.0,
         pool_mode: Literal["gem", "gap", "gem_c", "none"] = "none",
@@ -33,9 +34,9 @@ class TimmWrapper(nn.Module):
         assert pool_mode == "none" or "vit" not in backbone_name, "pool_mode is not supported for VisionTransformer."
         if img_size is not None:
             logger.info(f"Setting img_size to {img_size}")
-            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, img_size=img_size)
+            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, img_size=img_size, dtype=dtype)
         else:
-            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0)
+            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, dtype=dtype)
 
         # Load pretrained weights if specified
         if load_pretrained:

@@ -188,7 +188,6 @@ def dino_glumlp_forward(self, x: torch.Tensor) -> torch.Tensor:
 
     # --- LRP Rule 1: Identity rule on activation ---
     gate = identity_rule_implicit(self.act, x_gate)
-    # gate = safe_identity_rule_implicit(self.act, x_gate)
     # ---------------------------------------------
 
     # Apply dropout if needed
@@ -200,10 +199,8 @@ def dino_glumlp_forward(self, x: torch.Tensor) -> torch.Tensor:
     weighted_value = divide_gradient(weighted_value, 2)
     # --------------------------------------------------------------
 
-    # Apply norm if it exists
     weighted_value = self.norm(weighted_value)
 
-    # Final projection
     x = self.fc2(weighted_value)
     x = self.drop2(x)
     return x

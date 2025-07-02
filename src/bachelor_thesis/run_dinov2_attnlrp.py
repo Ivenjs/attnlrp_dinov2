@@ -19,7 +19,10 @@ BACKBONE = "vit_giant_patch14_dinov2.lvd142m"
 EMBEDDING_DIM = 256  # The output size you trained for
 SAVE_HEATMAPS = True  # Set to False if you don't want to save the heatmaps
 PATCH_SIZE = 14  # The patch size used in the DINOv2 model
+model_dtype = torch.float32  
 
+if DEVICE == "cuda" and torch.cude.is_bf16_supported():
+    model_dtype = torch.bfloat16
 
 model_wrapper, weights = load_finetuned_timm_wrapper(
     checkpoint_path=CHECKPOINT_PATH,
@@ -27,6 +30,7 @@ model_wrapper, weights = load_finetuned_timm_wrapper(
     embedding_size=EMBEDDING_DIM,
     image_size=IMG_SIZE,
     device=DEVICE,
+    model_dtype=model_dtype,
 )
 
 
