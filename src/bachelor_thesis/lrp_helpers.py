@@ -219,6 +219,7 @@ def compute_knn_attnlrp_pass(
 
 def visualize_relevances(
     relevances: List[torch.Tensor], 
+    output_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps"
 ) -> torch.Tensor:
     heatmaps = [] 
     for relevance in relevances:
@@ -236,7 +237,6 @@ def visualize_relevances(
 
         heatmaps.append(heatmap[0].detach().cpu().numpy())
     
-    save_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps"
-    os.makedirs(save_path, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     current_dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save(f"{save_path}/dinov2_heatmap{current_dt}.png")
+    imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save(f"{output_dir}/dinov2_heatmap{current_dt}.png")

@@ -34,10 +34,12 @@ class TimmWrapper(nn.Module):
         assert pool_mode == "none" or "vit" not in backbone_name, "pool_mode is not supported for VisionTransformer."
         if img_size is not None:
             logger.info(f"Setting img_size to {img_size}")
-            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, img_size=img_size, dtype=dtype)
+            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, img_size=img_size)
         else:
-            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, dtype=dtype)
+            self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0)
 
+        self.model = self.model.to(dtype=dtype)
+        
         # Load pretrained weights if specified
         if load_pretrained:
             print(f"Loading pretrained weights from {pretrained_weights_path}")
@@ -245,6 +247,7 @@ def load_finetuned_timm_wrapper(
     embedding_size: int,
     image_size: int,
     device: str = "cuda",
+    model_dtype: torch.dtype = torch.float32
 ) -> Tuple[TimmWrapper, Any]:
     """
     Loads a finetuned TimmWrapper model from a checkpoint for inference.
@@ -264,10 +267,9 @@ def load_finetuned_timm_wrapper(
     print("--- Loading Finetuned TimmWrapper Model ---")
 
     checkpoint_best = torch.load(checkpoint_path, map_location=device)
-    # 1. Re-create the exact model architecture that was saved.
-    #    This is the crucial step.
+
     print(f"Building model architecture with backbone '{backbone_name}' and embedding size {embedding_size}...")
-    model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, img_size=image_size)
+    model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, model_dtype=model_dtype,img_size=image_size)
 
     cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
     msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
@@ -396,7 +398,3 @@ def load_dino_with_transforms(
 
     print("Finetuned DINOv2 model and transforms loaded successfully.")
     return model, DINOv2Transforms()
-
-
-if __name__ == "__main__":
-    print("This is a module for loading and using a Timm model with specific configurations.")

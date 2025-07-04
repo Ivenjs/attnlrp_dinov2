@@ -5,13 +5,14 @@ import pandas as pd
 
 from basemodel import load_finetuned_timm_wrapper
 from dinov2_attnlrp_sweep import run_gamma_sweep
-from lrp_helpers import srg
+from lrp_helpers import visualize_relevances
+from eval_helpers import srg
 
 monkey_patch_zennit(verbose=True)  # is this needed? seems to be
 
 # SETUP, maybe move this to a config file
 CHECKPOINT_PATH = (
-    "/workspaces/vast-gorilla/gorillawatch/data/models/max_checkpoints/saved_checkpoints/giantbodybest74ens82.pth"
+    "/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth"
 )
 IMG_SIZE = 518
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,7 +36,7 @@ model_wrapper, weights = load_finetuned_timm_wrapper(
 
 
 # 3. Prepare your input image
-image = Image.open("/workspaces/bachelor_thesis_code/seg_test_in/NN00_R019_20221212_281_378_287939.png").convert(
+image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image.png").convert(
     "RGB"
 )
 input_tensor = weights(image).unsqueeze(0).to(DEVICE)
@@ -45,9 +46,10 @@ relevances_by_gamma, violations_by_gamma = run_gamma_sweep(
     model_wrapper=model_wrapper,
     input_tensor=input_tensor
 )
-
+if SAVE_HEATMAPS:
+    visualize_relevances(relevances_by_gamma)
 # eval
-results = []
+"""results = []
 for relevance_map, conv_gamma, lin_gamma, violations in relevances_by_gamma:
     print("Evaluating generated relevance map with SRG/∆A_F...")
     faithfulness_score = srg(
@@ -80,8 +82,5 @@ else:
     print("\n--- Best Hyperparameters ---")
     print(f"Convolutional Gamma: {best_result['conv_gamma']}")
     print(f"Linear Gamma:        {best_result['lin_gamma']}")
-    print(f"Highest Faithfulness Score (∆A_F): {best_result['faithfulness_score']:.4f}")
-
-    # You can now re-run LRP with these optimal parameters to generate
-    # the final, "best" heatmap for visualization.
+    print(f"Highest Faithfulness Score (∆A_F): {best_result['faithfulness_score']:.4f}")"""
 

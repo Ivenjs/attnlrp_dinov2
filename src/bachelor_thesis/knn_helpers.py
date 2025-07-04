@@ -1,4 +1,4 @@
-from basemodels import TimmWrapper
+from basemodel import TimmWrapper
 from torchvision import transforms
 import os
 from PIL import Image
