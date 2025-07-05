@@ -12,7 +12,7 @@ monkey_patch_zennit(verbose=True)  # is this needed? seems to be
 
 # SETUP, maybe move this to a config file
 CHECKPOINT_PATH = (
-    "/workspaces/vast-gorilla/gorillawatch/data/models/max_checkpoints/saved_checkpoints/giantbodybest74ens82.pth"
+    "/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth"
 )
 IMG_SIZE = 518
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -40,7 +40,7 @@ def run_gamma_sweep(
                 model_wrapper=model_wrapper,
                 input_tensor=input_tensor,
                 checker=checker,
-                verbose=True  # Control verbosity of the check here
+                verbose=False  # Control verbosity of the check here
             )
             
             # Store the results

@@ -222,18 +222,16 @@ def visualize_relevances(
     output_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps"
 ) -> torch.Tensor:
     heatmaps = [] 
-    for relevance in relevances:
+    for gammas, relevance in relevances.items():
         heatmap = relevance.sum(1)
         denom = abs(heatmap).max()
         
+        #TODO label the heatmap with the gammas
+        
         #TODO:for blue squared: you forgot to cast the model to bfloat16 and to set bfloat16 in bitsandbytes (:
-        if denom == 0 or torch.isnan(denom):
-            print("Warning: Zero or NaN max in heatmap. Skipping normalization.")
-            # fill heatmap with ones
-            # heatmap = torch.ones_like(heatmap)
-            heatmap = torch.zeros_like(heatmap)
-        else:
-            heatmap = heatmap / denom
+        #TODO: really? blue only because we only have 12 outputs, right?
+        
+        heatmap = heatmap / denom
 
         heatmaps.append(heatmap[0].detach().cpu().numpy())
     
