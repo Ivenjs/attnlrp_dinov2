@@ -1,6 +1,15 @@
 import logging
 from typing import Any, Literal, Optional, Tuple, Union
 
+import os
+
+# --- Brute-force set the cache directory ---
+# This path is what the process sees from INSIDE the container.
+cache_dir = "/workspaces/bachelor_thesis_code/.cache"
+os.environ['HF_HOME'] = os.path.join(cache_dir, 'huggingface')
+os.makedirs(os.environ['HF_HOME'], exist_ok=True)
+
+
 import timm
 import torch
 import torch.nn as nn
