@@ -24,8 +24,7 @@ def run_gamma_sweep(
     print("--- Starting Gamma Sweep ---")
     print("Patching model for LRP and Conservation Checking for the duration of the sweep...")
 
-    # The context managers are now OUTSIDE the loop.
-    # They are set up once and torn down once.
+
     with DINOPatcher(model_wrapper), LRPConservationChecker(model_wrapper) as checker:
         
         param_combinations = list(itertools.product(conv_gamma_values, lin_gamma_values))

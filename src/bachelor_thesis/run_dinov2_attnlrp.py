@@ -25,7 +25,7 @@ model_dtype = torch.float32
 if DEVICE == "cuda" and torch.cude.is_bf16_supported():
     model_dtype = torch.bfloat16
 
-model_wrapper, weights = load_finetuned_timm_wrapper(
+model_wrapper, transforms = load_finetuned_timm_wrapper(
     checkpoint_path=CHECKPOINT_PATH,
     backbone_name=BACKBONE,
     embedding_size=EMBEDDING_DIM,
@@ -34,12 +34,11 @@ model_wrapper, weights = load_finetuned_timm_wrapper(
     model_dtype=model_dtype,
 )
 
-
 # 3. Prepare your input image
 image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image.png").convert(
     "RGB"
 )
-input_tensor = weights(image).unsqueeze(0).to(DEVICE)
+input_tensor = transforms(image).unsqueeze(0).to(DEVICE)
 
 
 relevances_by_gamma, violations_by_gamma = run_gamma_sweep(

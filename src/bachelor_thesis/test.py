@@ -5,11 +5,14 @@ from typing import Dict, List, Optional, Tuple
 import zennit.rules as z_rules
 from zennit.composites import LayerMapComposite
 
-import datetime
-import os
-from zennit.image import imgify
+from lxt.efficient import monkey_patch_zennit
+from dino_patcher import DINOPatcher
+from lrp_helpers import visualize_relevances
 
-from knn_helpers import compute_knn_proxy_score
+from basemodel import load_finetuned_timm_wrapper
+
+from PIL import Image
+import itertools
 
 class LRPConservationChecker:
     """
@@ -129,8 +132,7 @@ def compute_simple_attnlrp_pass(
     function is called within an active LRPConservationChecker context.
     """
     input_tensor.grad = None
-    
-    #TODO maybe integrate this into the dinopatcher when optimal parameters have been found
+
     zennit_comp = LayerMapComposite(
         [
             (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
@@ -158,79 +160,66 @@ def compute_simple_attnlrp_pass(
     
     return relevance, violations
 
-def compute_knn_attnlrp_pass(
-    conv_gamma: float, 
-    lin_gamma: float, 
-    model_wrapper: nn.Module, 
-    input_tensor: torch.Tensor,
-    checker: LRPConservationChecker,
-    # New parameters required for the k-NN score
-    db_embeddings: torch.Tensor,
-    db_labels: list,
-    ground_truth_label: str,
-    k_neighbors: int = 5,
-    verbose: bool = False
-) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """
-    Computes a single LRP pass explaining a k-NN classification decision.
 
-    This function calculates a differentiable proxy score based on the k-NN
-    outcome and backpropagates from it to generate the relevance map.
-    """
-    # Reset gradients for this specific pass
-    input_tensor.grad = None
+if __name__ == "__main__":
+    monkey_patch_zennit(verbose=True) 
 
-    # Zennit rules MUST be set and removed for each pass
-    zennit_comp = LayerMapComposite(
-        [
-            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
-            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
-        ]
+    CHECKPOINT_PATH = ("/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth")
+    IMG_SIZE = 518
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    BACKBONE = "vit_giant_patch14_dinov2.lvd142m"
+    EMBEDDING_DIM = 256  
+    SAVE_HEATMAPS = True  
+    PATCH_SIZE = 14  
+    model_dtype = torch.float32  
+
+    if DEVICE == "cuda" and torch.cude.is_bf16_supported():
+        model_dtype = torch.bfloat16
+
+    CONV_GAMMAS = [0.1, 0.25, 1.0]
+    LIN_GAMMAS = [0.0, 0.05, 0.1, 0.25]
+
+    model_wrapper, transforms = load_finetuned_timm_wrapper(
+        checkpoint_path=CHECKPOINT_PATH,
+        backbone_name=BACKBONE,
+        embedding_size=EMBEDDING_DIM,
+        image_size=IMG_SIZE,
+        device=DEVICE,
+        model_dtype=model_dtype,
     )
+
+    # 3. Prepare your input image
+    image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image2.png").convert("RGB")
+    input_tensor = transforms(image).unsqueeze(0).to(DEVICE)
+
+    all_relevances = {}
+    all_violations = {}
+
+    print("Patching model for LRP and Conservation Checking for the duration of the sweep...")
+
+    with DINOPatcher(model_wrapper, attention_mode="cp_lrp"), LRPConservationChecker(model_wrapper) as checker:
+        
+        param_combinations = list(itertools.product(CONV_GAMMAS, LIN_GAMMAS))
+        
+        for i, (conv_gamma, lin_gamma) in enumerate(param_combinations):
+            print(f"\n--- Running Pass {i+1}/{len(param_combinations)} ---")
+            
+            relevance, violations = compute_simple_attnlrp_pass(
+                conv_gamma=conv_gamma,
+                lin_gamma=lin_gamma,
+                model_wrapper=model_wrapper,
+                input_tensor=input_tensor,
+                checker=checker,
+                verbose=False  
+            )
+            
+            # Store the results
+            key = (conv_gamma, lin_gamma)
+            all_relevances[key] = relevance.detach().cpu()
+            all_violations[key] = violations
+
+    print("\n--- Gamma Sweep Complete ---")
+    print("Model has been restored to its original state.")
     
-    try:
-        zennit_comp.register(model_wrapper)
-
-        query_embedding = model_wrapper(input_tensor.requires_grad_())
-
-        knn_score = compute_knn_proxy_score(
-            query_embedding=query_embedding,
-            db_embeddings=db_embeddings,
-            db_labels=db_labels,
-            ground_truth_label=ground_truth_label,
-            k=k_neighbors
-        )
-        
-        if verbose:
-            print(f"Explaining k-NN proxy score: {knn_score.item():.4f} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
-
-        knn_score.backward()
-
-        relevance = input_tensor * input_tensor.grad
-        
-        violations = checker.check(verbose=verbose)
-
-    finally:
-        zennit_comp.remove()
+    visualize_relevances(all_relevances)
     
-    return relevance, violations
-
-
-def visualize_relevances(
-    relevances: List[torch.Tensor], 
-    output_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps"
-) -> torch.Tensor:
-    heatmaps = [] 
-    for gammas, relevance in relevances.items():
-        heatmap = relevance.sum(1)
-        denom = abs(heatmap).max()
-        
-        #TODO label the heatmap with the gammas
-        
-        heatmap = heatmap / denom
-
-        heatmaps.append(heatmap[0].detach().cpu().numpy())
-    
-    os.makedirs(output_dir, exist_ok=True)
-    current_dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save(f"{output_dir}/dinov2_heatmap{current_dt}.png")

@@ -7,7 +7,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 
 
-
+#TODO: rather use the transforms from the model wrapper
 TRANSFORM = transforms.Compose(
         [
             transforms.Resize((518, 518)),

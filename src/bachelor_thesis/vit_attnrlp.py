@@ -8,7 +8,7 @@ from torchvision.models import vision_transformer
 from zennit.composites import LayerMapComposite
 from zennit.image import imgify
 
-from lrp_helpers import ConservationChecker
+from lrp_helpers import LRPConservationChecker
 
 
 monkey_patch(vision_transformer, verbose=True)
@@ -36,7 +36,7 @@ def get_vit_imagenet(device="cuda"):
 
     return model, weights
 
-def check_for_relevance_violations(checkers: dict[str, ConservationChecker]):
+def check_for_relevance_violations(checkers: dict[str, LRPConservationChecker]):
     batch_violations = {}
     for name, checker in checkers.items():
         if checker.rin is None or checker.rout is None:
@@ -58,23 +58,9 @@ def check_for_relevance_violations(checkers: dict[str, ConservationChecker]):
 # Load the pre-trained ViT model
 model, weights = get_vit_imagenet()
 
-# register relevance chcker
-checkers = {}
-handles = {}
-for name, module in model.named_modules():
-    """# Only attach to modules that have parameters or perform computation
-    if list(module.children()): # Skip container modules like the top-level Sequential
-        continue
-    if not any(p.requires_grad for p in module.parameters()) and not isinstance(module, (nn.ReLU, nn.Flatten)):
-        continue # Skip layers with no params like ReLU, Flatten if you want"""
-        
-    checker = ConservationChecker(f"{name} ({module.__class__.__name__})")
-    handle = module.register_backward_hook(checker.hook)
-    checkers[name] = checker
-    handles[name] = handle
 
 # Load and preprocess the input image
-image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image.png").convert("RGB")
+image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image2.png").convert("RGB")
 input_tensor = weights.transforms()(image).unsqueeze(0).to("cuda")
 
 # Store the generated heatmaps
@@ -120,7 +106,6 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
 
     # Remove the registered composite to prevent interference in future iterations
     
-    check_for_relevance_violations(checkers)
     
     zennit_comp.remove()
 
@@ -134,12 +119,8 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
     # Store the normalized heatmap
     heatmaps.append(heatmap[0].detach().cpu().numpy())
 
-# Visualize all heatmaps in a grid (3×5) and save to a file
-# vmin and vmax control the color mapping range# In get_relevances(), after the loop:
-for handle in handles.values():
-    handle.remove()
 print("Removed all conservation checker hooks.")
 
-imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save("vit_heatmap.png")
+imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save("vit_heatmap2.png")
 
 
