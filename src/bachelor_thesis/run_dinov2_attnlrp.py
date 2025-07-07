@@ -1,52 +1,48 @@
 import torch
 from lxt.efficient import monkey_patch_zennit
-from PIL import Image
 import pandas as pd
+import yaml
+import os
 
-from basemodel import load_finetuned_timm_wrapper
+from basemodel import get_model_wrapper
 from dinov2_attnlrp_sweep import run_gamma_sweep
 from lrp_helpers import visualize_relevances
 from eval_helpers import srg
 
 monkey_patch_zennit(verbose=True)  # is this needed? seems to be
 
-# SETUP, maybe move this to a config file
-CHECKPOINT_PATH = (
-    "/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth"
-)
-IMG_SIZE = 518
+
+SAVE_HEATMAPS = True 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BACKBONE = "vit_giant_patch14_dinov2.lvd142m"
-EMBEDDING_DIM = 256  # The output size you trained for
-SAVE_HEATMAPS = True  # Set to False if you don't want to save the heatmaps
-PATCH_SIZE = 14  # The patch size used in the DINOv2 model
-model_dtype = torch.float32  
+MODE = "knn"  # "simple" or "knn"
 
-if DEVICE == "cuda" and torch.cude.is_bf16_supported():
-    model_dtype = torch.bfloat16
-
-model_wrapper, transforms = load_finetuned_timm_wrapper(
-    checkpoint_path=CHECKPOINT_PATH,
-    backbone_name=BACKBONE,
-    embedding_size=EMBEDDING_DIM,
-    image_size=IMG_SIZE,
-    device=DEVICE,
-    model_dtype=model_dtype,
-)
+model_wrapper, transforms = get_model_wrapper()
 
 # 3. Prepare your input image
-image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image.png").convert(
-    "RGB"
-)
-input_tensor = transforms(image).unsqueeze(0).to(DEVICE)
+image_path = "/workspaces/bachelor_thesis_code/sample_images/GA01_R105_20221225_117_1218_836300.png"
 
+model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
+with open(model_config_path, "r") as f:
+    cfg = yaml.safe_load(f)
+conv_gammas = cfg["CONV_GAMMAS"]
+lin_gammas = cfg["LIN_GAMMAS"]
 
 relevances_by_gamma, violations_by_gamma = run_gamma_sweep(
     model_wrapper=model_wrapper,
-    input_tensor=input_tensor
+    transforms=transforms,
+    input_image_path=image_path,
+    device=DEVICE,
+    mode=MODE,
+    conv_gamma_values=conv_gammas,
+    lin_gamma_values=lin_gammas
 )
 if SAVE_HEATMAPS:
-    visualize_relevances(relevances_by_gamma)
+    visualize_relevances(
+        relevances=relevances_by_gamma, 
+        mode=MODE, 
+        image_name=os.path.basename(image_path).split(".")[0], 
+        dim=(len(conv_gammas), len(lin_gammas))
+    )
 # eval
 """results = []
 for relevance_map, conv_gamma, lin_gamma, violations in relevances_by_gamma:

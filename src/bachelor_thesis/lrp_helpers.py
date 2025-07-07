@@ -164,7 +164,7 @@ def compute_knn_attnlrp_pass(
     model_wrapper: nn.Module, 
     input_tensor: torch.Tensor,
     checker: LRPConservationChecker,
-    # New parameters required for the k-NN score
+    # parameters required for the k-NN score
     db_embeddings: torch.Tensor,
     db_labels: list,
     ground_truth_label: str,
@@ -218,7 +218,10 @@ def compute_knn_attnlrp_pass(
 
 def visualize_relevances(
     relevances: List[torch.Tensor], 
-    output_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps"
+    mode: str,
+    image_name: str,
+    output_dir: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps",
+    dim: Tuple[int, int] = (3,5)
 ) -> torch.Tensor:
     heatmaps = [] 
     for gammas, relevance in relevances.items():
@@ -231,6 +234,7 @@ def visualize_relevances(
 
         heatmaps.append(heatmap[0].detach().cpu().numpy())
     
-    os.makedirs(output_dir, exist_ok=True)
+    save_path = f"{output_dir}/{mode}/{image_name}/"
+    os.makedirs(save_path, exist_ok=True)
     current_dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    imgify(heatmaps, vmin=-1, vmax=1, grid=(3, 5)).save(f"{output_dir}/dinov2_heatmap{current_dt}.png")
+    imgify(heatmaps, vmin=-1, vmax=1, grid=dim).save(os.path.join(save_path, f"dinov2_heatmap_{current_dt}.png"))

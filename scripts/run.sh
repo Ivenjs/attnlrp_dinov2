@@ -14,7 +14,7 @@
 
 GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
-#srun --nodes=1 --ntasks=1 --gpus=1 --time=01:00:00 --partition=defq --container-image=/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatch+1.2.1.sqsh --container-workdir=/workspaces --container-mounts=/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/mnt/vast-gorilla:/workspaces/vast-gorilla --export=ALL --pty bash
+#srun --nodes=1 --ntasks=1 --gpus=1 --time=01:00:00 --partition=defq --container-image=/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatch+1.2.1.sqsh --container-workdir=/workspaces --container-mounts=/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/mnt/vast-gorilla:/workspaces/vast-gorilla --container-writable --export=ALL --pty bash
 
 # Could also just replace the next two lines with python3
 #torchrun \

@@ -2,6 +2,7 @@ import logging
 from typing import Any, Literal, Optional, Tuple, Union
 
 import os
+import yaml
 
 import timm
 import torch
@@ -288,115 +289,28 @@ def load_finetuned_timm_wrapper(
     print("--- Model loading complete ---")
     return model_wrapper, transforms
 
+def get_model_wrapper(cfg=None, **overrides):
+    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
+    if cfg is None:
+        with open(model_config_path, "r") as f:
+            cfg = yaml.safe_load(f)
 
-def load_model(model_path: str, img_size: int) -> TimmWrapper:
-    """Load a pre-trained model"""
-    torch.backends.cudnn.benchmark = True  # Enable CUDNN benchmarking
+    # Allow overriding config values via kwargs
+    cfg = {**cfg, **overrides}
 
-    # Initialize Timm Wrapper Model
-    """
-    embedding_size = 518 is almost certainly wrong. 
-    For dinov2_vitg14, the embedding dimension is 1536. 
-    The wrapper is likely misconfigured and might either fail or produce incorrect results.
-    """
-    embedding_size = 518
-    dropout_p = 0.0
-    embedding_id = "linear"
-    pool_mode = "none"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_dtype = getattr(torch, cfg["model_dtype"])
 
-    embedding_model = TimmWrapper(
-        backbone_name=BACKBONE_NAME,
-        embedding_size=embedding_size,
-        embedding_id=embedding_id,
-        dropout_p=dropout_p,
-        pool_mode=pool_mode,
-        img_size=img_size,
-    ).to(DEVICE)
+    if device.type == "cuda" and torch.cuda.is_bf16_supported():
+        model_dtype = torch.bfloat16
 
-    # Load the model weights
-    state_dict = torch.load(model_path, map_location=DEVICE, weights_only=False)
-    # remove the prefix "module." from the keys of the state_dict
-    state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-    embedding_model.load_state_dict(state_dict)
-    embedding_model = embedding_model.to(memory_format=torch.channels_last)
-    embedding_model.eval()
-
-    return embedding_model
-
-
-def get_vit_imagenet(device="cuda"):
-    """
-    Load a pre-trained Vision Transformer (ViT) model with ImageNet weights.
-
-    Parameters:
-    device (str): Device to load the model on ('cuda' or 'cpu')
-
-    Returns:
-    tuple: (model, weights) - The ViT model and its pre-trained weights
-    """
-    weights = vision_transformer.ViT_B_16_Weights.IMAGENET1K_V1
-    model = vision_transformer.vit_b_16(weights=weights)
-    model.eval()
-    model.to(device)
-
-    # Deactivate gradients on parameters to save memory
-    for param in model.parameters():
-        param.requires_grad = False
-
-    return model, weights
-
-
-def load_dino_with_transforms(
-    checkpoint_path, model_name="dinov2_vitg14", device="cuda"
-) -> tuple[torch.nn.Module, Any]:
-    """
-    Load a finetuned DINOv2 model and its corresponding preprocessing transforms.
-
-    Parameters:
-    - checkpoint_path (str): Path to the .pth or .pt checkpoint file.
-    - model_name (str): The name of the base DINOv2 model. This function works for
-                        'dinov2_vits14', 'dinov2_vitb14', 'dinov2_vitl14', and 'dinov2_vitg14'.
-    - device (str): Device to load the model on ('cuda' or 'cpu').
-
-    Returns:
-    - tuple: (model, transforms_object)
-    """
-    print(f"Loading base DINOv2 model: {model_name}...")
-    model = torch.hub.load("facebookresearch/dinov2", model_name)
-
-    # ... (rest of the weight loading logic is identical) ...
-    print(f"Loading finetuned weights from: {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    if "model" in checkpoint:
-        state_dict = checkpoint["model"]
-    elif "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
-    elif "teacher" in checkpoint:
-        state_dict = checkpoint["teacher"]
-    else:
-        state_dict = checkpoint
-    msg = model.load_state_dict(state_dict, strict=False)
-    print(f"State dict loading message: {msg}")
-    model.eval().to(device)
-    for param in model.parameters():
-        param.requires_grad = False
-
-    # This resolution is optimal for ALL standard DINOv2 models, as they all use a 14x14 patch size.
-    # 518 is a multiple of 14 (518 = 37 * 14).
-    img_size = 518
-
-    custom_transforms = T.Compose(
-        [
-            T.Resize(img_size, interpolation=T.InterpolationMode.BICUBIC),
-            T.CenterCrop(img_size),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
+    model_wrapper, transforms = load_finetuned_timm_wrapper(
+        checkpoint_path=cfg["checkpoint_path"],
+        backbone_name=cfg["backbone"],
+        embedding_size=cfg["embedding_dim"],
+        image_size=cfg["img_size"],
+        device=device,
+        model_dtype=model_dtype,
     )
 
-    class DINOv2Transforms:
-        def __call__(self, img):
-            return custom_transforms(img)
-
-    print("Finetuned DINOv2 model and transforms loaded successfully.")
-    return model, DINOv2Transforms()
+    return model_wrapper, transforms

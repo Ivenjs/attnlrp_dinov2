@@ -5,6 +5,12 @@ from PIL import Image
 import torch
 from tqdm import tqdm
 import torch.nn.functional as F
+from typing import Tuple
+
+
+import yaml
+
+from basemodel import get_model_wrapper
 
 
 #TODO: rather use the transforms from the model wrapper
@@ -18,7 +24,7 @@ TRANSFORM = transforms.Compose(
 
 def fill_knn_db(
     image_dir: str, model: TimmWrapper,  device: torch.device, output_dir: str, model_checkpoint: str, transform: transforms.Compose = TRANSFORM
-):
+) -> Tuple[torch.Tensor, list]:
     embeddings = torch.Tensor([]).to(device)
     labels = []
     for file in tqdm(os.listdir(image_dir), desc="Loading images for KNN DB"):
@@ -30,13 +36,16 @@ def fill_knn_db(
             embeddings = torch.cat((embeddings, embedding), dim=0)
             labels.append(file.split("_")[0])
     
-    dataset = {"embeddings": embeddings.cpu(), "labels": labels}
+    cpu_embeddings = embeddings.cpu()
+    dataset = {"embeddings": cpu_embeddings, "labels": labels}
     torch.save(
         dataset,
         f"{output_dir}/{model_checkpoint.split('/')[-1].split('.')[0]}_{image_dir.split('/')[-1]}.pt",
     )
+
+    return cpu_embeddings.to(device), labels
     
-def init_knn_db(knn_db_path: str, device: torch.device) -> tuple[torch.Tensor, list]:
+def load_knn_db(knn_db_path: str, device: torch.device) -> Tuple[torch.Tensor, list]:
     dataset = torch.load(knn_db_path)
     return dataset["embeddings"].to(device), dataset["labels"]
 
@@ -145,3 +154,38 @@ def compute_knn_proxy_score(
     
     score = sim_friends - sim_foes
     return score
+
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
+    with open(model_config_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    
+    model_wrapper, transforms = get_model_wrapper()
+
+    output_dir = "/workspaces/bachelor_thesis_code/knn_db"
+    # Fill the KNN database
+    db_embeddings, labels = fill_knn_db(
+        image_dir="/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train",
+        model=model_wrapper,
+        device=device,
+        output_dir=output_dir,
+        model_checkpoint=os.path.basename(cfg["checkpoint_path"]),
+        transform=transforms
+    )
+
+    # Initialize the KNN database
+    """db_embeddings, db_labels = load_knn_db(output_dir, device)
+
+    # Example query embedding
+    query_embedding = torch.randn(1, 2048, requires_grad=True).to(device)  # Example embedding
+
+    # Compute KNN label
+    label = knn(query_embedding, db_embeddings, db_labels, device)
+    print(f"KNN predicted label: {label}")
+
+    # Compute proxy score
+    ground_truth_label = "cat"  # Example ground truth label
+    proxy_score = compute_knn_proxy_score(query_embedding, db_embeddings, db_labels, ground_truth_label)
+    print(f"Proxy score: {proxy_score.item()}")"""
