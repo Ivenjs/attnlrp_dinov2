@@ -6,16 +6,30 @@ import os
 from PIL import Image
 
 from basemodel import get_model_wrapper
-from dinov2_attnlrp_sweep import run_gamma_sweep
+from dinov2_attnlrp_sweep import run_gamma_sweep, evaluate_gamma_sweep, print_robustness_summary, visualize_robustness_analysis, find_robust_hyperparameters
 from lrp_helpers import visualize_relevances
 from knn_helpers import get_knn_db
-from eval_helpers import srg_knn
+
+
+def get_image_for_each_class(image_dir: str):
+    """
+    Get one image for each class from the given directory.
+    Assumes images are named in the format 'class_label_*.png'.
+    """
+    class_images = {}
+    for filename in os.listdir(image_dir):
+        if filename.endswith(".png"):
+            class_label = filename.split("_")[0]
+            if class_label not in class_images:
+                class_images[class_label] = os.path.join(image_dir, filename)
+    return class_images
+
 
 if __name__ == "__main__":
     monkey_patch_zennit(verbose=True)  # is this needed? seems to be
 
 
-    SAVE_HEATMAPS = True 
+    SAVE_HEATMAPS = False 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     MODE = "knn"  # "simple" or "knn"
 
@@ -36,22 +50,33 @@ if __name__ == "__main__":
     )
     input_tensor = transforms(image).unsqueeze(0).to(DEVICE)
 
+    images_dir = "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train"
+
     db_embeddings, db_labels = get_knn_db(
         knn_db_dir="/workspaces/bachelor_thesis_code/knn_db",
-        image_dir="/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train",
+        image_dir=images_dir,
         model_wrapper=model_wrapper,
         transforms=transforms,
         device=DEVICE
     )
 
+    class_images = get_image_for_each_class(image_dir=images_dir)
+    ground_truth_labels = list(class_images.keys())
+    input_tensors = []
+    for label in ground_truth_labels:
+        img_path = class_images[label]
+        img = Image.open(img_path).convert("RGB")
+        input_tensor = transforms(img)
+        input_tensors.append(input_tensor)
+    input_tensors = torch.stack(input_tensors).to(DEVICE)
 
     relevances_by_gamma, violations_by_gamma = run_gamma_sweep(
         model_wrapper=model_wrapper,
-        input_tensor=input_tensor,
+        input_tensors=input_tensors,
         mode=MODE,
         db_embeddings=db_embeddings,
         db_labels=db_labels,
-        ground_truth_label=ground_truth_label,
+        ground_truth_labels=ground_truth_labels,
         k_neighbors=5,
         conv_gamma_values=conv_gammas,
         lin_gamma_values=lin_gammas
@@ -66,43 +91,37 @@ if __name__ == "__main__":
     # eval
 
     PATCH_SIZE = cfg["patch_size"]
-    results = []
-    for gammas, relevance_map in relevances_by_gamma.items():
-        conv_gamma, lin_gamma = gammas
-        violations = violations_by_gamma[gammas]
-        print("Evaluating generated relevance map with SRG/∆A_F...")
-        faithfulness_score = srg_knn(
-            relevance_map=relevance_map,
-            input_tensor=input_tensor,
-            model=model_wrapper, # The original, un-patched model
-            patch_size=PATCH_SIZE,
-            db_embeddings=db_embeddings,
-            db_labels=db_labels,
-            ground_truth_label=ground_truth_label,
-            k_neighbors=5,
-        )
-        
-        results.append({
-            "conv_gamma": conv_gamma,
-            "lin_gamma": lin_gamma,
-            "faithfulness_score": faithfulness_score
-        })
-            
-    if not results:
-        print("No results were generated.")
-    else:
-        # Use pandas for easy sorting and display
-        results_df = pd.DataFrame(results)
-        
-        print("\n\n--- Hyperparameter Search Complete ---")
-        print("Full Results:")
-        print(results_df.to_string())
+ 
+    results = evaluate_gamma_sweep(
+        relevances_by_gamma=relevances_by_gamma,
+        violations_by_gamma=violations_by_gamma,
+        input_tensors=input_tensors,
+        ground_truth_labels=ground_truth_labels,
+        model_wrapper=model_wrapper,
+        db_embeddings=db_embeddings,
+        db_labels=db_labels,
+        patch_size=PATCH_SIZE,
+        k_neighbors=5,
+        plot_curves=False  # Set to True if you want individual curves
+    )
 
-        # Find the best result
-        best_result = results_df.loc[results_df['faithfulness_score'].idxmax()]
-        #maybe plot this best result?
-        print("\n--- Best Hyperparameters ---")
-        print(f"Convolutional Gamma: {best_result['conv_gamma']}")
-        print(f"Linear Gamma:        {best_result['lin_gamma']}")
-        print(f"Highest Faithfulness Score (∆A_F): {best_result['faithfulness_score']:.4f}")
+    best_params, analysis_df = find_robust_hyperparameters(
+        results=results,
+        robustness_percentile=0.9,  # 90% of cases should be good
+        min_score_threshold=0.0     # Adjust based on your score range
+    )
+
+    aggregate_stats = print_robustness_summary(best_params, analysis_df, results)
+    
+    # Create visualizations
+    visualize_robustness_analysis(analysis_df, results)
+    
+    # Optionally save results
+    pd.DataFrame(results).to_csv("/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/detailed_results.csv", index=False)
+    analysis_df.to_csv("/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.csv", index=False)
+
+    if aggregate_stats:
+        aggregate_stats['by_gamma'].to_csv("/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/gamma_statistics.csv", index=False)
+        aggregate_stats['by_image'].to_csv("/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/image_statistics.csv", index=False)
+            
 

@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-
+import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
 from knn_helpers import compute_knn_proxy_score
 
@@ -222,7 +222,8 @@ def srg_knn(
     db_embeddings: torch.Tensor,
     db_labels: list,
     ground_truth_label: str,
-    k_neighbors: int
+    k_neighbors: int,
+    plot_curves: bool = False
 ) -> float:
     """
     Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
@@ -253,6 +254,16 @@ def srg_knn(
     print(f"Area under LeRF curve: {auc_lerf:.4f}")
     print(f"Area under MoRF curve: {auc_morf:.4f}")
     print(f"Final Score (A_LeRF - A_MoRF): {delta_a_f:.4f}")
+
+    plt.plot(morf_curve.cpu().numpy(), label='MoRF Deletion')
+    plt.plot(lerf_curve.cpu().numpy(), label='LeRF Deletion')
+    plt.legend()
+    plt.xlabel('Number of Patches Perturbed')
+    plt.ylabel('Model Score')
+    plt.title('Deletion Metric Curves')
+    if plot_curves:
+        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/deletion_metric_curves.png")
+
 
     return delta_a_f
 
