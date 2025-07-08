@@ -23,8 +23,10 @@ TRANSFORM = transforms.Compose(
     )
 
 def fill_knn_db(
-    image_dir: str, model: TimmWrapper,  device: torch.device, output_dir: str, model_checkpoint: str, transform: transforms.Compose = TRANSFORM
+    image_dir: str, model: TimmWrapper, output_dir: str, model_checkpoint: str, transform: transforms.Compose = TRANSFORM
 ) -> Tuple[torch.Tensor, list]:
+    device = model.device
+
     all_embeddings = []
     labels = []
 
@@ -57,10 +59,36 @@ def fill_knn_db(
     torch.save(dataset, out_path)
 
     return stacked, labels
+
+def get_knn_db(knn_db_dir: str, image_dir: str, model_wrapper: TimmWrapper, transforms: transforms.Compose, device: torch.device) -> Tuple[torch.Tensor, list]:
+    db_embeddings = []
+    db_labels = []
+
+    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
+    with open(model_config_path, "r") as f:
+        cfg = yaml.safe_load(f)
     
-def load_knn_db(knn_db_path: str, device: torch.device) -> Tuple[torch.Tensor, list]:
-    dataset = torch.load(knn_db_path)
-    return dataset["embeddings"].to(device), dataset["labels"]
+    checkpoint_name = os.path.basename(cfg["checkpoint_path"])
+    checkpoint_base = os.path.splitext(checkpoint_name)[0]
+
+    files_in_dir = os.listdir(knn_db_dir)
+    matching_checkpoints = [f for f in files_in_dir if checkpoint_base in f]
+    if matching_checkpoints:
+        print(f"KNN database for checkpoint {checkpoint_base} already exists. Loading the KNN database...")
+        dataset = torch.load(os.path.join(knn_db_dir, matching_checkpoints[0]))
+        db_embeddings = dataset["embeddings"].to(device)
+        db_labels = dataset["labels"]
+    else:
+        print(f"KNN database for checkpoint {checkpoint_base} does not exist. Filling the KNN database...")
+        db_embeddings, db_labels = fill_knn_db(
+            image_dir=image_dir,
+            model=model_wrapper,
+            output_dir=knn_db_dir,
+            model_checkpoint=checkpoint_name,
+            transform=transforms
+        )
+    return db_embeddings, db_labels
+
 
 # TODO use the GPU enhanced versions from the model_evaluation.py (gorillawatch repo)
 def calculate_distance(db_embeddings: torch.Tensor, test_embedding: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -116,11 +144,12 @@ def compute_knn_proxy_score(
         torch.Tensor: A single scalar tensor representing the proxy score,
                       with its computation graph attached to the query_embedding.
     """
-    if not query_embedding.requires_grad:
-        raise ValueError("query_embedding must have requires_grad=True to compute gradients.")
     # We must use a detached version of the query for the distance calculation
     # to find the neighbors. This is because topk is not nicely differentiable
     # and we only need the *identities* of the neighbors, not their gradient path.
+
+    #TODO: make sure that I exclude the input image in friends and foes!!!
+
     with torch.no_grad():
         if metric == "euclidean":
             similarities = -calculate_distance(db_embeddings, query_embedding.detach(), query_embedding.device)
@@ -131,6 +160,8 @@ def compute_knn_proxy_score(
 
         top_k_indices = torch.topk(similarities, k, largest=True).indices
 
+
+    query_index = db_labels.index(ground_truth_label)
     friends_indices = []
     foes_indices = []
     for idx_tensor in top_k_indices:
@@ -182,7 +213,6 @@ if __name__ == "__main__":
     db_embeddings, labels = fill_knn_db(
         image_dir="/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train",
         model=model_wrapper,
-        device=device,
         output_dir=output_dir,
         model_checkpoint=os.path.basename(cfg["checkpoint_path"]),
         transform=transforms
