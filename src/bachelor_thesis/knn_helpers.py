@@ -25,30 +25,42 @@ TRANSFORM = transforms.Compose(
 def fill_knn_db(
     image_dir: str, model: TimmWrapper,  device: torch.device, output_dir: str, model_checkpoint: str, transform: transforms.Compose = TRANSFORM
 ) -> Tuple[torch.Tensor, list]:
-    embeddings = torch.Tensor([]).to(device)
+    all_embeddings = []
     labels = []
-    for file in tqdm(os.listdir(image_dir), desc="Loading images for KNN DB"):
-        if file.endswith(".png"):
-            image_path = os.path.join(image_dir, file)
-            image = transform(Image.open(image_path).convert("RGB")).unsqueeze(0).to(device)
-            with torch.no_grad():
-                embedding = model(image)
-            embeddings = torch.cat((embeddings, embedding), dim=0)
-            labels.append(file.split("_")[0])
-    
-    cpu_embeddings = embeddings.cpu()
-    dataset = {"embeddings": cpu_embeddings, "labels": labels}
-    torch.save(
-        dataset,
-        f"{output_dir}/{model_checkpoint.split('/')[-1].split('.')[0]}_{image_dir.split('/')[-1]}.pt",
-    )
 
-    return cpu_embeddings.to(device), labels
+    for file in tqdm(os.listdir(image_dir), desc="Loading images for KNN DB"):
+        if not file.endswith(".png"):
+            continue
+
+        image_path = os.path.join(image_dir, file)
+        image = transform(Image.open(image_path).convert("RGB")).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            embedding = model(image)  # should return [1, D] or [D]
+        
+        # Ensure embedding is 1D
+        embedding = embedding.squeeze()
+        if embedding.dim() != 1:
+            raise ValueError(f"Expected 1D embedding, got shape {embedding.shape}")
+
+        all_embeddings.append(embedding.cpu())
+        labels.append(file.split("_")[0])
+
+    stacked = torch.stack(all_embeddings).to(device)
+
+    dataset = {
+        "embeddings": stacked.cpu(),  # Save on CPU
+        "labels": labels
+    }
+
+    out_path = f"{output_dir}/{model_checkpoint.split('/')[-1].split('.')[0]}_{image_dir.split('/')[-1]}.pt"
+    torch.save(dataset, out_path)
+
+    return stacked, labels
     
 def load_knn_db(knn_db_path: str, device: torch.device) -> Tuple[torch.Tensor, list]:
     dataset = torch.load(knn_db_path)
     return dataset["embeddings"].to(device), dataset["labels"]
-
 
 # TODO use the GPU enhanced versions from the model_evaluation.py (gorillawatch repo)
 def calculate_distance(db_embeddings: torch.Tensor, test_embedding: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -121,7 +133,8 @@ def compute_knn_proxy_score(
 
     friends_indices = []
     foes_indices = []
-    for idx in top_k_indices:
+    for idx_tensor in top_k_indices:
+        idx = idx_tensor.item()  
         if db_labels[idx] == ground_truth_label:
             friends_indices.append(idx)
         else:

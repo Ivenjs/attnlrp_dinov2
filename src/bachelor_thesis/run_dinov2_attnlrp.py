@@ -3,6 +3,7 @@ from lxt.efficient import monkey_patch_zennit
 import pandas as pd
 import yaml
 import os
+from PIL import Image
 
 from basemodel import get_model_wrapper
 from dinov2_attnlrp_sweep import run_gamma_sweep
@@ -19,13 +20,14 @@ MODE = "knn"  # "simple" or "knn"
 model_wrapper, transforms = get_model_wrapper()
 
 # 3. Prepare your input image
-image_path = "/workspaces/bachelor_thesis_code/sample_images/GA01_R105_20221225_117_1218_836300.png"
+image_path = "/workspaces/bachelor_thesis_code/sample_images/YE41_R035_20220818_091_1842_799985.png"
 
 model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
 with open(model_config_path, "r") as f:
     cfg = yaml.safe_load(f)
 conv_gammas = cfg["CONV_GAMMAS"]
 lin_gammas = cfg["LIN_GAMMAS"]
+
 
 relevances_by_gamma, violations_by_gamma = run_gamma_sweep(
     model_wrapper=model_wrapper,
@@ -47,11 +49,10 @@ if SAVE_HEATMAPS:
 """results = []
 for relevance_map, conv_gamma, lin_gamma, violations in relevances_by_gamma:
     print("Evaluating generated relevance map with SRG/∆A_F...")
-    faithfulness_score = srg(
+    faithfulness_score = srg_knn(
         relevance_map=relevance_map,
         input_tensor=input_tensor,
         model=model_wrapper, # The original, un-patched model
-        target_class_idx=-100000000,  
         patch_size=PATCH_SIZE,
     )
     

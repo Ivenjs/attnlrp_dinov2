@@ -97,7 +97,7 @@ def run_gamma_sweep(
                     verbose=False ,
                     db_embeddings=db_embeddings,  
                     db_labels=db_labels,  
-                    ground_truth_label=None,  
+                    ground_truth_label=ground_truth_label,  
                     k_neighbors=5  
                 )
             
