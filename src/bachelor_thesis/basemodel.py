@@ -290,7 +290,7 @@ def load_finetuned_timm_wrapper(
     return model_wrapper, transforms
 
 def get_model_wrapper(cfg=None, **overrides):
-    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
+    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
     if cfg is None:
         with open(model_config_path, "r") as f:
             cfg = yaml.safe_load(f)
@@ -301,8 +301,8 @@ def get_model_wrapper(cfg=None, **overrides):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_dtype = getattr(torch, cfg["model_dtype"])
 
-    if device.type == "cuda" and torch.cuda.is_bf16_supported():
-        model_dtype = torch.bfloat16
+    if device.type == "cuda" and not torch.cuda.is_bf16_supported():
+        model_dtype = torch.bfloat32
 
     model_wrapper, transforms = load_finetuned_timm_wrapper(
         checkpoint_path=cfg["checkpoint_path"],

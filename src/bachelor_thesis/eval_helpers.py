@@ -213,6 +213,13 @@ def srg(
 
     return delta_a_f
 
+def normalize_curve(curve: torch.Tensor) -> torch.Tensor:
+    """Normalize the curve by its starting value to ensure comparability."""
+    start_val = curve[0].item()
+    if abs(start_val) < 1e-6:  # avoid div-by-zero
+        return curve
+    return curve / start_val
+
 def srg_knn(
     relevance_map: torch.Tensor,
     input_tensor: torch.Tensor,
@@ -244,7 +251,15 @@ def srg_knn(
         model, input_tensor, lerf_order, 'deletion', patch_size,
         db_embeddings, db_labels, ground_truth_label, k_neighbors
     )
+
+    morf_curve_norm = normalize_curve(morf_curve)
+    lerf_curve_norm = normalize_curve(lerf_curve)
+
+    auc_morf_norm = calculate_auc(morf_curve_norm)
+    auc_lerf_norm = calculate_auc(lerf_curve_norm)
     
+    delta_a_f_norm = auc_lerf_norm - auc_morf_norm
+
     auc_morf = calculate_auc(morf_curve)
     auc_lerf = calculate_auc(lerf_curve)
     
@@ -255,17 +270,48 @@ def srg_knn(
     print(f"Area under MoRF curve: {auc_morf:.4f}")
     print(f"Final Score (A_LeRF - A_MoRF): {delta_a_f:.4f}")
 
-    plt.plot(morf_curve.cpu().numpy(), label='MoRF Deletion')
-    plt.plot(lerf_curve.cpu().numpy(), label='LeRF Deletion')
-    plt.legend()
-    plt.xlabel('Number of Patches Perturbed')
-    plt.ylabel('Model Score')
-    plt.title('Deletion Metric Curves')
+    print(f"Normalized Final Score (A_LeRF - A_MoRF): {delta_a_f_norm:.4f}")
+
     if plot_curves:
-        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/deletion_metric_curves.png")
+        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+        axs[0, 0].plot(morf_curve.cpu().numpy(), label='MoRF Deletion', color='red')
+        axs[0, 0].set_title(f'MoRF Curve (Raw) – AUC={auc_morf:.3f}')
+        axs[0, 0].set_xlabel('Patches Perturbed')
+        axs[0, 0].set_ylabel('Model Score')
+        axs[0, 0].legend()
+
+        axs[0, 1].plot(lerf_curve.cpu().numpy(), label='LeRF Deletion', color='blue')
+        axs[0, 1].set_title(f'LeRF Curve (Raw) – AUC={auc_lerf:.3f}')
+        axs[0, 1].set_xlabel('Patches Perturbed')
+        axs[0, 1].set_ylabel('Model Score')
+        axs[0, 1].legend()
+
+        axs[1, 0].plot(morf_curve_norm.cpu().numpy(), label='MoRF Deletion (Norm.)', color='orange')
+        axs[1, 0].set_title(f'MoRF Curve (Noramlized) – AUC={auc_morf_norm:.3f}')
+        axs[1, 0].set_xlabel('Patches Perturbed')
+        axs[1, 0].set_ylabel('Normalized Score')
+        axs[1, 0].legend()
+
+        axs[1, 1].plot(lerf_curve_norm.cpu().numpy(), label='LeRF Deletion (Norm.)', color='green')
+        axs[1, 1].set_title(f'LeRF Curve (Noramlized) – AUC={auc_lerf_norm:.3f}')
+        axs[1, 1].set_xlabel('Patches Perturbed')
+        axs[1, 1].set_ylabel('Normalized Score')
+        axs[1, 1].legend()
+
+        plt.tight_layout()
+        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/deletion_metric_curves_split.png")
 
 
-    return delta_a_f
+    return {
+        "faithfulness_score": delta_a_f,
+        "normalized_faithfulness_score": delta_a_f_norm,
+        "morf_curve": morf_curve.cpu().numpy(),
+        "lerf_curve": lerf_curve.cpu().numpy(),
+        "morf_curve_norm": morf_curve_norm.cpu().numpy(),
+        "lerf_curve_norm": lerf_curve_norm.cpu().numpy(),
+        "auc_morf": auc_morf,
+        "auc_lerf": auc_lerf,
+    }
 
 
 

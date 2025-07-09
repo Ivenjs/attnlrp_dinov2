@@ -1,0 +1,3 @@
+k: 5
+distance_metric: "cosine"
+db_embeddings_dir: "/workspaces/bachelor_thesis_code/knn_db"

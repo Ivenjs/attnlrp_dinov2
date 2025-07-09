@@ -64,7 +64,7 @@ def get_knn_db(knn_db_dir: str, image_dir: str, model_wrapper: TimmWrapper, tran
     db_embeddings = []
     db_labels = []
 
-    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
+    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
     with open(model_config_path, "r") as f:
         cfg = yaml.safe_load(f)
     
@@ -202,7 +202,7 @@ def compute_knn_proxy_score(
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model_config.yaml"
+    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
     with open(model_config_path, "r") as f:
         cfg = yaml.safe_load(f)
     
