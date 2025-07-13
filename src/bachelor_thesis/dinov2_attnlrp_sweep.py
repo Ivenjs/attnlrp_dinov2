@@ -612,7 +612,7 @@ def log_sweep_to_wandb(
     wandb.summary["best_norm_min_score"] = best_params_normalized['min_score']
     wandb.summary["best_norm_std_score"] = best_params_normalized['std_score']
     wandb.summary["best_norm_stability"] = best_params_normalized['stability']
-    wandb.summary["best_norm_robustness_ratio"] = best_params_normalized['
+    wandb.summary["best_norm_robustness_ratio"] = best_params_normalized['robustness_ratio']
     
     # --- 2. Create the Data Tables ---
 
