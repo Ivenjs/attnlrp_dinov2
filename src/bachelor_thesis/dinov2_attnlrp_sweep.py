@@ -597,16 +597,48 @@ def log_sweep_to_wandb(
     print("\n--- Logging results to Weights & Biases ---")
 
     # --- 1. Log Summary Metrics ---
-    # This part remains the same.
     wandb.summary["best_raw_conv_gamma"] = best_params_raw['conv_gamma']
-    # ... etc for other best params ...
+    wandb.summary["best_raw_lin_gamma"] = best_params_raw['lin_gamma']
+    wandb.summary["best_raw_robustness_score"] = best_params_raw['robustness_score']
+    wandb.summary["best_raw_mean_score"] = best_params_raw['mean_score']
+    wandb.summary["best_raw_min_score"] = best_params_raw['min_score']
+    wandb.summary["best_raw_std_score"] = best_params_raw['std_score']
+    wandb.summary["best_raw_stability"] = best_params_raw['stability']
+    wandb.summary["best_raw_robustness_ratio"] = best_params_raw['robustness_ratio']
+    wandb.summary["best_norm_conv_gamma"] = best_params_normalized['conv_gamma']
+    wandb.summary["best_norm_lin_gamma"] = best_params_normalized['lin_gamma']
     wandb.summary["best_norm_robustness_score"] = best_params_normalized['robustness_score']
-    
+    wandb.summary["best_norm_mean_score"] = best_params_normalized['mean_score']
+    wandb.summary["best_norm_min_score"] = best_params_normalized['min_score']
+    wandb.summary["best_norm_std_score"] = best_params_normalized['std_score']
+    wandb.summary["best_norm_stability"] = best_params_normalized['stability']
+    wandb.summary["best_norm_robustness_ratio"] = best_params_normalized['
     
     # --- 2. Create the Data Tables ---
-    # This is also the same as before.
-    # in case violations are too much: filtered_df = df.loc[:, ~df.columns.str.startswith("violations.")]
-    detailed_results_table = wandb.Table(dataframe=pd.DataFrame(results))
+
+    # === FIX IS HERE ===
+    # First, create a raw DataFrame from your list of dictionaries
+    raw_df = pd.DataFrame(results)
+
+    # Now, handle the nested 'violations' column
+    # This will create a new DataFrame from the 'violations' dictionaries
+    violations_flat_df = pd.json_normalize(raw_df['violations'])
+    # It's good practice to add a prefix to the new columns
+    violations_flat_df = violations_flat_df.add_prefix('violations.')
+
+    # Drop the original nested column and join the new flattened columns
+    # axis=1 means we are concatenating columns side-by-side
+    detailed_results_df = pd.concat(
+        [raw_df.drop(columns=['violations']), violations_flat_df], 
+        axis=1
+    )
+    # detailed_results_df now has a flat structure, with NaN for any missing values,
+    # which wandb.Table can handle perfectly.
+    
+    # Now create the wandb.Table from the cleaned DataFrame
+    detailed_results_table = wandb.Table(dataframe=detailed_results_df)
+    # ====================
+
     analysis_table = wandb.Table(dataframe=analysis_df)
     
     curves_df = pd.DataFrame(
@@ -616,35 +648,6 @@ def log_sweep_to_wandb(
     faithfulness_curves_table = wandb.Table(dataframe=curves_df)
 
     # --- 3. Log the Pre-configured Line Plot for Faithfulness Curves ---
-    # THIS IS THE KEY CHANGE.
-    # We create a plot object from our table.
-    # We will create one plot per image to avoid clutter.
-    """num_images = curves_df['input_idx'].nunique()
-    for i in range(num_images):
-        # Filter the table for the current image
-        image_label = curves_df[curves_df['input_idx'] == i]['image_label'].iloc[0]
-        image_table = wandb.Table(
-            dataframe=curves_df[curves_df['input_idx'] == i]
-        )
-
-        # Create a unique title for the plot for this image
-        plot_title = f"Faithfulness Curves for Image {i} ({image_label})"
-        
-        # Log the plot object
-        # The key here will be the section name in the W&B dashboard.
-        # The value is the plot object itself.
-        wandb.log({
-            f"plots/faithfulness_curves_img_{i}": wandb.plot.line_series(
-                xs=curves_df['step'].unique(), # The x-values (perturbation steps)
-                ys=curves_df.pivot_table(index='step', columns=['conv_gamma', 'lin_gamma', 'curve_type'], values='score').values, # The y-values for each series
-                keys=curves_df.pivot_table(index='step', columns=['conv_gamma', 'lin_gamma', 'curve_type'], values='score').columns.map(str), # The legend labels for each line
-                title=plot_title,
-                xname="Perturbation Step"
-            )
-        })"""
-
-    # The line_series plot is powerful but can be complex if you have many series.
-    # An alternative is logging one plot per gamma combination. Let's do that as well, as it's often cleaner.
     for (idx, label, conv_g, lin_g), group in curves_df.groupby(['input_idx', 'image_label', 'conv_gamma', 'lin_gamma']):
         plot_key = f"curves_per_run/img_{idx}_{label}_conv_{conv_g}_lin_{lin_g}"
         table_for_plot = wandb.Table(dataframe=group)
@@ -658,7 +661,6 @@ def log_sweep_to_wandb(
             )
         })
 
-
     # --- 4. Log the Heatmaps and Other Tables ---
     analysis_plot_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
     if os.path.exists(analysis_plot_path):
@@ -671,7 +673,6 @@ def log_sweep_to_wandb(
     })
 
     # --- 5. Log Artifacts ---
-    # This part remains the same.
     print("Creating and logging artifact...")
     artifact = wandb.Artifact('robustness-sweep-results', type='analysis-results')
     artifact.add(detailed_results_table, "detailed_results")
