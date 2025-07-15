@@ -179,14 +179,21 @@ def evaluate_gamma_sweep(
                 "auc_lerf": srg_results["auc_lerf"],
             })
 
-            for curve_type, curve in [("morf", srg_results["morf_curve"]), ("lerf", srg_results["lerf_curve"])]:
+            all_curve_sets = [
+                ("morf_raw", srg_results["morf_curve"]),
+                ("lerf_raw", srg_results["lerf_curve"]),
+                ("morf_norm", srg_results["morf_curve_norm"]),
+                ("lerf_norm", srg_results["lerf_curve_norm"])
+            ]
+
+            for curve_label, curve in all_curve_sets:
                 for step, score in enumerate(curve):
                     all_curves_data.append([
                         input_idx,
                         ground_truth_label,
                         conv_gamma,
                         lin_gamma,
-                        curve_type,
+                        curve_label,  # This now contains "morf_raw", "lerf_norm", etc.
                         step, 
                         score 
                     ])
@@ -643,21 +650,38 @@ def log_sweep_to_wandb(
     
     curves_df = pd.DataFrame(
         all_curves_data,
-        columns=["input_idx", "image_label", "conv_gamma", "lin_gamma", "curve_type", "step", "score"]
+        columns=["input_idx", "image_label", "conv_gamma", "lin_gamma", "curve_label", "step", "score"]
     )
     faithfulness_curves_table = wandb.Table(dataframe=curves_df)
 
-    # --- 3. Log the Pre-configured Line Plot for Faithfulness Curves ---
-    for (idx, label, conv_g, lin_g), group in curves_df.groupby(['input_idx', 'image_label', 'conv_gamma', 'lin_gamma']):
-        plot_key = f"curves_per_run/img_{idx}_{label}_conv_{conv_g}_lin_{lin_g}"
+    raw_curves_df = curves_df[curves_df['curve_label'].str.contains('_raw')]
+    norm_curves_df = curves_df[curves_df['curve_label'].str.contains('_norm')]
+    
+    # --- LOG RAW CURVES ---
+    for (idx, label, conv_g, lin_g), group in raw_curves_df.groupby(['input_idx', 'image_label', 'conv_gamma', 'lin_gamma']):
+        plot_key = f"raw_curves_per_run/img_{idx}_{label}_conv_{conv_g}_lin_{lin_g}"
         table_for_plot = wandb.Table(dataframe=group)
         wandb.log({
             plot_key: wandb.plot.line(
                 table_for_plot,
                 x="step",
                 y="score",
-                stroke="curve_type", # This creates separate lines for 'morf' and 'lerf'
-                title=f"Curves for {label} (γ_conv={conv_g}, γ_lin={lin_g})"
+                stroke="curve_label", # This creates separate lines for 'morf_raw' and 'lerf_raw'
+                title=f"Raw Curves for {label} (γ_conv={conv_g}, γ_lin={lin_g})"
+            )
+        })
+    
+    # --- LOG NORMALIZED CURVES ---
+    for (idx, label, conv_g, lin_g), group in norm_curves_df.groupby(['input_idx', 'image_label', 'conv_gamma', 'lin_gamma']):
+        plot_key = f"norm_curves_per_run/img_{idx}_{label}_conv_{conv_g}_lin_{lin_g}"
+        table_for_plot = wandb.Table(dataframe=group)
+        wandb.log({
+            plot_key: wandb.plot.line(
+                table_for_plot,
+                x="step",
+                y="score",
+                stroke="curve_label", # This creates separate lines for 'morf_norm' and 'lerf_norm'
+                title=f"Normalized Curves for {label} (γ_conv={conv_g}, γ_lin={lin_g})"
             )
         })
 

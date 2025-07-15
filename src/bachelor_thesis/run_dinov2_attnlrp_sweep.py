@@ -112,7 +112,7 @@ if __name__ == "__main__":
         db_labels=db_labels,
         patch_size=cfg["model"]["patch_size"],
         k_neighbors= cfg["knn"]["k"],
-        plot_curves=False  # Set to True if you want individual curves
+        plot_curves=True  # Set to True if you want individual curves
     )
 
     best_raw, best_norm, analysis_df = find_robust_hyperparameters(
