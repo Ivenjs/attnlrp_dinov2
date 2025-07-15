@@ -21,22 +21,28 @@ def read_db_params_from_env(schema: str):
     }
 
 
-def get_db_connection(schema: str = "default"):
+@contextmanager
+def get_db_connection(schema: str = None):
     """
-    Parameters:
-        schema (str): The schema to connect to. Defaults to the environment variable SCHEMA, or "public" if not set.
-                      Valid schemas are "public" and "berlin"
+    Provides a database connection as a context manager.
+    Ensures the connection is always closed.
+
+    Args:
+        schema (str, optional): The schema to use. Defaults to env var 'SCHEMA' or 'public'.
+
+    Yields:
+        A database cursor object.
     """
-
-    # Database credentials
-    DB_PARAMS = read_db_params_from_env(schema)
-
-    # Connect to the database
+    conn = None
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
+        db_params = _read_db_params_from_env(schema)
+        conn = psycopg2.connect(**db_params)
+        yield conn.cursor()
     except Exception as e:
-        print(f"Error Connectiong to DB: {e}")
-        exit()
-
-    # Create a cursor to execute queries
-    return conn.cursor()
+        logging.error(f"Database connection or operation failed: {e}")
+        # Re-raise the exception so the calling code knows something went wrong
+        raise
+    finally:
+        if conn:
+            # This block will always run, ensuring the connection is closed
+            # even if errors occurred

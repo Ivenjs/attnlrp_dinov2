@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 from db_connect import get_db_connection
+from psycopg2.extras import execute_values 
 from decord import VideoReader, cpu
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -160,50 +161,72 @@ def gather_file_info(image_dir):
 
 
 def fetch_bounding_boxes(file_df):
-    """Fetches bounding box data from the database in batches for the given file info."""
-    print(f"Fetching bounding box data for {len(file_df)} detections from the database...")
+    """Fetches bounding box data from the database in batches using execute_values."""
+    if file_df.empty:
+        return pd.DataFrame()
+
+    logging.info(f"Fetching bounding box data for {len(file_df)} detections from the database...")
     all_bbox_data = []
+    
     params_to_query = list(zip(file_df["frame_nr"], file_df["tracking_id"]))
 
-    with get_db_connection(schema=DB_SCHEMA) as cursor:
-        for i in tqdm(range(0, len(params_to_query), DB_QUERY_BATCH_SIZE), desc="Querying DB"):
-            batch_params = params_to_query[i : i + DB_QUERY_BATCH_SIZE]
-            if not batch_params:
-                continue
-
-            tuple_placeholders = ", ".join(["(%s, %s)"] * len(batch_params))
-            flat_params = [item for sublist in batch_params for item in sublist]
-
+    try:
+        with get_db_connection(schema=DB_SCHEMA) as cursor:
             query = f"""
                 SELECT 
-                    tff.video_id, v.absolute_path,
-                    tff.frame_nr, tff.tracking_id,
-                    tff.bbox_x_center_n, tff.bbox_y_center_n,
-                    tff.bbox_width_n, tff.bbox_height_n
-                FROM tracking_frame_feature tff
-                JOIN video v ON tff.video_id = v.video_id
-                WHERE (tff.frame_nr, tff.tracking_id) IN ({tuple_placeholders})
-                AND tff.feature_type = %s
+                    v.frame_nr, 
+                    v.tracking_id,
+                    tff.video_id,
+                    t.absolute_path,
+                    tff.bbox_x_center_n,
+                    tff.bbox_y_center_n,
+                    tff.bbox_width_n,
+                    tff.bbox_height_n
+                FROM tracking_frame_feature AS tff
+                JOIN video AS t ON tff.video_id = t.video_id
+                JOIN (VALUES %s) AS v(frame_nr, tracking_id) 
+                    ON tff.frame_nr = v.frame_nr AND tff.tracking_id = v.tracking_id
+                WHERE tff.feature_type = %s
             """
-
-            cursor.execute(query, flat_params + [FEATURE_TYPE])
-
+            
+            # Use execute_values. It handles batching internally if needed (via page_size),
+            # so we don't need the outer for-loop for DB_QUERY_BATCH_SIZE.
+            # It's more efficient to let the driver handle this.
+            execute_values(
+                cursor,
+                query,
+                params_to_query,
+                template=None,
+                page_size=DB_QUERY_BATCH_SIZE, 
+                fetch=True 
+            )
+            
             results = cursor.fetchall()
-            for row in results:
-                all_bbox_data.append(
-                    dict(zip(["video_id", "video_path", "frame_nr", "tracking_id", "x", "y", "w", "h"], row))
-                )
 
-    bbox_df = pd.DataFrame(all_bbox_data)
-    # Merge back with original data to get the 'split' column
-    merged_df = pd.merge(file_df, bbox_df, on=["frame_nr", "tracking_id"])
+            columns = [
+                "frame_nr", "tracking_id", "video_id", "video_path", 
+                "x", "y", "w", "h"
+            ]
+            
+            bbox_df = pd.DataFrame(results, columns=columns)
+            
+            if bbox_df.empty:
+                logging.warning("No matching bounding boxes found in the database.")
+                return pd.DataFrame()
 
-    # Fix video paths
-    merged_df["video_path"] = merged_df["video_path"].str.replace(
-        "gorillatracker/video_data", "vast-gorilla", regex=False
-    )
 
-    return merged_df
+            merged_df = pd.merge(file_df, bbox_df, on=["frame_nr", "tracking_id"])
+
+            # Fix video paths
+            merged_df["video_path"] = merged_df["video_path"].str.replace(
+                "gorillatracker/video_data", "vast-gorilla", regex=False
+            )
+
+            return merged_df
+
+    except Exception as e:
+        logging.error(f"Failed to fetch bounding boxes from database: {e}")
+        return pd.DataFrame()
 
 
 def extract_frames_batch(video_path, frame_numbers):
@@ -367,9 +390,8 @@ def segment_images(path_to_images=None):
     print(f"Processed {len(data_to_process_df)} detections.")
     print(f"Results saved to: {OUTPUT_PATH}")
 
-    # --- MODIFICATION: Return the accumulated lists ---
     return all_full_res_masks, all_original_images, all_resized_masks
 
 
 if __name__ == "__main__":
-    segment_images()
+    _,_,_ = segment_images()
