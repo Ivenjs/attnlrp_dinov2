@@ -1,9 +1,12 @@
 import os
-
+import logging
 import psycopg2
+from contextlib import contextmanager
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def read_db_params_from_env(schema: str):
+def _read_db_params_from_env(schema: str):
     uri = os.getenv("POSTGRESQL_URI")  # should be of format <user>:<password>@<ip>:<port>/<database>
     if schema == "default":
         schema = os.getenv("SCHEMA") or "public"
@@ -46,3 +49,4 @@ def get_db_connection(schema: str = None):
         if conn:
             # This block will always run, ensuring the connection is closed
             # even if errors occurred
+            conn.close()

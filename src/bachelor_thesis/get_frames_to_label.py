@@ -9,6 +9,7 @@ import cv2
 import yaml
 from decord import VideoReader, cpu
 from psycopg2.extras import execute_values
+from tqdm import tqdm
 
 # Your corrected db_connect file
 from db_connect import get_db_connection
@@ -109,7 +110,7 @@ def _fetch_video_paths_in_batch(cursor, all_metadata: list[ImageMetadata]) -> di
 def _extract_and_save_whole_frames(videos_to_process: dict[str, list[tuple[int, str]]], whole_images_dir: Path):
     """Iterates through videos, extracts frames in batches, and saves them."""
     logging.info(f"Processing {len(videos_to_process)} unique videos...")
-    for video_path, frame_requests in videos_to_process.items():
+    for video_path, frame_requests in tqdm(videos_to_process.items(), desc="Extracting frames"):
         frame_numbers = [req[0] for req in frame_requests]
         output_names = {req[0]: req[1] for req in frame_requests}
         
@@ -133,6 +134,7 @@ def main():
         cfg = yaml.safe_load(f)
     
     dataset_dir = Path(cfg['dataset_dir'])
+    dataset_dir = Path("/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval")
     save_dir = Path("/workspaces/vast-gorilla/gorillawatch/iven_thesis/frames_to_label")
     num_images_per_class = 1
 
@@ -145,7 +147,7 @@ def main():
     class_images = get_cropped_images_for_each_class(dataset_dir, num_images_per_class)
     
     all_metadata = []
-    for images in class_images.values():
+    for images in tqdm(class_images.values(), desc="Processing cropped images"):
         for img_path in images:
             shutil.copy(img_path, cropped_images_dir / img_path.name)
             metadata = _parse_image_info(img_path)
