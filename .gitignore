@@ -14,6 +14,8 @@ src/gorillawatch/data/runs/
 seg_test_in/*
 seg_test_out/*
 
+src/bachelor_thesis/heatmaps/*
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

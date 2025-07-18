@@ -27,9 +27,10 @@ def run_gamma_sweep(
     input_tensors: torch.Tensor,  # Now a batched tensor [batch_size, C, H, W]
     mode: str = "simple",
     db_embeddings: torch.Tensor = None,  
-    db_labels: List[str] = None,  
-    ground_truth_labels: List[str] = None,
+    db_filenames: List[str] = None,  
+    input_filenames: List[str] = None,
     k_neighbors: int = 5,
+    distance_metrics: List[str] = ["euclidean"],
     conv_gamma_values: List[float] = CONV_GAMMAS,
     lin_gamma_values: List[float] = LIN_GAMMAS,
     verbose: bool = False
@@ -47,24 +48,24 @@ def run_gamma_sweep(
 
     with DINOPatcher(model_wrapper), LRPConservationChecker(model_wrapper) as checker:
         
-        param_combinations = list(itertools.product(conv_gamma_values, lin_gamma_values))
+        param_combinations = list(itertools.product(conv_gamma_values, lin_gamma_values, 
+                                                     distance_metrics))
         
         # Loop over each input in the batch
-        for input_idx in range(input_tensors.shape[0]):  # Changed this line
+        for input_idx in range(input_tensors.shape[0]):  
             print(f"\n=== Processing Input {input_idx + 1}/{input_tensors.shape[0]} ===")
             
             # Extract single input from batch
             input_tensor = input_tensors[input_idx]  # Shape: [C, H, W]
-            
-            # Get the corresponding ground truth label
-            ground_truth_label = ground_truth_labels[input_idx] if ground_truth_labels else None
-            
+            # Get the corresponding input filename
+            input_filename = input_filenames[input_idx] if input_filenames else None
+
             # Initialize storage for this input
-            all_relevances[input_idx] = {}
-            all_violations[input_idx] = {}
+            all_relevances[input_filename] = {}
+            all_violations[input_filename] = {}
             
             # Loop over gamma combinations for this input
-            for i, (conv_gamma, lin_gamma) in enumerate(param_combinations):
+            for i, (conv_gamma, lin_gamma, distance_metric) in enumerate(param_combinations):
                 print(f"--- Running Pass {i+1}/{len(param_combinations)} for Input {input_idx + 1} ---")
                 
                 # Call the inner-loop function
@@ -79,8 +80,8 @@ def run_gamma_sweep(
                     )
                 elif mode == "knn":
                     assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
-                    assert db_labels is not None, "db_labels must be provided for 'knn' mode."
-                    assert ground_truth_label is not None, "ground_truth_label must be provided for 'knn' mode."
+                    assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
+                    assert input_filenames is not None, "input_filenames must be provided for 'knn' mode."
 
                     relevance, violations = compute_knn_attnlrp_pass(
                         conv_gamma=conv_gamma,
@@ -90,15 +91,16 @@ def run_gamma_sweep(
                         checker=checker,
                         verbose=verbose,
                         db_embeddings=db_embeddings,  
-                        db_labels=db_labels,  
-                        ground_truth_label=ground_truth_label,  
+                        db_filenames=db_filenames,  
+                        input_filename=input_filename,  
+                        distance_metric=distance_metric,
                         k_neighbors=k_neighbors  
                     )
                 
                 # Store the results for this input and gamma combination
-                key = (conv_gamma, lin_gamma)
-                all_relevances[input_idx][key] = relevance.detach().cpu()
-                all_violations[input_idx][key] = violations
+                key = (conv_gamma, lin_gamma, distance_metric)
+                all_relevances[input_filename][key] = relevance.detach().cpu()
+                all_violations[input_filename][key] = violations
 
     print("\n--- Gamma Sweep Complete ---")
     print("Model has been restored to its original state.")
@@ -106,13 +108,13 @@ def run_gamma_sweep(
     return all_relevances, all_violations
 
 def evaluate_gamma_sweep(
-    relevances_by_gamma: Dict[int, Dict[Tuple[float, float], torch.Tensor]], 
-    violations_by_gamma: Dict[int, Dict[Tuple[float, float], Any]],
+    relevances_by_parameters: Dict[str, Dict[Tuple[float, float, str], torch.Tensor]], 
+    violations_by_parameters: Dict[str, Dict[Tuple[float, float, str], Any]],
     input_tensors: torch.Tensor,
-    ground_truth_labels: List[str],
+    input_filenames: List[str],
     model_wrapper,
     db_embeddings: torch.Tensor,
-    db_labels: List[str],
+    db_filenames: List[str],
     patch_size: int,
     k_neighbors: int = 5,
     plot_curves: bool = False
@@ -136,22 +138,22 @@ def evaluate_gamma_sweep(
     results = []
     all_curves_data = []
 
-    # Get all gamma combinations from the first image
-    gamma_combinations = list(relevances_by_gamma[0].keys())
+    # Get all parameter combinations from the first image
+    parameters_combinations = list(relevances_by_parameters[input_filenames[0]].keys())
     
     for input_idx in range(input_tensors.shape[0]):
         print(f"\n=== Evaluating Image {input_idx + 1}/{input_tensors.shape[0]} ===")
         
         input_tensor = input_tensors[input_idx].unsqueeze(0)  # Add batch dim
-        ground_truth_label = ground_truth_labels[input_idx]
+        input_filename = input_filenames[input_idx]
         
-        for gammas in gamma_combinations:
-            conv_gamma, lin_gamma = gammas
-            
-            # Get relevance map for this image and gamma combination
-            relevance_map = relevances_by_gamma[input_idx][gammas]
-            violations = violations_by_gamma[input_idx][gammas]
-            
+        for parameters in parameters_combinations:
+            conv_gamma, lin_gamma, distance_metric = parameters
+
+            # Get relevance map for this image and parameter combination
+            relevance_map = relevances_by_parameters[input_filename][parameters]
+            violations = violations_by_parameters[input_filename][parameters]
+
             print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}")
             
             # Compute faithfulness score
@@ -161,17 +163,18 @@ def evaluate_gamma_sweep(
                 model=model_wrapper,
                 patch_size=patch_size,
                 db_embeddings=db_embeddings,
-                db_labels=db_labels,
-                ground_truth_label=ground_truth_label,
+                db_filenames=db_filenames,
+                input_filename=input_filename,
+                distance_metric=distance_metric,
                 k_neighbors=k_neighbors,
                 plot_curves=plot_curves
             )
             
             results.append({
-                "input_idx": input_idx,
-                "image_label": ground_truth_label,
+                "image": input_filename,
                 "conv_gamma": conv_gamma,
                 "lin_gamma": lin_gamma,
+                "distance_metric": distance_metric,
                 "faithfulness_score": srg_results["faithfulness_score"],
                 "normalized_faithfulness_score": srg_results["normalized_faithfulness_score"],
                 "violations": violations,
@@ -189,10 +192,10 @@ def evaluate_gamma_sweep(
             for curve_label, curve in all_curve_sets:
                 for step, score in enumerate(curve):
                     all_curves_data.append([
-                        input_idx,
-                        ground_truth_label,
+                        input_filename,
                         conv_gamma,
                         lin_gamma,
+                        distance_metric,
                         curve_label,  # This now contains "morf_raw", "lerf_norm", etc.
                         step, 
                         score 
@@ -225,11 +228,11 @@ def find_robust_hyperparameters(
     df = pd.DataFrame(results)
     
     # Group by gamma parameters
-    gamma_groups = df.groupby(['conv_gamma', 'lin_gamma'])
+    parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric'])
     
     analysis_data = []
-    
-    for (conv_gamma, lin_gamma), group in gamma_groups:
+
+    for (conv_gamma, lin_gamma, distance_metric), group in parameter_groups:
         # Raw score analysis
         raw_scores = group['faithfulness_score'].values
         raw_mean = np.mean(raw_scores)
@@ -272,6 +275,7 @@ def find_robust_hyperparameters(
         analysis_data.append({
             'conv_gamma': conv_gamma,
             'lin_gamma': lin_gamma,
+            'distance_metric': distance_metric,
             
             # Raw score metrics
             'raw_mean': raw_mean,
@@ -303,6 +307,7 @@ def find_robust_hyperparameters(
     best_params_raw = {
         'conv_gamma': analysis_df.loc[best_raw_idx, 'conv_gamma'],
         'lin_gamma': analysis_df.loc[best_raw_idx, 'lin_gamma'],
+        'distance_metric': analysis_df.loc[best_raw_idx, 'distance_metric'],
         'robustness_score': analysis_df.loc[best_raw_idx, 'raw_robustness_score'],
         'mean_score': analysis_df.loc[best_raw_idx, 'raw_mean'],
         'min_score': analysis_df.loc[best_raw_idx, 'raw_min'],
@@ -316,6 +321,7 @@ def find_robust_hyperparameters(
     best_params_normalized = {
         'conv_gamma': analysis_df.loc[best_norm_idx, 'conv_gamma'],
         'lin_gamma': analysis_df.loc[best_norm_idx, 'lin_gamma'],
+        'distance_metric': analysis_df.loc[best_norm_idx, 'distance_metric'],
         'robustness_score': analysis_df.loc[best_norm_idx, 'norm_robustness_score'],
         'mean_score': analysis_df.loc[best_norm_idx, 'norm_mean'],
         'min_score': analysis_df.loc[best_norm_idx, 'norm_min'],
@@ -329,47 +335,83 @@ def find_robust_hyperparameters(
 
 def visualize_robustness_analysis(
     analysis_df: pd.DataFrame,
-    results: List[Dict],
     save_path: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
 ):
     """
-    Create visualizations for the robustness analysis showing both raw and normalized scores.
+    Create visualizations for the robustness analysis, generating a separate figure
+    for each distance metric found in the 'distance_metric' column.
+
+    Args:
+        analysis_df (pd.DataFrame): DataFrame containing the analysis results. 
+                                    Must include 'conv_gamma', 'lin_gamma', 'distance_metric',
+                                    and the score columns ('raw_mean', 'norm_mean', etc.).
+        save_path (str): The base path for saving the plots. The distance metric name 
+                         will be appended to this path.
     """
-    fig, axes = plt.subplots(3, 2, figsize=(15, 18))
+    # 1. Get the unique distance metrics from the DataFrame
+    distance_metrics = analysis_df['distance_metric'].unique()
     
-    # 1. Raw mean scores
-    pivot_raw_mean = analysis_df.pivot(index='conv_gamma', columns='lin_gamma', values='raw_mean')
-    sns.heatmap(pivot_raw_mean, annot=True, fmt='.3f', cmap='viridis', ax=axes[0,0])
-    axes[0,0].set_title('Raw Mean Faithfulness Scores')
-    
-    # 2. Normalized mean scores
-    pivot_norm_mean = analysis_df.pivot(index='conv_gamma', columns='lin_gamma', values='norm_mean')
-    sns.heatmap(pivot_norm_mean, annot=True, fmt='.3f', cmap='viridis', ax=axes[0,1])
-    axes[0,1].set_title('Normalized Mean Faithfulness Scores')
-    
-    # 3. Raw robustness scores
-    pivot_raw_robust = analysis_df.pivot(index='conv_gamma', columns='lin_gamma', values='raw_robustness_score')
-    sns.heatmap(pivot_raw_robust, annot=True, fmt='.3f', cmap='viridis', ax=axes[1,0])
-    axes[1,0].set_title('Raw Robustness Scores')
-    
-    # 4. Normalized robustness scores
-    pivot_norm_robust = analysis_df.pivot(index='conv_gamma', columns='lin_gamma', values='norm_robustness_score')
-    sns.heatmap(pivot_norm_robust, annot=True, fmt='.3f', cmap='viridis', ax=axes[1,1])
-    axes[1,1].set_title('Normalized Robustness Scores')
-    
-    # 5. Raw minimum scores (worst-case robustness)
-    pivot_raw_min = analysis_df.pivot(index='conv_gamma', columns='lin_gamma', values='raw_min')
-    sns.heatmap(pivot_raw_min, annot=True, fmt='.3f', cmap='viridis', ax=axes[2,0])
-    axes[2,0].set_title('Raw Minimum Scores (Worst-Case)')
-    
-    # 6. Normalized minimum scores (worst-case robustness)
-    pivot_norm_min = analysis_df.pivot(index='conv_gamma', columns='lin_gamma', values='norm_min')
-    sns.heatmap(pivot_norm_min, annot=True, fmt='.3f', cmap='viridis', ax=axes[2,1])
-    axes[2,1].set_title('Normalized Minimum Scores (Worst-Case)')
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    # Get the base path and extension for saving files
+    path_root, path_ext = os.path.splitext(save_path)
+
+    # 2. Loop over each distance metric
+    for metric in distance_metrics:
+        print(f"--- Generating plots for distance metric: {metric} ---")
+        
+        # 3. Filter the DataFrame for the current metric
+        df_subset = analysis_df[analysis_df['distance_metric'] == metric].copy()
+
+        # Create a new figure for this metric's plots
+        fig, axes = plt.subplots(3, 2, figsize=(15, 18))
+        
+        # Add a clear, overarching title for the figure
+        fig.suptitle(f'Robustness Analysis (Distance Metric: {metric.title()})', fontsize=20, y=1.02)
+        
+        # --- Plotting logic (same as before, but uses df_subset) ---
+        
+        # 1. Raw mean scores
+        pivot_raw_mean = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_mean')
+        sns.heatmap(pivot_raw_mean, annot=True, fmt='.3f', cmap='viridis', ax=axes[0,0])
+        axes[0,0].set_title('Raw Mean Faithfulness Scores')
+        
+        # 2. Normalized mean scores
+        pivot_norm_mean = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='norm_mean')
+        sns.heatmap(pivot_norm_mean, annot=True, fmt='.3f', cmap='viridis', ax=axes[0,1])
+        axes[0,1].set_title('Normalized Mean Faithfulness Scores')
+        
+        # 3. Raw robustness scores
+        pivot_raw_robust = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_robustness_score')
+        sns.heatmap(pivot_raw_robust, annot=True, fmt='.3f', cmap='viridis', ax=axes[1,0])
+        axes[1,0].set_title('Raw Robustness Scores')
+        
+        # 4. Normalized robustness scores
+        pivot_norm_robust = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='norm_robustness_score')
+        sns.heatmap(pivot_norm_robust, annot=True, fmt='.3f', cmap='viridis', ax=axes[1,1])
+        axes[1,1].set_title('Normalized Robustness Scores')
+        
+        # 5. Raw minimum scores (worst-case robustness)
+        pivot_raw_min = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_min')
+        sns.heatmap(pivot_raw_min, annot=True, fmt='.3f', cmap='viridis', ax=axes[2,0])
+        axes[2,0].set_title('Raw Minimum Scores (Worst-Case)')
+        
+        # 6. Normalized minimum scores (worst-case robustness)
+        pivot_norm_min = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='norm_min')
+        sns.heatmap(pivot_norm_min, annot=True, fmt='.3f', cmap='viridis', ax=axes[2,1])
+        axes[2,1].set_title('Normalized Minimum Scores (Worst-Case)')
+        
+        # Adjust layout to prevent titles from overlapping
+        plt.tight_layout(rect=[0, 0, 1, 0.98]) # Adjust rect to make space for suptitle
+        
+        # 4. Create a unique save path for the current metric's plot
+        metric_save_path = f"{path_root}_{metric}{path_ext}"
+        
+        # Save and show the plot for the current metric
+        print(f"Saving plot to: {metric_save_path}")
+        plt.savefig(metric_save_path, dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # Close the current figure to free up memory before the next loop iteration
+        plt.close(fig)
 
 
 def print_robustness_summary(
@@ -389,6 +431,7 @@ def print_robustness_summary(
     print(f"Best Hyperparameters (Raw Score Robustness):")
     print(f"  Conv Gamma: {best_params_raw['conv_gamma']}")
     print(f"  Lin Gamma:  {best_params_raw['lin_gamma']}")
+    print(f"  Distance Metric: {best_params_raw['distance_metric']}")
     print(f"  Robustness Score: {best_params_raw['robustness_score']:.4f}")
     
     print(f"\nRaw Score Performance Metrics:")
@@ -402,6 +445,7 @@ def print_robustness_summary(
     print(f"Best Hyperparameters (Normalized Score Robustness):")
     print(f"  Conv Gamma: {best_params_normalized['conv_gamma']}")
     print(f"  Lin Gamma:  {best_params_normalized['lin_gamma']}")
+    print(f"  Distance Metric: {best_params_normalized['distance_metric']}")
     print(f"  Robustness Score: {best_params_normalized['robustness_score']:.4f}")
     
     print(f"\nNormalized Score Performance Metrics:")
@@ -413,20 +457,23 @@ def print_robustness_summary(
     
     # Compare if they suggest the same hyperparameters
     same_params = (best_params_raw['conv_gamma'] == best_params_normalized['conv_gamma'] and 
-                   best_params_raw['lin_gamma'] == best_params_normalized['lin_gamma'])
+                   best_params_raw['lin_gamma'] == best_params_normalized['lin_gamma'] and
+                     best_params_raw['distance_metric'] == best_params_normalized['distance_metric'])
     
     print(f"\n{'='*25} COMPARISON {'='*25}")
     print(f"Same optimal hyperparameters: {'Yes' if same_params else 'No'}")
     
     if not same_params:
-        print(f"Raw optimal:        γ_conv={best_params_raw['conv_gamma']}, γ_lin={best_params_raw['lin_gamma']}")
-        print(f"Normalized optimal: γ_conv={best_params_normalized['conv_gamma']}, γ_lin={best_params_normalized['lin_gamma']}")
+        print(f"Raw optimal: γ_conv={best_params_raw['conv_gamma']}, γ_lin={best_params_raw['lin_gamma']}, "
+              f"distance_metric={best_params_raw['distance_metric']}")
+        print(f"Normalized optimal: γ_conv={best_params_normalized['conv_gamma']}, γ_lin={best_params_normalized['lin_gamma']}, "
+              f"distance_metric={best_params_normalized['distance_metric']}")
     
     # Show top 3 combinations for each score type
     print(f"\nTop 3 Raw Score Combinations:")
     top_3_raw = analysis_df.nlargest(3, 'raw_robustness_score')
     for i, (_, row) in enumerate(top_3_raw.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}: "
+        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
               f"robust={row['raw_robustness_score']:.4f}, "
               f"mean={row['raw_mean']:.4f}, "
               f"min={row['raw_min']:.4f}")
@@ -434,7 +481,7 @@ def print_robustness_summary(
     print(f"\nTop 3 Normalized Score Combinations:")
     top_3_norm = analysis_df.nlargest(3, 'norm_robustness_score')
     for i, (_, row) in enumerate(top_3_norm.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}: "
+        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
               f"robust={row['norm_robustness_score']:.4f}, "
               f"mean={row['norm_mean']:.4f}, "
               f"min={row['norm_min']:.4f}")
@@ -443,14 +490,14 @@ def print_robustness_summary(
     print(f"\nMost Stable Raw Score Combinations:")
     stable_3_raw = analysis_df.nlargest(3, 'raw_stability')
     for i, (_, row) in enumerate(stable_3_raw.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}: "
+        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
               f"stability={row['raw_stability']:.4f}, "
               f"std={row['raw_std']:.4f}")
     
     print(f"\nMost Stable Normalized Score Combinations:")
     stable_3_norm = analysis_df.nlargest(3, 'norm_stability')
     for i, (_, row) in enumerate(stable_3_norm.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}: "
+        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
               f"stability={row['norm_stability']:.4f}, "
               f"std={row['norm_std']:.4f}")
     
@@ -528,59 +575,59 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
     overall_stats = {**raw_stats, **norm_stats, **correlation_stats}
     
     # Statistics by gamma combination for both score types
-    gamma_stats_raw = df.groupby(['conv_gamma', 'lin_gamma'])['faithfulness_score'].agg([
+    parameter_stats_raw = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric'])['faithfulness_score'].agg([
         'mean', 'median', 'std', 'min', 'max', 'count'
     ]).reset_index()
-    gamma_stats_raw.columns = [f'raw_{col}' if col not in ['conv_gamma', 'lin_gamma'] else col 
-                              for col in gamma_stats_raw.columns]
-    
-    gamma_stats_norm = df.groupby(['conv_gamma', 'lin_gamma'])['normalized_faithfulness_score'].agg([
+    parameter_stats_raw.columns = [f'raw_{col}' if col not in ['conv_gamma', 'lin_gamma', 'distance_metric'] else col
+                              for col in parameter_stats_raw.columns]
+
+    parameter_stats_norm = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric'])['normalized_faithfulness_score'].agg([
         'mean', 'median', 'std', 'min', 'max', 'count'
     ]).reset_index()
-    gamma_stats_norm.columns = [f'norm_{col}' if col not in ['conv_gamma', 'lin_gamma'] else col 
-                               for col in gamma_stats_norm.columns]
+    parameter_stats_norm.columns = [f'norm_{col}' if col not in ['conv_gamma', 'lin_gamma', 'distance_metric'] else col
+                               for col in parameter_stats_norm.columns]
     
     # Merge gamma statistics
-    gamma_stats = pd.merge(gamma_stats_raw, gamma_stats_norm, on=['conv_gamma', 'lin_gamma'])
-    
+    parameter_stats = pd.merge(parameter_stats_raw, parameter_stats_norm, on=['conv_gamma', 'lin_gamma', 'distance_metric'])
+
     # Add correlation by gamma combination
-    gamma_correlations = df.groupby(['conv_gamma', 'lin_gamma']).apply(
+    parameter_correlations = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric']).apply(
         lambda x: x['faithfulness_score'].corr(x['normalized_faithfulness_score'])
     ).reset_index(name='score_correlation')
-    
-    gamma_stats = pd.merge(gamma_stats, gamma_correlations, on=['conv_gamma', 'lin_gamma'])
-    
+
+    parameter_stats = pd.merge(parameter_stats, parameter_correlations, on=['conv_gamma', 'lin_gamma', 'distance_metric'])
+
     # Find best gamma combinations by different metrics
-    best_by_raw_mean = gamma_stats.loc[gamma_stats['raw_mean'].idxmax()]
-    best_by_norm_mean = gamma_stats.loc[gamma_stats['norm_mean'].idxmax()]
-    best_by_raw_min = gamma_stats.loc[gamma_stats['raw_min'].idxmax()]
-    best_by_norm_min = gamma_stats.loc[gamma_stats['norm_min'].idxmax()]
-    
-    valid_corrs = gamma_stats['score_correlation'].dropna()
+    best_by_raw_mean = parameter_stats.loc[parameter_stats['raw_mean'].idxmax()]
+    best_by_norm_mean = parameter_stats.loc[parameter_stats['norm_mean'].idxmax()]
+    best_by_raw_min = parameter_stats.loc[parameter_stats['raw_min'].idxmax()]
+    best_by_norm_min = parameter_stats.loc[parameter_stats['norm_min'].idxmax()]
+
+    valid_corrs = parameter_stats['score_correlation'].dropna()
     if not valid_corrs.empty:
-        best_by_correlation = gamma_stats.loc[valid_corrs.idxmax()]
+        best_by_correlation = parameter_stats.loc[valid_corrs.idxmax()]
     else:
         best_by_correlation = None  # oder irgendein Default
         print("No valid correlation scores found – every group had ≤1 sample.")
     
     # Statistics by image (aggregated across gamma combinations)
-    image_stats_raw = df.groupby(['input_idx', 'image_label'])['faithfulness_score'].agg([
+    image_stats_raw = df.groupby(['image'])['faithfulness_score'].agg([
         'mean', 'median', 'std', 'min', 'max', 'count'
     ]).reset_index()
-    image_stats_raw.columns = [f'raw_{col}' if col not in ['input_idx', 'image_label'] else col 
+    image_stats_raw.columns = [f'raw_{col}' if col != 'image' else col 
                               for col in image_stats_raw.columns]
     
-    image_stats_norm = df.groupby(['input_idx', 'image_label'])['normalized_faithfulness_score'].agg([
+    image_stats_norm = df.groupby(['image'])['normalized_faithfulness_score'].agg([
         'mean', 'median', 'std', 'min', 'max', 'count'
     ]).reset_index()
-    image_stats_norm.columns = [f'norm_{col}' if col not in ['input_idx', 'image_label'] else col 
+    image_stats_norm.columns = [f'norm_{col}' if col != 'image' else col 
                                for col in image_stats_norm.columns]
-    
-    image_stats = pd.merge(image_stats_raw, image_stats_norm, on=['input_idx', 'image_label'])
-    
+
+    image_stats = pd.merge(image_stats_raw, image_stats_norm, on=['image'])
+
     return {
         'overall': overall_stats,
-        'by_gamma': gamma_stats,
+        'by_parameter': parameter_stats,
         'by_image': image_stats,
         'best_by_raw_mean': best_by_raw_mean,
         'best_by_norm_mean': best_by_norm_mean,
@@ -595,17 +642,19 @@ def log_sweep_to_wandb(
     all_curves_data: List,
     best_params_raw: Dict,
     best_params_normalized: Dict,
-    aggregate_stats: Dict,
-    config: Dict
+    aggregate_stats: Dict
 ):
     """
     Logs all results from a gamma sweep to W&B, including pre-configured plots.
     """
+
+
     print("\n--- Logging results to Weights & Biases ---")
 
     # --- 1. Log Summary Metrics ---
     wandb.summary["best_raw_conv_gamma"] = best_params_raw['conv_gamma']
     wandb.summary["best_raw_lin_gamma"] = best_params_raw['lin_gamma']
+    wandb.summary["best_raw_distance_metric"] = best_params_raw['distance_metric']
     wandb.summary["best_raw_robustness_score"] = best_params_raw['robustness_score']
     wandb.summary["best_raw_mean_score"] = best_params_raw['mean_score']
     wandb.summary["best_raw_min_score"] = best_params_raw['min_score']
@@ -614,6 +663,7 @@ def log_sweep_to_wandb(
     wandb.summary["best_raw_robustness_ratio"] = best_params_raw['robustness_ratio']
     wandb.summary["best_norm_conv_gamma"] = best_params_normalized['conv_gamma']
     wandb.summary["best_norm_lin_gamma"] = best_params_normalized['lin_gamma']
+    wandb.summary["best_norm_distance_metric"] = best_params_normalized['distance_metric']
     wandb.summary["best_norm_robustness_score"] = best_params_normalized['robustness_score']
     wandb.summary["best_norm_mean_score"] = best_params_normalized['mean_score']
     wandb.summary["best_norm_min_score"] = best_params_normalized['min_score']
@@ -650,7 +700,7 @@ def log_sweep_to_wandb(
     
     curves_df = pd.DataFrame(
         all_curves_data,
-        columns=["input_idx", "image_label", "conv_gamma", "lin_gamma", "curve_label", "step", "score"]
+        columns=["image", "conv_gamma", "lin_gamma", "distance_metric", "curve_label", "step", "score"]
     )
     faithfulness_curves_table = wandb.Table(dataframe=curves_df)
 
@@ -658,32 +708,43 @@ def log_sweep_to_wandb(
     norm_curves_df = curves_df[curves_df['curve_label'].str.contains('_norm')]
     
     # --- LOG RAW CURVES ---
-    for (idx, label, conv_g, lin_g), group in raw_curves_df.groupby(['input_idx', 'image_label', 'conv_gamma', 'lin_gamma']):
-        plot_key = f"raw_curves_per_run/img_{idx}_{label}_conv_{conv_g}_lin_{lin_g}"
+    for i, ((image, conv_g, lin_g, dist_m), group) in enumerate(raw_curves_df.groupby(['image', 'conv_gamma', 'lin_gamma', 'distance_metric'])):
+        plot_key = f"raw_curves_per_run/plot_{i}"
+        
+        # 2. The title can remain long and descriptive
+        title = f"Img: {image}, γ_c={conv_g}, γ_l={lin_g}, dist={dist_m}"
+        
+        # The rest of your code is perfect
         table_for_plot = wandb.Table(dataframe=group)
         wandb.log({
             plot_key: wandb.plot.line(
                 table_for_plot,
                 x="step",
                 y="score",
-                stroke="curve_label", # This creates separate lines for 'morf_raw' and 'lerf_raw'
-                title=f"Raw Curves for {label} (γ_conv={conv_g}, γ_lin={lin_g})"
+                stroke="curve_label", 
+                title=title
             )
         })
-    
+
     # --- LOG NORMALIZED CURVES ---
-    for (idx, label, conv_g, lin_g), group in norm_curves_df.groupby(['input_idx', 'image_label', 'conv_gamma', 'lin_gamma']):
-        plot_key = f"norm_curves_per_run/img_{idx}_{label}_conv_{conv_g}_lin_{lin_g}"
+    for i, ((image, conv_g, lin_g, dist_m), group) in enumerate(norm_curves_df.groupby(['image', 'conv_gamma', 'lin_gamma', 'distance_metric'])):
+        plot_key = f"norm_curves_per_run/plot_{i}"
+
+        # 2. The title can remain long and descriptive
+        title = f"Img: {image}, γ_c={conv_g}, γ_l={lin_g}, dist={dist_m}"
+        
+        # The rest of your code is perfect
         table_for_plot = wandb.Table(dataframe=group)
         wandb.log({
             plot_key: wandb.plot.line(
                 table_for_plot,
                 x="step",
                 y="score",
-                stroke="curve_label", # This creates separate lines for 'morf_norm' and 'lerf_norm'
-                title=f"Normalized Curves for {label} (γ_conv={conv_g}, γ_lin={lin_g})"
+                stroke="curve_label", 
+                title=title
             )
-        })
+    })
+    
 
     # --- 4. Log the Heatmaps and Other Tables ---
     analysis_plot_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
@@ -692,7 +753,7 @@ def log_sweep_to_wandb(
     
     wandb.log({
         "data_tables/detailed_results": detailed_results_table,
-        "data_tables/robustness_analysis_by_gamma": analysis_table,
+        "data_tables/robustness_analysis_by_parameter": analysis_table,
         "data_tables/faithfulness_curves_raw_data": faithfulness_curves_table
     })
 
@@ -700,7 +761,7 @@ def log_sweep_to_wandb(
     print("Creating and logging artifact...")
     artifact = wandb.Artifact('robustness-sweep-results', type='analysis-results')
     artifact.add(detailed_results_table, "detailed_results")
-    artifact.add(analysis_table, "robustness_analysis_by_gamma")
+    artifact.add(analysis_table, "robustness_analysis_by_parameter")
     artifact.add(faithfulness_curves_table, "faithfulness_curves_raw_data")
     wandb.log_artifact(artifact)
 

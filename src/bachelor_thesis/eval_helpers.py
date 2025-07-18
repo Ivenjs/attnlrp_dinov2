@@ -26,8 +26,9 @@ def _run_knn_perturbation(
     patch_size: int,
     # k-NN specific args
     db_embeddings: torch.Tensor,
-    db_labels: list,
-    ground_truth_label: str,
+    db_filenames: list,
+    input_filename: str,
+    distance_metric: str,
     k_neighbors: int,
     baseline_value: float = 0.0,
     num_steps: int = 50 # Use stepped evaluation for speed
@@ -41,7 +42,7 @@ def _run_knn_perturbation(
     with torch.no_grad():
         initial_embedding = model(input_tensor)
         initial_score = compute_knn_proxy_score(
-            initial_embedding, db_embeddings, db_labels, ground_truth_label, k_neighbors
+            initial_embedding, input_filename, db_embeddings, db_filenames, distance_metric, k_neighbors
         )
 
     num_patches = len(patch_order)
@@ -75,7 +76,7 @@ def _run_knn_perturbation(
         with torch.no_grad():
             current_embedding = model(perturbed_tensor)
             score = compute_knn_proxy_score(
-                current_embedding, db_embeddings, db_labels, ground_truth_label, k_neighbors
+                current_embedding, input_filename, db_embeddings, db_filenames, distance_metric, k_neighbors
             )
             output_curve[step + 1] = score
             
@@ -227,8 +228,9 @@ def srg_knn(
     patch_size: int,
     # k-NN specific args
     db_embeddings: torch.Tensor,
-    db_labels: list,
-    ground_truth_label: str,
+    db_filenames: list,
+    input_filename: str,
+    distance_metric: str,
     k_neighbors: int,
     plot_curves: bool = False
 ) -> float:
@@ -245,11 +247,11 @@ def srg_knn(
 
     morf_curve = _run_knn_perturbation(
         model, input_tensor, morf_order, 'deletion', patch_size, 
-        db_embeddings, db_labels, ground_truth_label, k_neighbors
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
     )
     lerf_curve = _run_knn_perturbation(
         model, input_tensor, lerf_order, 'deletion', patch_size,
-        db_embeddings, db_labels, ground_truth_label, k_neighbors
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
     )
 
     morf_curve_norm = normalize_curve(morf_curve)

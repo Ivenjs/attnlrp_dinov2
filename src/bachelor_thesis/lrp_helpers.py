@@ -166,8 +166,9 @@ def compute_knn_attnlrp_pass(
     checker: LRPConservationChecker,
     # parameters required for the k-NN score
     db_embeddings: torch.Tensor,
-    db_labels: list,
-    ground_truth_label: str,
+    db_filenames: list,
+    input_filename: str,
+    distance_metric: str = "euclidean",
     k_neighbors: int = 5,
     verbose: bool = False
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
@@ -195,9 +196,10 @@ def compute_knn_attnlrp_pass(
 
         knn_score = compute_knn_proxy_score(
             query_embedding=query_embedding,
+            query_filename=input_filename,
             db_embeddings=db_embeddings,
-            db_labels=db_labels,
-            ground_truth_label=ground_truth_label,
+            db_filenames=db_filenames,
+            distance_metric=distance_metric,
             k=k_neighbors
         )
         
@@ -224,7 +226,7 @@ def visualize_relevances(
     dim: Tuple[int, int] = (3,5)
 ) -> torch.Tensor:
     heatmaps = [] 
-    for gammas, relevance in relevances.items():
+    for parameters, relevance in relevances.items():
         heatmap = relevance.sum(1)
         denom = abs(heatmap).max()
         
