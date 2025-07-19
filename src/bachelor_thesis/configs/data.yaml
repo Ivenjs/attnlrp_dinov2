@@ -1,2 +1,2 @@
-#dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train"
-dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
+dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train"
+#dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"

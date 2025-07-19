@@ -20,6 +20,7 @@ from dinov2_attnlrp_sweep import (
 from lrp_helpers import visualize_relevances
 from knn_helpers import get_knn_db
 
+#TODO: use dataset class?
 
 def get_image_path_map(image_dir: str):
     """

@@ -82,6 +82,107 @@ def _run_knn_perturbation(
             
     return output_curve
 
+def normalize_curve(curve: torch.Tensor) -> torch.Tensor:
+    """Normalize the curve by its starting value to ensure comparability."""
+    start_val = curve[0].item()
+    if abs(start_val) < 1e-6:  # avoid div-by-zero
+        return curve
+    return curve / start_val
+
+def srg_knn(
+    relevance_map: torch.Tensor,
+    input_tensor: torch.Tensor,
+    model: torch.nn.Module, # UN-PATCHED model
+    patch_size: int,
+    # k-NN specific args
+    db_embeddings: torch.Tensor,
+    db_filenames: list,
+    input_filename: str,
+    distance_metric: str,
+    k_neighbors: int,
+    plot_curves: bool = False
+) -> float:
+    """
+    Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
+    A higher score is better.
+    """
+    relevance_per_pixel = torch.abs(relevance_map).sum(dim=1, keepdim=True)
+    patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=patch_size, stride=patch_size)
+    patch_relevance_flat = patch_relevance.flatten()
+
+    lerf_order = torch.argsort(patch_relevance_flat, descending=False)
+    morf_order = torch.argsort(patch_relevance_flat, descending=True)
+
+    morf_curve = _run_knn_perturbation(
+        model, input_tensor, morf_order, 'deletion', patch_size, 
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
+    )
+    lerf_curve = _run_knn_perturbation(
+        model, input_tensor, lerf_order, 'deletion', patch_size,
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
+    )
+
+    morf_curve_norm = normalize_curve(morf_curve)
+    lerf_curve_norm = normalize_curve(lerf_curve)
+
+    auc_morf_norm = calculate_auc(morf_curve_norm)
+    auc_lerf_norm = calculate_auc(lerf_curve_norm)
+    
+    delta_a_f_norm = auc_lerf_norm - auc_morf_norm
+
+    auc_morf = calculate_auc(morf_curve)
+    auc_lerf = calculate_auc(lerf_curve)
+    
+    delta_a_f = auc_lerf - auc_morf
+    
+    print(f"\n--- Faithfulness Score (∆A_F) ---")
+    print(f"Area under LeRF curve: {auc_lerf:.4f}")
+    print(f"Area under MoRF curve: {auc_morf:.4f}")
+    print(f"Final Score (A_LeRF - A_MoRF): {delta_a_f:.4f}")
+
+    print(f"Normalized Final Score (A_LeRF - A_MoRF): {delta_a_f_norm:.4f}")
+
+    if plot_curves:
+        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
+        axs[0, 0].plot(morf_curve.cpu().numpy(), label='MoRF Deletion', color='red')
+        axs[0, 0].set_title(f'MoRF Curve (Raw) – AUC={auc_morf:.3f}')
+        axs[0, 0].set_xlabel('Patches Perturbed')
+        axs[0, 0].set_ylabel('Model Score')
+        axs[0, 0].legend()
+
+        axs[0, 1].plot(lerf_curve.cpu().numpy(), label='LeRF Deletion', color='blue')
+        axs[0, 1].set_title(f'LeRF Curve (Raw) – AUC={auc_lerf:.3f}')
+        axs[0, 1].set_xlabel('Patches Perturbed')
+        axs[0, 1].set_ylabel('Model Score')
+        axs[0, 1].legend()
+
+        axs[1, 0].plot(morf_curve_norm.cpu().numpy(), label='MoRF Deletion (Norm.)', color='orange')
+        axs[1, 0].set_title(f'MoRF Curve (Noramlized) – AUC={auc_morf_norm:.3f}')
+        axs[1, 0].set_xlabel('Patches Perturbed')
+        axs[1, 0].set_ylabel('Normalized Score')
+        axs[1, 0].legend()
+
+        axs[1, 1].plot(lerf_curve_norm.cpu().numpy(), label='LeRF Deletion (Norm.)', color='green')
+        axs[1, 1].set_title(f'LeRF Curve (Noramlized) – AUC={auc_lerf_norm:.3f}')
+        axs[1, 1].set_xlabel('Patches Perturbed')
+        axs[1, 1].set_ylabel('Normalized Score')
+        axs[1, 1].legend()
+
+        plt.tight_layout()
+        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/deletion_metric_curves_split.png")
+
+
+    return {
+        "faithfulness_score": delta_a_f,
+        "normalized_faithfulness_score": delta_a_f_norm,
+        "morf_curve": morf_curve.cpu().numpy(),
+        "lerf_curve": lerf_curve.cpu().numpy(),
+        "morf_curve_norm": morf_curve_norm.cpu().numpy(),
+        "lerf_curve_norm": lerf_curve_norm.cpu().numpy(),
+        "auc_morf": auc_morf,
+        "auc_lerf": auc_lerf,
+    }
+
 def _run_perturbation(
     model: TimmWrapper, # Expects the UN-PATCHED model
     input_tensor: torch.Tensor,
@@ -214,106 +315,7 @@ def srg(
 
     return delta_a_f
 
-def normalize_curve(curve: torch.Tensor) -> torch.Tensor:
-    """Normalize the curve by its starting value to ensure comparability."""
-    start_val = curve[0].item()
-    if abs(start_val) < 1e-6:  # avoid div-by-zero
-        return curve
-    return curve / start_val
 
-def srg_knn(
-    relevance_map: torch.Tensor,
-    input_tensor: torch.Tensor,
-    model: torch.nn.Module, # UN-PATCHED model
-    patch_size: int,
-    # k-NN specific args
-    db_embeddings: torch.Tensor,
-    db_filenames: list,
-    input_filename: str,
-    distance_metric: str,
-    k_neighbors: int,
-    plot_curves: bool = False
-) -> float:
-    """
-    Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
-    A higher score is better.
-    """
-    relevance_per_pixel = torch.abs(relevance_map).sum(dim=1, keepdim=True)
-    patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=patch_size, stride=patch_size)
-    patch_relevance_flat = patch_relevance.flatten()
-
-    lerf_order = torch.argsort(patch_relevance_flat, descending=False)
-    morf_order = torch.argsort(patch_relevance_flat, descending=True)
-
-    morf_curve = _run_knn_perturbation(
-        model, input_tensor, morf_order, 'deletion', patch_size, 
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
-    )
-    lerf_curve = _run_knn_perturbation(
-        model, input_tensor, lerf_order, 'deletion', patch_size,
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
-    )
-
-    morf_curve_norm = normalize_curve(morf_curve)
-    lerf_curve_norm = normalize_curve(lerf_curve)
-
-    auc_morf_norm = calculate_auc(morf_curve_norm)
-    auc_lerf_norm = calculate_auc(lerf_curve_norm)
-    
-    delta_a_f_norm = auc_lerf_norm - auc_morf_norm
-
-    auc_morf = calculate_auc(morf_curve)
-    auc_lerf = calculate_auc(lerf_curve)
-    
-    delta_a_f = auc_lerf - auc_morf
-    
-    print(f"\n--- Faithfulness Score (∆A_F) ---")
-    print(f"Area under LeRF curve: {auc_lerf:.4f}")
-    print(f"Area under MoRF curve: {auc_morf:.4f}")
-    print(f"Final Score (A_LeRF - A_MoRF): {delta_a_f:.4f}")
-
-    print(f"Normalized Final Score (A_LeRF - A_MoRF): {delta_a_f_norm:.4f}")
-
-    if plot_curves:
-        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
-        axs[0, 0].plot(morf_curve.cpu().numpy(), label='MoRF Deletion', color='red')
-        axs[0, 0].set_title(f'MoRF Curve (Raw) – AUC={auc_morf:.3f}')
-        axs[0, 0].set_xlabel('Patches Perturbed')
-        axs[0, 0].set_ylabel('Model Score')
-        axs[0, 0].legend()
-
-        axs[0, 1].plot(lerf_curve.cpu().numpy(), label='LeRF Deletion', color='blue')
-        axs[0, 1].set_title(f'LeRF Curve (Raw) – AUC={auc_lerf:.3f}')
-        axs[0, 1].set_xlabel('Patches Perturbed')
-        axs[0, 1].set_ylabel('Model Score')
-        axs[0, 1].legend()
-
-        axs[1, 0].plot(morf_curve_norm.cpu().numpy(), label='MoRF Deletion (Norm.)', color='orange')
-        axs[1, 0].set_title(f'MoRF Curve (Noramlized) – AUC={auc_morf_norm:.3f}')
-        axs[1, 0].set_xlabel('Patches Perturbed')
-        axs[1, 0].set_ylabel('Normalized Score')
-        axs[1, 0].legend()
-
-        axs[1, 1].plot(lerf_curve_norm.cpu().numpy(), label='LeRF Deletion (Norm.)', color='green')
-        axs[1, 1].set_title(f'LeRF Curve (Noramlized) – AUC={auc_lerf_norm:.3f}')
-        axs[1, 1].set_xlabel('Patches Perturbed')
-        axs[1, 1].set_ylabel('Normalized Score')
-        axs[1, 1].legend()
-
-        plt.tight_layout()
-        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/deletion_metric_curves_split.png")
-
-
-    return {
-        "faithfulness_score": delta_a_f,
-        "normalized_faithfulness_score": delta_a_f_norm,
-        "morf_curve": morf_curve.cpu().numpy(),
-        "lerf_curve": lerf_curve.cpu().numpy(),
-        "morf_curve_norm": morf_curve_norm.cpu().numpy(),
-        "lerf_curve_norm": lerf_curve_norm.cpu().numpy(),
-        "auc_morf": auc_morf,
-        "auc_lerf": auc_lerf,
-    }
 
 
 

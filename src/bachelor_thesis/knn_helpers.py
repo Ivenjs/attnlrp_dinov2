@@ -97,17 +97,17 @@ def get_knn_db(knn_db_dir: str, image_dir: str, model_wrapper: TimmWrapper, tran
     #TODO: also include data name here for comparison so that i can have multiple databases for different datasets
     checkpoint_name = os.path.basename(cfg["checkpoint_path"]).split('.')[0]
     dataset_name = image_dir.split('/')[-1]
-    db_dir_name = f"{checkpoint_name}_{dataset_name}"
+    db_name = f"{checkpoint_name}_{dataset_name}"
 
     files_in_dir = os.listdir(knn_db_dir)
-    matching_checkpoints = [f for f in files_in_dir if db_dir_name in f]
+    matching_checkpoints = [f for f in files_in_dir if db_name in f]
     if matching_checkpoints:
-        print(f"KNN database {db_dir_name} already exists. Loading the KNN database...")
+        print(f"KNN database {db_name} already exists. Loading the KNN database...")
         dataset = torch.load(os.path.join(knn_db_dir, matching_checkpoints[0]))
         db_embeddings = dataset["embeddings"].to(device)
         db_filenames = dataset["filenames"]
     else:
-        print(f"KNN database {db_dir_name} does not exist. Filling the KNN database...")
+        print(f"KNN database {db_name} does not exist. Filling the KNN database...")
         db_embeddings, db_filenames = fill_knn_db(
             image_dir=image_dir,
             model_wrapper=model_wrapper,
@@ -188,7 +188,7 @@ def compute_knn_proxy_score(
     query_filename: str,
     db_embeddings: torch.Tensor,
     db_filenames: list,
-    distance_metric: str = "euclidean",
+    distance_metric: str = "cosine",
     k: int = 5,
 ) -> torch.Tensor:
     """
@@ -218,14 +218,12 @@ def compute_knn_proxy_score(
 
     with torch.no_grad():
         distances = compute_distances(query_embedding.detach(), db_embeddings, distance_metric)
-
-        # Mask the query's self-distance to prevent it from being selected
         try:
             query_idx = db_filenames.index(query_filename)
-            distances[query_idx] = torch.inf  
+            distances[query_idx] = torch.inf
         except ValueError:
-            raise ValueError(f"Query filename '{query_filename}' not found.")
-
+            # It's fine if the query isn't in the DB, just means no mask is needed.
+            pass
         top_k_indices = torch.topk(distances, k, largest=False).indices
     
     friends_indices = []
@@ -240,20 +238,18 @@ def compute_knn_proxy_score(
 
     differentiable_distances = compute_distances(query_embedding, db_embeddings, distance_metric)
 
+    MAX_DISTANCE = 2.0 # both euclidean and cosine distances are in [0, 2]
+
     if friends_indices:
         dist_friends = differentiable_distances[friends_indices].mean()
     else:
-        # If no friends, their contribution to the score is 0.
-        dist_friends = torch.tensor(0.0, device=query_embedding.device)
+        dist_friends = torch.tensor(MAX_DISTANCE, device=query_embedding.device)
 
     if foes_indices:
         dist_foes = differentiable_distances[foes_indices].mean()
     else:
-        # If no foes, their contribution to the score is 0.
-        # This makes the score simply -mean(dist_friends)
-        dist_foes = torch.tensor(0.0, device=query_embedding.device)
+        dist_foes = torch.tensor(MAX_DISTANCE, device=query_embedding.device)
 
     score = dist_foes - dist_friends
-    
     return score
 
