@@ -31,13 +31,19 @@ def _run_knn_perturbation(
     distance_metric: str,
     k_neighbors: int,
     baseline_value: float = 0.0,
-    num_steps: int = 50 # Use stepped evaluation for speed
+    patches_per_step: int = 1
 ) -> torch.Tensor:
     """
     Runs a perturbation experiment, tracking the k-NN proxy score at each step.
+
+    Args:
+        ... (other args) ...
+        patches_per_step (int): The number of patches to add/remove between each
+                                evaluation. Set to 1 for maximum granularity.
+                                A larger value speeds up the process.
     """
     model.eval()
-    
+
     # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad():
         initial_embedding = model(input_tensor)
@@ -48,39 +54,56 @@ def _run_knn_perturbation(
     num_patches = len(patch_order)
     h, w = input_tensor.shape[-2:]
     num_patches_w = w // patch_size
-    step_size = max(1, num_patches // num_steps)
-    
-    output_curve = torch.zeros(num_steps + 1, device=input_tensor.device)
-    output_curve[0] = initial_score
+
+    # Use a list to store scores, as the length depends on patches_per_step.
+    # It's more flexible than a pre-allocated tensor.
+    output_scores = [initial_score]
 
     if perturbation_type == 'deletion':
         perturbed_tensor = input_tensor.clone()
     else: # insertion
         perturbed_tensor = torch.full_like(input_tensor, baseline_value)
 
-    for step in tqdm(range(num_steps), desc=f"{perturbation_type.capitalize()} Eval"):
-        start_idx = step * step_size
-        end_idx = min((step + 1) * step_size, num_patches)
+    # We iterate through the patches in steps of `patches_per_step`.
+    # This loop is much more direct than the previous one.
+    patches_processed_so_far = 0
+    
+    # The progress bar now tracks the number of patches processed.
+    pbar = tqdm(total=num_patches, desc=f"{perturbation_type.capitalize()} Eval (Granular)")
+
+    while patches_processed_so_far < num_patches:
+        # Determine the next chunk of patches to process
+        start_idx = patches_processed_so_far
+        end_idx = min(start_idx + patches_per_step, num_patches)
         patches_to_process = patch_order[start_idx:end_idx]
 
         for patch_idx in patches_to_process:
             row = (patch_idx // num_patches_w) * patch_size
             col = (patch_idx % num_patches_w) * patch_size
-            
+
             if perturbation_type == 'deletion':
                 perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = baseline_value
             else: # insertion
                 original_patch = input_tensor[..., row:row+patch_size, col:col+patch_size]
                 perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = original_patch
 
+        # After perturbing the chunk, run the model and get the score
         with torch.no_grad():
             current_embedding = model(perturbed_tensor)
             score = compute_knn_proxy_score(
                 current_embedding, input_filename, db_embeddings, db_filenames, distance_metric, k_neighbors
             )
-            output_curve[step + 1] = score
-            
-    return output_curve
+            output_scores.append(score)
+
+        # Update progress
+        num_in_chunk = end_idx - start_idx
+        patches_processed_so_far += num_in_chunk
+        pbar.update(num_in_chunk)
+    
+    pbar.close()
+
+    # Convert the list of scores to a tensor for calculations
+    return torch.tensor(output_scores, device=input_tensor.device)
 
 def normalize_curve(curve: torch.Tensor) -> torch.Tensor:
     """Normalize the curve by its starting value to ensure comparability."""
@@ -100,7 +123,8 @@ def srg_knn(
     input_filename: str,
     distance_metric: str,
     k_neighbors: int,
-    plot_curves: bool = False
+    plot_curves: bool = False,
+    patches_per_step: int = 5
 ) -> float:
     """
     Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
@@ -115,11 +139,11 @@ def srg_knn(
 
     morf_curve = _run_knn_perturbation(
         model, input_tensor, morf_order, 'deletion', patch_size, 
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step
     )
     lerf_curve = _run_knn_perturbation(
         model, input_tensor, lerf_order, 'deletion', patch_size,
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step
     )
 
     morf_curve_norm = normalize_curve(morf_curve)
@@ -143,28 +167,31 @@ def srg_knn(
     print(f"Normalized Final Score (A_LeRF - A_MoRF): {delta_a_f_norm:.4f}")
 
     if plot_curves:
-        fig, axs = plt.subplots(2, 2, figsize=(10, 8))
-        axs[0, 0].plot(morf_curve.cpu().numpy(), label='MoRF Deletion', color='red')
+        num_eval_steps = len(morf_curve)
+        x_axis = range(num_eval_steps)
+
+        fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+        axs[0, 0].plot(x_axis, morf_curve.cpu().numpy(), label='MoRF Deletion', color='red')
         axs[0, 0].set_title(f'MoRF Curve (Raw) – AUC={auc_morf:.3f}')
-        axs[0, 0].set_xlabel('Patches Perturbed')
+        axs[0, 0].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
         axs[0, 0].set_ylabel('Model Score')
         axs[0, 0].legend()
 
-        axs[0, 1].plot(lerf_curve.cpu().numpy(), label='LeRF Deletion', color='blue')
+        axs[0, 1].plot(x_axis, lerf_curve.cpu().numpy(), label='LeRF Deletion', color='blue')
         axs[0, 1].set_title(f'LeRF Curve (Raw) – AUC={auc_lerf:.3f}')
-        axs[0, 1].set_xlabel('Patches Perturbed')
+        axs[0, 1].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
         axs[0, 1].set_ylabel('Model Score')
         axs[0, 1].legend()
 
-        axs[1, 0].plot(morf_curve_norm.cpu().numpy(), label='MoRF Deletion (Norm.)', color='orange')
+        axs[1, 0].plot(x_axis, morf_curve_norm.cpu().numpy(), label='MoRF Deletion (Norm.)', color='orange')
         axs[1, 0].set_title(f'MoRF Curve (Noramlized) – AUC={auc_morf_norm:.3f}')
-        axs[1, 0].set_xlabel('Patches Perturbed')
+        axs[1, 0].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
         axs[1, 0].set_ylabel('Normalized Score')
         axs[1, 0].legend()
 
-        axs[1, 1].plot(lerf_curve_norm.cpu().numpy(), label='LeRF Deletion (Norm.)', color='green')
+        axs[1, 1].plot(x_axis, lerf_curve_norm.cpu().numpy(), label='LeRF Deletion (Norm.)', color='green')
         axs[1, 1].set_title(f'LeRF Curve (Noramlized) – AUC={auc_lerf_norm:.3f}')
-        axs[1, 1].set_xlabel('Patches Perturbed')
+        axs[1, 1].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
         axs[1, 1].set_ylabel('Normalized Score')
         axs[1, 1].legend()
 

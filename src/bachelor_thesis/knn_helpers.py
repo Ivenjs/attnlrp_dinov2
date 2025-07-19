@@ -236,6 +236,12 @@ def compute_knn_proxy_score(
         else:
             foes_indices.append(idx)
 
+    """print(f"Query: {query_filename}, Friends: {len(friends_indices)}, Foes: {len(foes_indices)}")
+    for friends in friends_indices:
+        print(f"Found friend: {db_filenames[friends]} with label {get_class_label(db_filenames[friends])}")
+    for foes in foes_indices:
+        print(f"Found foe: {db_filenames[foes]} with label {get_class_label(db_filenames[foes])}")"""
+
     differentiable_distances = compute_distances(query_embedding, db_embeddings, distance_metric)
 
     MAX_DISTANCE = 2.0 # both euclidean and cosine distances are in [0, 2]
