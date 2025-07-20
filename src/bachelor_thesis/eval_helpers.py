@@ -124,12 +124,17 @@ def srg_knn(
     distance_metric: str,
     k_neighbors: int,
     plot_curves: bool = False,
-    patches_per_step: int = 5
+    patches_per_step: int = 50
 ) -> float:
     """
     Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
     A higher score is better.
     """
+    # Ensure the relevance map is a 4D tensor [N, C, H, W] for consistency.
+    # The new batched pipeline stores it as 3D [C, H, W].
+    if relevance_map.dim() == 3:
+        relevance_map = relevance_map.unsqueeze(0)  # Add a batch dimension -> [1, C, H, W]
+        
     relevance_per_pixel = torch.abs(relevance_map).sum(dim=1, keepdim=True)
     patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=patch_size, stride=patch_size)
     patch_relevance_flat = patch_relevance.flatten()

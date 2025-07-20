@@ -6,6 +6,7 @@ import torch
 from tqdm import tqdm
 import torch.nn.functional as F
 from typing import Tuple
+from torch.utils.data import DataLoader
 
 
 import yaml
@@ -36,40 +37,32 @@ def fill_knn_db(
     if not image_filenames:
         print(f"Warning: No images found in {image_dir}")
         return torch.empty(0), []
+
+    dataset = ImageFileDataset(
+        image_dir=image_dir, 
+        filenames=image_filenames, 
+        transform=transform
+    )
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=False,      # Keep order for consistency
+        num_workers=4,      # Use 4 CPU cores for data loading
+        pin_memory=True     # Speeds up CPU-to-GPU transfer
+    )
         
     all_embeddings_list: List[torch.Tensor] = []
     processed_filenames: List[str] = []
     
-    image_batch: List[torch.Tensor] = []
-    filename_batch: List[str] = []
     
     with torch.no_grad():
-        for filename in tqdm(image_filenames, desc="Generating embeddings in batches"):
-            image_path = os.path.join(image_dir, filename)
+        for image_batch, filename_batch in tqdm(dataloader, desc="Generating embeddings"):
+            stacked_images = image_batch.to(device)
             
-            image_tensor = transform(Image.open(image_path).convert("RGB"))
+            embeddings = model_wrapper(stacked_images) 
             
-            image_batch.append(image_tensor)
-            filename_batch.append(filename.split(".")[0])  
-
-            # 2. When the batch is full, process it
-            if len(image_batch) == batch_size:
-                stacked_images = torch.stack(image_batch).to(device)
-                
-                embeddings = model_wrapper(stacked_images) # should return [B, D]
-                
-                all_embeddings_list.append(embeddings.cpu())
-                processed_filenames.extend(filename_batch)
-                
-                image_batch = []
-                filename_batch = []
-
-        # Process any remaining images in the last batch
-        if image_batch:
-            stacked_images = torch.stack(image_batch).to(device)
-            embeddings = model_wrapper(stacked_images)
             all_embeddings_list.append(embeddings.cpu())
-            processed_filenames.extend(filename_batch)
+            processed_filenames.extend(filename_batch) 
 
     final_embeddings = torch.cat(all_embeddings_list, dim=0)
 

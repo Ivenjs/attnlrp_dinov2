@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Dict, Any
+
 
 import zennit.rules as z_rules
 from zennit.composites import LayerMapComposite
@@ -158,6 +159,63 @@ def compute_simple_attnlrp_pass(
     
     return relevance, violations
 
+def compute_simple_attnlrp_pass_batched(
+    conv_gamma: float, 
+    lin_gamma: float, 
+    model_wrapper: nn.Module, 
+    input_batch: torch.Tensor, 
+    checker: LRPConservationChecker,
+    verbose: bool = False
+) -> Tuple[torch.Tensor, List[Dict[str, float]]]: 
+    """
+    Computes LRP passes for a BATCH of inputs explaining their k-NN decisions.
+    """
+    batch_size = input_batch.shape[0]
+    input_batch.grad = None
+
+    # Set Zennit rules once for the whole batch pass
+    zennit_comp = LayerMapComposite(
+        [
+            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
+            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+        ]
+    )
+    
+    relevances_list = []
+    violations_list = []
+
+    try:
+        zennit_comp.register(model_wrapper)
+
+        query_embedding_batch = model_wrapper(input_batch.requires_grad_())
+
+        for i in range(batch_size):
+            # Isolate the data for the i-th sample
+            query_embedding_i = query_embedding_batch[i].unsqueeze(0) # Shape [1, D]
+            most_active_feature_idx = torch.argmax(query_embedding_i, dim=1).item()
+            
+            if verbose:
+                print(f"  [Sample {i+1}/{batch_size}] Explaining k-NN score: {knn_score.item():.4f}")
+
+
+            model_wrapper.zero_grad()  # Clear previous sample's gradients
+            query_embedding_i[0, most_active_feature_idx].backward(retain_graph=True)
+
+            relevance_i = input_batch[i] * input_batch.grad[i]
+            relevances_list.append(relevance_i.detach().clone())
+            
+
+            violations_list.append(checker.check(verbose=False))
+
+    finally:
+        zennit_comp.remove()
+        if input_batch.grad is not None:
+            input_batch.grad = None
+            
+    relevance_batch = torch.stack(relevances_list)
+    
+    return relevance_batch, violations_list
+
 def compute_knn_attnlrp_pass(
     conv_gamma: float, 
     lin_gamma: float, 
@@ -217,6 +275,77 @@ def compute_knn_attnlrp_pass(
     
     return relevance, violations
 
+def compute_knn_attnlrp_pass_batched(
+    conv_gamma: float, 
+    lin_gamma: float, 
+    model_wrapper: nn.Module, 
+    input_batch: torch.Tensor, 
+    checker: LRPConservationChecker,
+    db_embeddings: torch.Tensor,
+    db_filenames: list,
+    input_filename_batch: List[str], 
+    distance_metric: str = "euclidean",
+    k_neighbors: int = 5,
+    verbose: bool = False
+) -> Tuple[torch.Tensor, List[Dict[str, float]]]: 
+    """
+    Computes LRP passes for a BATCH of inputs explaining their k-NN decisions.
+    """
+    batch_size = input_batch.shape[0]
+    input_batch.grad = None
+
+    # Set Zennit rules once for the whole batch pass
+    zennit_comp = LayerMapComposite(
+        [
+            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
+            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+        ]
+    )
+    
+    relevances_list = []
+    violations_list = []
+
+    try:
+        zennit_comp.register(model_wrapper)
+
+        query_embedding_batch = model_wrapper(input_batch.requires_grad_())
+
+        for i in range(batch_size):
+            # Isolate the data for the i-th sample
+            query_embedding_i = query_embedding_batch[i].unsqueeze(0) # Shape [1, D]
+            input_filename_i = input_filename_batch[i]
+
+            knn_score = compute_knn_proxy_score(
+                query_embedding=query_embedding_i,
+                query_filename=input_filename_i,
+                db_embeddings=db_embeddings,
+                db_filenames=db_filenames,
+                distance_metric=distance_metric,
+                k=k_neighbors
+            )
+            
+            if verbose:
+                print(f"  [Sample {i+1}/{batch_size}] Explaining k-NN score: {knn_score.item():.4f}")
+
+            # We must use retain_graph=True because we are backpropping through the same
+            # shared computational graph (from the forward pass) multiple times.
+            model_wrapper.zero_grad() # Clear previous sample's gradients
+            knn_score.backward(retain_graph=True)
+
+            relevance_i = input_batch[i] * input_batch.grad[i]
+            relevances_list.append(relevance_i.detach().clone())
+            
+
+            violations_list.append(checker.check(verbose=False))
+
+    finally:
+        zennit_comp.remove()
+        if input_batch.grad is not None:
+            input_batch.grad = None
+            
+    relevance_batch = torch.stack(relevances_list)
+    
+    return relevance_batch, violations_list
 
 def visualize_relevances(
     relevances: List[torch.Tensor], 

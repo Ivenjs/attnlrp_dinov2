@@ -11,8 +11,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import wandb
+from collections import defaultdict
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass, LRPConservationChecker
+
+from lrp_helpers import compute_simple_attnlrp_pass_batched, compute_knn_attnlrp_pass_batched, LRPConservationChecker
 from basemodel import TimmWrapper
 from eval_helpers import srg_knn
 
@@ -24,11 +28,11 @@ LIN_GAMMAS = [0.0, 0.05, 0.1, 0.25]
 
 def run_gamma_sweep(
     model_wrapper: TimmWrapper, 
-    input_tensors: torch.Tensor,  # Now a batched tensor [batch_size, C, H, W]
+    dataloader: DataLoader,  
+    device: torch.device,
     mode: str = "simple",
     db_embeddings: torch.Tensor = None,  
     db_filenames: List[str] = None,  
-    input_filenames: List[str] = None,
     k_neighbors: int = 5,
     distance_metrics: List[str] = ["euclidean"],
     conv_gamma_values: List[float] = CONV_GAMMAS,
@@ -40,8 +44,8 @@ def run_gamma_sweep(
     """
     Runs a sweep over gamma parameters for multiple inputs, managing patches efficiently.
     """
-    all_relevances = {}
-    all_violations = {}
+    all_relevances = defaultdict(dict)
+    all_violations = defaultdict(dict)
 
     print("--- Starting Gamma Sweep ---")
     print("Patching model for LRP and Conservation Checking for the duration of the sweep...")
@@ -50,72 +54,61 @@ def run_gamma_sweep(
         
         param_combinations = list(itertools.product(conv_gamma_values, lin_gamma_values, 
                                                      distance_metrics))
-        
-        # Loop over each input in the batch
-        for input_idx in range(input_tensors.shape[0]):  
-            print(f"\n=== Processing Input {input_idx + 1}/{input_tensors.shape[0]} ===")
-            
-            # Extract single input from batch
-            input_tensor = input_tensors[input_idx]  # Shape: [C, H, W]
-            # Get the corresponding input filename
-            input_filename = input_filenames[input_idx] if input_filenames else None
+        # Loop over gamma combinations for this input
+        for i, (conv_gamma, lin_gamma, distance_metric) in enumerate(param_combinations):
+            print(f"\n=== Processing Param Combination {i+1}/{len(param_combinations)}: "
+                  f"conv_γ={conv_gamma}, lin_γ={lin_gamma}, dist={distance_metric} ===")
 
-            # Initialize storage for this input
-            all_relevances[input_filename] = {}
-            all_violations[input_filename] = {}
+            for input_batch, filename_batch in tqdm(dataloader, desc="Processing batches"):
+                input_batch = input_batch.to(device)
             
-            # Loop over gamma combinations for this input
-            for i, (conv_gamma, lin_gamma, distance_metric) in enumerate(param_combinations):
-                print(f"--- Running Pass {i+1}/{len(param_combinations)} for Input {input_idx + 1} ---")
-                
                 # Call the inner-loop function
                 if mode == "simple":
-                    relevance, violations = compute_simple_attnlrp_pass(
+                    relevance_batch, violation_batch = compute_simple_attnlrp_pass_batched(
                         conv_gamma=conv_gamma,
                         lin_gamma=lin_gamma,
                         model_wrapper=model_wrapper,
-                        input_tensor=input_tensor.unsqueeze(0),  # Add batch dim back
+                        input_batch=input_batch,  # Add batch dim back
                         checker=checker,
                         verbose=verbose  
                     )
                 elif mode == "knn":
                     assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
                     assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
-                    assert input_filenames is not None, "input_filenames must be provided for 'knn' mode."
 
-                    relevance, violations = compute_knn_attnlrp_pass(
+                    relevance_batch, violation_batch = compute_knn_attnlrp_pass_batched(
                         conv_gamma=conv_gamma,
                         lin_gamma=lin_gamma,
                         model_wrapper=model_wrapper,
-                        input_tensor=input_tensor.unsqueeze(0),  # Add batch dim for single input
+                        input_batch=input_batch,  # Add batch dim for single input
                         checker=checker,
                         verbose=verbose,
                         db_embeddings=db_embeddings,  
                         db_filenames=db_filenames,  
-                        input_filename=input_filename,  
+                        input_filename_batch=filename_batch,
                         distance_metric=distance_metric,
                         k_neighbors=k_neighbors  
                     )
-                
-                # Store the results for this input and gamma combination
+            
                 key = (conv_gamma, lin_gamma, distance_metric)
-                all_relevances[input_filename][key] = relevance.detach().cpu()
-                all_violations[input_filename][key] = violations
+                for j, filename in enumerate(filename_batch):
+                    all_relevances[filename][key] = relevance_batch[j].detach().cpu()
+                    all_violations[filename][key] = violation_batch[j]
 
     print("\n--- Gamma Sweep Complete ---")
     print("Model has been restored to its original state.")
-    
-    return all_relevances, all_violations
+
+    return dict(all_relevances), dict(all_violations)
 
 def evaluate_gamma_sweep(
     relevances_by_parameters: Dict[str, Dict[Tuple[float, float, str], torch.Tensor]], 
     violations_by_parameters: Dict[str, Dict[Tuple[float, float, str], Any]],
-    input_tensors: torch.Tensor,
-    input_filenames: List[str],
+    evaluation_dataloader: DataLoader,
     model_wrapper,
     db_embeddings: torch.Tensor,
     db_filenames: List[str],
     patch_size: int,
+    device: torch.device,
     k_neighbors: int = 5,
     plot_curves: bool = False
 ) -> List[Dict]:
@@ -138,28 +131,32 @@ def evaluate_gamma_sweep(
     results = []
     all_curves_data = []
 
-    # Get all parameter combinations from the first image
-    parameters_combinations = list(relevances_by_parameters[input_filenames[0]].keys())
+    # Get a sample filename to determine the parameter combinations to test
+    sample_filename = next(iter(relevances_by_parameters.keys()))
+    parameters_combinations = list(relevances_by_parameters[sample_filename].keys())
     
-    for input_idx in range(input_tensors.shape[0]):
-        print(f"\n=== Evaluating Image {input_idx + 1}/{input_tensors.shape[0]} ===")
+    # The dataloader will elegantly handle loading one image at a time
+    for i, (input_tensor, filename_batch) in enumerate(tqdm(evaluation_dataloader, desc="Evaluating Images")):
+        input_filename = filename_batch[0] # Unpack batch of size 1
+        # The input_tensor is already a batch of 1: [1, C, H, W]
         
-        input_tensor = input_tensors[input_idx].unsqueeze(0)  # Add batch dim
-        input_filename = input_filenames[input_idx]
+        print(f"\n=== Evaluating Image {i + 1}/{len(evaluation_dataloader.dataset)}: {input_filename} ===")
         
         for parameters in parameters_combinations:
             conv_gamma, lin_gamma, distance_metric = parameters
 
-            # Get relevance map for this image and parameter combination
+            if parameters not in relevances_by_parameters[input_filename]:
+                print(f"  Skipping params {parameters} for {input_filename} (not found).")
+                continue
+
             relevance_map = relevances_by_parameters[input_filename][parameters]
             violations = violations_by_parameters[input_filename][parameters]
 
-            print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}")
+            print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}, dist={distance_metric}")
             
-            # Compute faithfulness score
             srg_results = srg_knn(
                 relevance_map=relevance_map,
-                input_tensor=input_tensor,
+                input_tensor=input_tensor.to(device), 
                 model=model_wrapper,
                 patch_size=patch_size,
                 db_embeddings=db_embeddings,
