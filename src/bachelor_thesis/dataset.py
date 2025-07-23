@@ -3,34 +3,90 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-from typing import Tuple, List
+from typing import Tuple, List, Optional, Callable, Dict
 
-class ImageFileDataset(Dataset):
-    def __init__(self, image_dir: str, filenames: List[str], transform: transforms.Compose):
+class GorillaReIDDataset(Dataset):
+    """
+    A dataset for gorilla Re-Identification tasks that handles images, labels, 
+    and optional segmentation masks.
+    """
+    def __init__(self, 
+                 image_dir: str, 
+                 filenames: List[str], 
+                 transform: transforms.Compose, 
+                 mask_dir: Optional[str] = None,
+                 mask_transform: Optional[transforms.Compose] = None,
+                 label_extractor: Callable[[str], str] = lambda f: f.split('_')[0]):
         """
         Args:
             image_dir (str): Directory with all the images.
-            filenames (list): List of specific image filenames (e.g., 'class1_001.png') to load.
-            transform (transforms.Compose): Torchvision transforms to be applied on a sample.
+            filenames (list): List of specific image filenames (e.g., 'zola_001.png') to load.
+            transform (transforms.Compose): Torchvision transforms for the input images.
+            mask_dir (str, optional): Directory with segmentation masks. Assumes mask filenames
+                                      match image filenames. Defaults to None.
+            mask_transform (transforms.Compose, optional): Torchvision transforms for the masks. 
+                                                          IMPORTANT: Should not include normalization.
+                                                          Defaults to None.
+            label_extractor (Callable, optional): A function that extracts the individual ID (label)
+                                                  from a filename. Defaults to taking the part before
+                                                  the first underscore.
         """
         self.image_dir = image_dir
+        self.mask_dir = mask_dir
+        self.filenames = filenames
+        
         self.transform = transform
-        self.image_paths = [os.path.join(image_dir, f) for f in filenames]
-        self.filenames_no_ext = [f.split('.')[0] for f in filenames]
+        self.mask_transform = mask_transform
+        self.label_extractor = label_extractor
+
+        # --- Pre-process paths and labels for efficiency ---
+        self.image_paths = [os.path.join(image_dir, f) for f in self.filenames]
+        self.labels = [self.label_extractor(f) for f in self.filenames]
+        
+        if self.mask_dir:
+            self.mask_paths = [os.path.join(mask_dir, f) for f in self.filenames]
+            # Check for mask existence upfront to be more robust
+            self.has_mask = [os.path.exists(p) for p in self.mask_paths]
+        else:
+            self.mask_paths = [None] * len(self.filenames)
+            self.has_mask = [False] * len(self.filenames)
 
     def __len__(self) -> int:
         """Returns the total number of images."""
-        return len(self.image_paths)
+        return len(self.filenames)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, str]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, str, Optional[torch.Tensor], str]:
         """
-        Fetches the image and its metadata at a given index.
-        """
-        img_path = self.image_paths[idx]
-        filename = self.filenames_no_ext[idx]
+        Fetches the image, its label, an optional mask, and the original filename.
         
-        # Open image, convert to RGB, and apply transforms
+        Returns:
+            Tuple[torch.Tensor, str, Optional[torch.Tensor], str]: A tuple containing:
+                - image_tensor (torch.Tensor): The transformed image.
+                - label (str): The individual ID of the gorilla (e.g., 'zola').
+                - mask_tensor (torch.Tensor or None): The transformed binary mask (1s for gorilla, 0s for background).
+                                                     None if mask_dir is not provided or mask is missing.
+                - filename (str): The original filename without extension.
+        """
+        # 1. Load Image
+        img_path = self.image_paths[idx]
         image = Image.open(img_path).convert("RGB")
         image_tensor = self.transform(image)
         
-        return image_tensor, filename
+        # 2. Get Label and Filename
+        label = self.labels[idx]
+        filename_no_ext = os.path.splitext(self.filenames[idx])[0]
+        
+        # 3. Load Mask (if applicable)
+        mask_tensor = None
+        if self.mask_dir and self.has_mask[idx]:
+            mask_path = self.mask_paths[idx]
+            # Masks are typically grayscale (L mode)
+            mask = Image.open(mask_path).convert("L")
+            
+            if self.mask_transform:
+                mask = self.mask_transform(mask)
+            
+            # Ensure the mask is a binary tensor of 0s and 1s
+            mask_tensor = (mask > 0).float()
+
+        return image_tensor, label, mask_tensor, filename_no_ext
