@@ -30,8 +30,8 @@ def _run_knn_perturbation(
     input_filename: str,
     distance_metric: str,
     k_neighbors: int,
+    patches_per_step: int = 1,
     baseline_value: float = 0.0,
-    patches_per_step: int = 1
 ) -> torch.Tensor:
     """
     Runs a perturbation experiment, tracking the k-NN proxy score at each step.
@@ -43,7 +43,6 @@ def _run_knn_perturbation(
                                 A larger value speeds up the process.
     """
     model.eval()
-
     # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad():
         initial_embedding = model(input_tensor)
@@ -123,8 +122,8 @@ def srg_knn(
     input_filename: str,
     distance_metric: str,
     k_neighbors: int,
+    patches_per_step: int,
     plot_curves: bool = False,
-    patches_per_step: int = 50
 ) -> float:
     """
     Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
@@ -135,7 +134,7 @@ def srg_knn(
     if relevance_map.dim() == 3:
         relevance_map = relevance_map.unsqueeze(0)  # Add a batch dimension -> [1, C, H, W]
         
-    relevance_per_pixel = torch.abs(relevance_map).sum(dim=1, keepdim=True)
+    relevance_per_pixel = relevance_map.sum(dim=1, keepdim=True) # removed abs here because doesnt really make sense for parameter sweep that control negative vs positive relevance
     patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=patch_size, stride=patch_size)
     patch_relevance_flat = patch_relevance.flatten()
 
@@ -144,11 +143,11 @@ def srg_knn(
 
     morf_curve = _run_knn_perturbation(
         model, input_tensor, morf_order, 'deletion', patch_size, 
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step=patches_per_step
     )
     lerf_curve = _run_knn_perturbation(
         model, input_tensor, lerf_order, 'deletion', patch_size,
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step
+        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step=patches_per_step    
     )
 
     morf_curve_norm = normalize_curve(morf_curve)
@@ -302,7 +301,7 @@ def srg(
     """
     # 1. Aggregate relevance per patch
     # Taking abs() is common to treat both positive and negative relevance as important.
-    relevance_per_pixel = torch.abs(relevance_map).sum(dim=1, keepdim=True)
+    relevance_per_pixel = relevance_map.sum(dim=1, keepdim=True) # removed abs here because doesnt really make sense for parameter sweep that control negative vs positive relevance
     patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=patch_size, stride=patch_size)
     patch_relevance_flat = patch_relevance.flatten()
 
