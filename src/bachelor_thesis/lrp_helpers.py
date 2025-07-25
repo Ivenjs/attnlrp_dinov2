@@ -223,9 +223,11 @@ def compute_knn_attnlrp_pass(
     input_tensor: torch.Tensor,
     checker: LRPConservationChecker,
     # parameters required for the k-NN score
+    query_label: str,         
+    query_filename: str,      
     db_embeddings: torch.Tensor,
+    db_labels: list,
     db_filenames: list,
-    input_filename: str,
     distance_metric: str = "euclidean",
     k_neighbors: int = 5,
     verbose: bool = False
@@ -254,8 +256,10 @@ def compute_knn_attnlrp_pass(
 
         knn_score = compute_knn_proxy_score(
             query_embedding=query_embedding,
-            query_filename=input_filename,
+            query_label=query_label,
+            query_filename=query_filename,
             db_embeddings=db_embeddings,
+            db_labels=db_labels,
             db_filenames=db_filenames,
             distance_metric=distance_metric,
             k=k_neighbors
@@ -281,9 +285,11 @@ def compute_knn_attnlrp_pass_batched(
     model_wrapper: nn.Module, 
     input_batch: torch.Tensor, 
     checker: LRPConservationChecker,
+    query_labels_batch: List[str],         
+    query_filenames_batch: List[str],      
     db_embeddings: torch.Tensor,
+    db_labels: list,
     db_filenames: list,
-    input_filename_batch: List[str], 
     distance_metric: str = "euclidean",
     k_neighbors: int = 5,
     verbose: bool = False
@@ -313,12 +319,15 @@ def compute_knn_attnlrp_pass_batched(
         for i in range(batch_size):
             # Isolate the data for the i-th sample
             query_embedding_i = query_embedding_batch[i].unsqueeze(0) # Shape [1, D]
-            input_filename_i = input_filename_batch[i]
+            input_filename_i = query_filenames_batch[i]
+            query_label_i = query_labels_batch[i]
 
             knn_score = compute_knn_proxy_score(
                 query_embedding=query_embedding_i,
+                query_label=query_label_i,
                 query_filename=input_filename_i,
                 db_embeddings=db_embeddings,
+                db_labels=db_labels,
                 db_filenames=db_filenames,
                 distance_metric=distance_metric,
                 k=k_neighbors
@@ -348,24 +357,27 @@ def compute_knn_attnlrp_pass_batched(
     return relevance_batch, violations_list
 
 def visualize_relevances(
-    relevances: List[torch.Tensor], 
+    relevances: Dict[Any, torch.Tensor], 
     mode: str,
     image_name: str,
     output_dir: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps",
     dim: Tuple[int, int] = (3,5)
-) -> torch.Tensor:
+) -> None: 
     heatmaps = [] 
+    
     for parameters, relevance in relevances.items():
-        heatmap = relevance.sum(1)
+        heatmap = relevance.sum(0)
+        
         denom = abs(heatmap).max()
         
-        #TODO label the heatmap with the gammas
+        #TODO label the heatmap with the gammas (your note)
         
         heatmap = heatmap / denom
 
-        heatmaps.append(heatmap[0].detach().cpu().numpy())
+        heatmaps.append(heatmap.detach().cpu().numpy())
     
     save_path = f"{output_dir}/{mode}/{image_name}/"
     os.makedirs(save_path, exist_ok=True)
     current_dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     imgify(heatmaps, vmin=-1, vmax=1, grid=dim).save(os.path.join(save_path, f"dinov2_heatmap_{current_dt}.png"))

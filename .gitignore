@@ -15,6 +15,7 @@ seg_test_in/*
 seg_test_out/*
 
 src/bachelor_thesis/heatmaps/*
+/*sample_images*/*
 
 
 # Byte-compiled / optimized / DLL files

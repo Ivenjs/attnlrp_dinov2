@@ -289,7 +289,7 @@ def load_finetuned_timm_wrapper(
     print("--- Model loading complete ---")
     return model_wrapper, transforms
 
-def get_model_wrapper(cfg=None, **overrides):
+def get_model_wrapper(device, cfg=None, **overrides):
     model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
     if cfg is None:
         with open(model_config_path, "r") as f:
@@ -298,7 +298,6 @@ def get_model_wrapper(cfg=None, **overrides):
     # Allow overriding config values via kwargs
     cfg = {**cfg, **overrides}
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_dtype = getattr(torch, cfg["model_dtype"])
 
     if device.type == "cuda" and not torch.cuda.is_bf16_supported():

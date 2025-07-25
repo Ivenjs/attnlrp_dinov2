@@ -4,6 +4,8 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from typing import Tuple, List, Optional, Callable, Dict
+from torch.utils.data.dataloader import default_collate
+
 
 class GorillaReIDDataset(Dataset):
     """
@@ -16,11 +18,12 @@ class GorillaReIDDataset(Dataset):
                  transform: transforms.Compose, 
                  mask_dir: Optional[str] = None,
                  mask_transform: Optional[transforms.Compose] = None,
-                 label_extractor: Callable[[str], str] = lambda f: f.split('_')[0]):
+                 label_extractor: Callable[[str], str] = lambda f: f.split('_')[0],
+                 dataset_name: Optional[str] = None):
         """
         Args:
-            image_dir (str): Directory with all the images.
-            filenames (list): List of specific image filenames (e.g., 'zola_001.png') to load.
+            image_dir (str): Directory with all the images: '/some/path/eval_body_squared_cleaned_open_2024_bigval/train'
+            filenames (list): List of specific image filenames (e.g., 'NN01.png') to load.
             transform (transforms.Compose): Torchvision transforms for the input images.
             mask_dir (str, optional): Directory with segmentation masks. Assumes mask filenames
                                       match image filenames. Defaults to None.
@@ -39,6 +42,10 @@ class GorillaReIDDataset(Dataset):
         self.mask_transform = mask_transform
         self.label_extractor = label_extractor
 
+        # If dataset_name is not provided, use the parent directory name of image_dir
+        self.dataset_name = dataset_name or os.path.basename(os.path.dirname(image_dir))
+
+
         # --- Pre-process paths and labels for efficiency ---
         self.image_paths = [os.path.join(image_dir, f) for f in self.filenames]
         self.labels = [self.label_extractor(f) for f in self.filenames]
@@ -50,6 +57,9 @@ class GorillaReIDDataset(Dataset):
         else:
             self.mask_paths = [None] * len(self.filenames)
             self.has_mask = [False] * len(self.filenames)
+
+    def get_dataset_name(self) -> str:
+        return self.dataset_name
 
     def __len__(self) -> int:
         """Returns the total number of images."""
@@ -89,4 +99,27 @@ class GorillaReIDDataset(Dataset):
             # Ensure the mask is a binary tensor of 0s and 1s
             mask_tensor = (mask > 0).float()
 
-        return image_tensor, label, mask_tensor, filename_no_ext
+        return {
+            "image": image_tensor,
+            "label": label,
+            "mask": mask_tensor,  # can be None
+            "filename": filename_no_ext
+        }
+
+def custom_collate_fn(batch):
+    """
+    Custom collate function to handle None values for masks.
+    'image', 'label', 'filename' are collated using the default collate.
+    'mask' is returned as a list of tensors/Nones.
+    """
+    # Separate the masks from the rest of the data
+    masks = [item.pop('mask') for item in batch]
+    
+    # Use the default collate for the rest of the items
+    # This will create batched tensors for images, and lists for labels/filenames
+    collated_batch = default_collate(batch)
+    
+    # Add the list of masks back into the collated batch
+    collated_batch['mask'] = masks
+    
+    return collated_batch

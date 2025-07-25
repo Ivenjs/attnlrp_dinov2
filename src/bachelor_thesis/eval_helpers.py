@@ -25,9 +25,11 @@ def _run_knn_perturbation(
     perturbation_type: str,
     patch_size: int,
     # k-NN specific args
+    query_label: str,         
+    query_filename: str,      
     db_embeddings: torch.Tensor,
+    db_labels: list,
     db_filenames: list,
-    input_filename: str,
     distance_metric: str,
     k_neighbors: int,
     patches_per_step: int = 1,
@@ -47,7 +49,7 @@ def _run_knn_perturbation(
     with torch.no_grad():
         initial_embedding = model(input_tensor)
         initial_score = compute_knn_proxy_score(
-            initial_embedding, input_filename, db_embeddings, db_filenames, distance_metric, k_neighbors
+            initial_embedding, query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors
         )
 
     num_patches = len(patch_order)
@@ -90,7 +92,7 @@ def _run_knn_perturbation(
         with torch.no_grad():
             current_embedding = model(perturbed_tensor)
             score = compute_knn_proxy_score(
-                current_embedding, input_filename, db_embeddings, db_filenames, distance_metric, k_neighbors
+                current_embedding, query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors
             )
             output_scores.append(score)
 
@@ -117,9 +119,11 @@ def srg_knn(
     model: torch.nn.Module, # UN-PATCHED model
     patch_size: int,
     # k-NN specific args
+    query_label: str,         
+    query_filename: str,      
     db_embeddings: torch.Tensor,
+    db_labels: list,
     db_filenames: list,
-    input_filename: str,
     distance_metric: str,
     k_neighbors: int,
     patches_per_step: int,
@@ -143,11 +147,11 @@ def srg_knn(
 
     morf_curve = _run_knn_perturbation(
         model, input_tensor, morf_order, 'deletion', patch_size, 
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step=patches_per_step
+        query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors, patches_per_step=patches_per_step
     )
     lerf_curve = _run_knn_perturbation(
         model, input_tensor, lerf_order, 'deletion', patch_size,
-        db_embeddings, db_filenames, input_filename, distance_metric, k_neighbors, patches_per_step=patches_per_step    
+        query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors, patches_per_step=patches_per_step
     )
 
     morf_curve_norm = normalize_curve(morf_curve)
@@ -345,9 +349,6 @@ def srg(
     # plt.show()
 
     return delta_a_f
-
-
-
 
 
 def attention_inside_mask(mask: np.ndarray, relevance: torch.Tensor) -> float:

@@ -33,14 +33,13 @@ def run_gamma_sweep(
     mode: str = "simple",
     db_embeddings: torch.Tensor = None,  
     db_filenames: List[str] = None,  
+    db_labels: List[str] = None,  
     k_neighbors: int = 5,
     distance_metrics: List[str] = ["euclidean"],
     conv_gamma_values: List[float] = CONV_GAMMAS,
     lin_gamma_values: List[float] = LIN_GAMMAS,
     verbose: bool = False
 ) -> Tuple[Dict[int, Dict[Tuple[float, float], torch.Tensor]], Dict[int, Dict[Tuple[float, float], Any]]]:
-    #TODO: use batching?
-
     """
     Runs a sweep over gamma parameters for multiple inputs, managing patches efficiently.
     """
@@ -59,9 +58,11 @@ def run_gamma_sweep(
             print(f"\n=== Processing Param Combination {i+1}/{len(param_combinations)}: "
                   f"conv_γ={conv_gamma}, lin_γ={lin_gamma}, dist={distance_metric} ===")
 
-            for input_batch, filename_batch in tqdm(dataloader, desc="Processing batches"):
-                input_batch = input_batch.to(device)
-            
+            for batch in tqdm(dataloader, desc="Processing batches"):
+                input_batch = batch["image"].to(device)
+                labels_batch = batch["label"]
+                filenames_batch = batch["filename"]
+
                 # Call the inner-loop function
                 if mode == "simple":
                     relevance_batch, violation_batch = compute_simple_attnlrp_pass_batched(
@@ -80,18 +81,21 @@ def run_gamma_sweep(
                         conv_gamma=conv_gamma,
                         lin_gamma=lin_gamma,
                         model_wrapper=model_wrapper,
-                        input_batch=input_batch,  # Add batch dim for single input
+                        input_batch=input_batch, 
                         checker=checker,
-                        verbose=verbose,
-                        db_embeddings=db_embeddings,  
-                        db_filenames=db_filenames,  
-                        input_filename_batch=filename_batch,
+                        query_labels_batch=labels_batch,
+                        query_filenames_batch=filenames_batch,
+                        db_embeddings=db_embeddings,
+                        db_labels=db_labels,
+                        db_filenames=db_filenames,
                         distance_metric=distance_metric,
-                        k_neighbors=k_neighbors  
+                        k_neighbors=k_neighbors,
+                        verbose=verbose,
+
                     )
             
                 key = (conv_gamma, lin_gamma, distance_metric)
-                for j, filename in enumerate(filename_batch):
+                for j, filename in enumerate(filenames_batch):
                     all_relevances[filename][key] = relevance_batch[j].detach().cpu()
                     all_violations[filename][key] = violation_batch[j]
 
@@ -104,12 +108,14 @@ def evaluate_gamma_sweep(
     relevances_by_parameters: Dict[str, Dict[Tuple[float, float, str], torch.Tensor]], 
     violations_by_parameters: Dict[str, Dict[Tuple[float, float, str], Any]],
     evaluation_dataloader: DataLoader,
-    model_wrapper,
+    model_wrapper: TimmWrapper,
     db_embeddings: torch.Tensor,
+    db_labels: List[str],
     db_filenames: List[str],
     patch_size: int,
     device: torch.device,
     k_neighbors: int = 5,
+    patches_per_step: int = 20,
     plot_curves: bool = False
 ) -> List[Dict]:
     """
@@ -136,10 +142,11 @@ def evaluate_gamma_sweep(
     parameters_combinations = list(relevances_by_parameters[sample_filename].keys())
     
     # The dataloader will elegantly handle loading one image at a time
-    for i, (input_tensor, filename_batch) in enumerate(tqdm(evaluation_dataloader, desc="Evaluating Images")):
-        input_filename = filename_batch[0] # Unpack batch of size 1
-        # The input_tensor is already a batch of 1: [1, C, H, W]
-        
+    for i, batch in enumerate(tqdm(evaluation_dataloader, desc="Evaluating Images")):
+        input_filename = batch["filename"][0]
+        query_label = batch["label"][0]
+        input_tensor = batch["image"].to(device)
+
         print(f"\n=== Evaluating Image {i + 1}/{len(evaluation_dataloader.dataset)}: {input_filename} ===")
         
         for parameters in parameters_combinations:
@@ -152,18 +159,21 @@ def evaluate_gamma_sweep(
             relevance_map = relevances_by_parameters[input_filename][parameters]
             violations = violations_by_parameters[input_filename][parameters]
 
-            print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}, dist={distance_metric}")
             
+            print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}, dist={distance_metric}")
             srg_results = srg_knn(
                 relevance_map=relevance_map,
-                input_tensor=input_tensor.to(device), 
+                input_tensor=input_tensor, 
                 model=model_wrapper,
                 patch_size=patch_size,
+                query_label=query_label,         
+                query_filename=input_filename,
                 db_embeddings=db_embeddings,
+                db_labels=db_labels,
                 db_filenames=db_filenames,
-                input_filename=input_filename,
                 distance_metric=distance_metric,
                 k_neighbors=k_neighbors,
+                patches_per_step=patches_per_step, 
                 plot_curves=plot_curves
             )
             
@@ -333,7 +343,7 @@ def find_robust_hyperparameters(
 def visualize_robustness_analysis(
     analysis_df: pd.DataFrame,
     save_path: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
-):
+) -> List[str]:
     """
     Create visualizations for the robustness analysis, generating a separate figure
     for each distance metric found in the 'distance_metric' column.
@@ -350,6 +360,8 @@ def visualize_robustness_analysis(
     
     # Get the base path and extension for saving files
     path_root, path_ext = os.path.splitext(save_path)
+    
+    saved_paths = []
 
     # 2. Loop over each distance metric
     for metric in distance_metrics:
@@ -409,6 +421,8 @@ def visualize_robustness_analysis(
         
         # Close the current figure to free up memory before the next loop iteration
         plt.close(fig)
+        saved_paths.append(metric_save_path)
+    return saved_paths
 
 
 def print_robustness_summary(
@@ -633,133 +647,195 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
         'best_by_correlation': best_by_correlation
     }
 
-def log_sweep_to_wandb(
-    results: List[Dict],
-    analysis_df: pd.DataFrame,
-    all_curves_data: List,
-    best_params_raw: Dict,
-    best_params_normalized: Dict,
-    aggregate_stats: Dict
+def log_nested_validation_to_wandb(
+    cfg: Dict,
+    final_decision: str,
+    approved_params: Dict,
+    tune_performance: Dict,
+    holdout_performance: Dict,
+    generalization_drop_percent: float,
+    analysis_df_tune: pd.DataFrame,
+    analysis_df_holdout: pd.DataFrame,
+    tune_results_list: List[Dict],
+    holdout_results_list: List[Dict],
+    tune_curves_list: List,
+    holdout_curves_list: List
 ):
     """
-    Logs all results from a gamma sweep to W&B, including pre-configured plots.
+    Logs the complete story of a nested validation experiment to a single W&B run.
     """
-
-
-    print("\n--- Logging results to Weights & Biases ---")
-
-    # --- 1. Log Summary Metrics ---
-    wandb.summary["best_raw_conv_gamma"] = best_params_raw['conv_gamma']
-    wandb.summary["best_raw_lin_gamma"] = best_params_raw['lin_gamma']
-    wandb.summary["best_raw_distance_metric"] = best_params_raw['distance_metric']
-    wandb.summary["best_raw_robustness_score"] = best_params_raw['robustness_score']
-    wandb.summary["best_raw_mean_score"] = best_params_raw['mean_score']
-    wandb.summary["best_raw_min_score"] = best_params_raw['min_score']
-    wandb.summary["best_raw_std_score"] = best_params_raw['std_score']
-    wandb.summary["best_raw_stability"] = best_params_raw['stability']
-    wandb.summary["best_raw_robustness_ratio"] = best_params_raw['robustness_ratio']
-    wandb.summary["best_norm_conv_gamma"] = best_params_normalized['conv_gamma']
-    wandb.summary["best_norm_lin_gamma"] = best_params_normalized['lin_gamma']
-    wandb.summary["best_norm_distance_metric"] = best_params_normalized['distance_metric']
-    wandb.summary["best_norm_robustness_score"] = best_params_normalized['robustness_score']
-    wandb.summary["best_norm_mean_score"] = best_params_normalized['mean_score']
-    wandb.summary["best_norm_min_score"] = best_params_normalized['min_score']
-    wandb.summary["best_norm_std_score"] = best_params_normalized['std_score']
-    wandb.summary["best_norm_stability"] = best_params_normalized['stability']
-    wandb.summary["best_norm_robustness_ratio"] = best_params_normalized['robustness_ratio']
+    print("\n--- Logging Nested Validation Experiment to Weights & Biases ---")
     
-    # --- 2. Create the Data Tables ---
-
-    # === FIX IS HERE ===
-    # First, create a raw DataFrame from your list of dictionaries
-    raw_df = pd.DataFrame(results)
-
-    # Now, handle the nested 'violations' column
-    # This will create a new DataFrame from the 'violations' dictionaries
-    violations_flat_df = pd.json_normalize(raw_df['violations'])
-    # It's good practice to add a prefix to the new columns
-    violations_flat_df = violations_flat_df.add_prefix('violations.')
-
-    # Drop the original nested column and join the new flattened columns
-    # axis=1 means we are concatenating columns side-by-side
-    detailed_results_df = pd.concat(
-        [raw_df.drop(columns=['violations']), violations_flat_df], 
-        axis=1
+    run = wandb.init(
+        project="Thesis-Iven", 
+        entity="gorillawatch", 
+        name="attnlrp_gamma_sweep_NESTED_VALIDATION",  
+        config=cfg 
     )
-    # detailed_results_df now has a flat structure, with NaN for any missing values,
-    # which wandb.Table can handle perfectly.
-    
-    # Now create the wandb.Table from the cleaned DataFrame
-    detailed_results_table = wandb.Table(dataframe=detailed_results_df)
-    # ====================
 
-    analysis_table = wandb.Table(dataframe=analysis_df)
+    # --- 1. Log Key Decision Metrics to wandb.summary ---
+    # This is the most important part for a quick overview.
+    wandb.summary["final_decision"] = final_decision
+    wandb.summary["generalization_drop_percent"] = generalization_drop_percent
     
-    curves_df = pd.DataFrame(
-        all_curves_data,
+    # Log the chosen parameters
+    wandb.summary["approved_conv_gamma"] = approved_params['conv_gamma']
+    wandb.summary["approved_lin_gamma"] = approved_params['lin_gamma']
+    wandb.summary["approved_distance_metric"] = approved_params['distance_metric']
+    
+    # Log the performance of the chosen parameters on both sets for comparison
+    wandb.summary["tune_set_mean_faithfulness"] = tune_performance['mean_faithfulness']
+    wandb.summary["tune_set_min_faithfulness"] = tune_performance['min_faithfulness']
+    wandb.summary["holdout_set_mean_faithfulness"] = holdout_performance['mean_faithfulness']
+    wandb.summary["holdout_set_min_faithfulness"] = holdout_performance['min_faithfulness']
+    
+    # --- 2. Log Detailed Data as Tables ---
+    # Log the full, per-image results for deep dives
+        # Flatten the tune_results_list
+    flat_tune_results = [_flatten_violations(r) for r in tune_results_list]
+    flat_holdout_results = [_flatten_violations(r) for r in holdout_results_list]
+
+    tune_results_table = wandb.Table(dataframe=pd.DataFrame(flat_tune_results))
+    holdout_results_table = wandb.Table(dataframe=pd.DataFrame(flat_holdout_results))
+
+    # Log the analysis dataframes (grouped by parameter)
+    tune_analysis_table = wandb.Table(dataframe=analysis_df_tune)
+    holdout_analysis_table = wandb.Table(dataframe=analysis_df_holdout)
+
+    wandb.log({
+        "tune_set/raw_results_per_image": tune_results_table,
+        "holdout_set/raw_results_per_image": holdout_results_table,
+        "tune_set/parameter_analysis": tune_analysis_table,
+        "holdout_set/parameter_analysis": holdout_analysis_table
+    })
+
+    # --- 3. Log Visualizations ---
+    # You can generate and log the heatmap plots for both sets
+    # maybe not that clean to return the paths here, but it works
+    tune_paths = visualize_robustness_analysis(analysis_df_tune, save_path="tune_analysis.png")
+    holdout_paths = visualize_robustness_analysis(analysis_df_holdout, save_path="holdout_analysis.png")
+
+    wandb.log({
+        "plots/tune_set_analysis_heatmaps": [wandb.Image(p) for p in tune_paths],
+        "plots/holdout_set_analysis_heatmaps": [wandb.Image(p) for p in holdout_paths]
+    })
+
+    # Curve logging
+    print("\n--- Logging Faithfulness Curves for Approved Parameters ---")
+
+    # Convert curve lists to DataFrames for easy filtering
+    tune_curves_df = pd.DataFrame(
+        tune_curves_list,
         columns=["image", "conv_gamma", "lin_gamma", "distance_metric", "curve_label", "step", "score"]
     )
-    faithfulness_curves_table = wandb.Table(dataframe=curves_df)
+    holdout_curves_df = pd.DataFrame(
+        holdout_curves_list,
+        columns=["image", "conv_gamma", "lin_gamma", "distance_metric", "curve_label", "step", "score"]
+    )
 
-    raw_curves_df = curves_df[curves_df['curve_label'].str.contains('_raw')]
-    norm_curves_df = curves_df[curves_df['curve_label'].str.contains('_norm')]
+    # Filter both DataFrames to get curves ONLY for the approved parameter set
+    approved_tune_curves_df = tune_curves_df[
+        (tune_curves_df['conv_gamma'] == approved_params['conv_gamma']) &
+        (tune_curves_df['lin_gamma'] == approved_params['lin_gamma']) &
+        (tune_curves_df['distance_metric'] == approved_params['distance_metric'])
+    ].copy() # .copy() to avoid SettingWithCopyWarning
+
+    approved_holdout_curves_df = holdout_curves_df[
+        (holdout_curves_df['conv_gamma'] == approved_params['conv_gamma']) &
+        (holdout_curves_df['lin_gamma'] == approved_params['lin_gamma']) &
+        (holdout_curves_df['distance_metric'] == approved_params['distance_metric'])
+    ].copy()
+
+    # Add a 'split' column to distinguish them in the plot
+    approved_tune_curves_df['split'] = 'tune'
+    approved_holdout_curves_df['split'] = 'holdout'
+
+    # Concatenate them into a single DataFrame for easy plotting
+    combined_curves_df = pd.concat([approved_tune_curves_df, approved_holdout_curves_df])
+
+    curve_series_dict = {}
+
+    # Group by (split, curve_label)
+    #TODO: remove the normalized plots. normalized is kind of obsolete
+    grouped = combined_curves_df.groupby(["split", "curve_label"])
+
+    for (split, label), group in grouped:
+        # Sort by step to make sure line is nice
+        group_sorted = group.sort_values("step")
+        
+        # Name like "tune/faithfulness" or "holdout/robustness"
+        key = f"{split}/{label}"
+        xs = group_sorted["step"].tolist()
+        ys = group_sorted["score"].tolist()
+
+        curve_series_dict[key] = (xs, ys)
     
-    # --- LOG RAW CURVES ---
-    for i, ((image, conv_g, lin_g, dist_m), group) in enumerate(raw_curves_df.groupby(['image', 'conv_gamma', 'lin_gamma', 'distance_metric'])):
-        plot_key = f"raw_curves_per_run/plot_{i}"
-        
-        # 2. The title can remain long and descriptive
-        title = f"Img: {image}, γ_c={conv_g}, γ_l={lin_g}, dist={dist_m}"
-        
-        # The rest of your code is perfect
-        table_for_plot = wandb.Table(dataframe=group)
+    # --- Plotting ---
+    table_data = []
+
+    for key, (xs, ys) in curve_series_dict.items():
+        for x, y in zip(xs, ys):
+            table_data.append([key, x, y])
+
+    # Make DataFrame
+    plot_df = pd.DataFrame(table_data, columns=["series", "step", "score"])
+    plot_table = wandb.Table(dataframe=plot_df)
+
+    # Create the plot
+    wandb_plot = wandb.plot.line(
+        plot_table,                     
+        x="step",                       
+        y="score",                      
+        stroke="series",                
+        title="Faithfulness Curves (Tune vs. Holdout)"
+    )
+
+    wandb.log({"plots/aggregate_faithfulness_curves": wandb_plot})
+
+    # 2. Per-Image Plots: Plot curves for each image, comparing Tune vs. Holdout if possible
+    # This is useful for debugging specific images. We group by the original image filename.
+    for image_name, group_df in combined_curves_df.groupby('image'):
+        # Create a unique label for each curve using split + label
+        group_df = group_df.copy()  # avoid SettingWithCopy
+        group_df["series_label"] = group_df["split"] + "/" + group_df["curve_label"]
+
+        table_for_plot = wandb.Table(dataframe=group_df)
+        plot_key = f"per_image_curves/{image_name.replace('.', '_')}"
+        title = f"Curves for {image_name} (Split(s): {group_df['split'].unique()})"
+
         wandb.log({
             plot_key: wandb.plot.line(
                 table_for_plot,
                 x="step",
                 y="score",
-                stroke="curve_label", 
+                stroke="series_label",  # use new column
                 title=title
             )
         })
 
-    # --- LOG NORMALIZED CURVES ---
-    for i, ((image, conv_g, lin_g, dist_m), group) in enumerate(norm_curves_df.groupby(['image', 'conv_gamma', 'lin_gamma', 'distance_metric'])):
-        plot_key = f"norm_curves_per_run/plot_{i}"
+    # --- 4. (Optional) Log Artifacts for versioning ---
+    artifact = wandb.Artifact('nested-validation-results', type='analysis-results')
+    for tune_path in tune_paths:
+        artifact.add_file(tune_path)
+    for holdout_path in holdout_paths:
+        artifact.add_file(holdout_path)
 
-        # 2. The title can remain long and descriptive
-        title = f"Img: {image}, γ_c={conv_g}, γ_l={lin_g}, dist={dist_m}"
-        
-        # The rest of your code is perfect
-        table_for_plot = wandb.Table(dataframe=group)
-        wandb.log({
-            plot_key: wandb.plot.line(
-                table_for_plot,
-                x="step",
-                y="score",
-                stroke="curve_label", 
-                title=title
-            )
-    })
-    
+    # You could also save the dataframes as CSVs and add them
+    # analysis_df_tune.to_csv("tune_analysis.csv")
+    # artifact.add_file("tune_analysis.csv")
+    run.log_artifact(artifact)
 
-    # --- 4. Log the Heatmaps and Other Tables ---
-    analysis_plot_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
-    if os.path.exists(analysis_plot_path):
-        wandb.log({"summary_plots/robustness_heatmaps": wandb.Image(analysis_plot_path)})
-    
-    wandb.log({
-        "data_tables/detailed_results": detailed_results_table,
-        "data_tables/robustness_analysis_by_parameter": analysis_table,
-        "data_tables/faithfulness_curves_raw_data": faithfulness_curves_table
-    })
-
-    # --- 5. Log Artifacts ---
-    print("Creating and logging artifact...")
-    artifact = wandb.Artifact('robustness-sweep-results', type='analysis-results')
-    artifact.add(detailed_results_table, "detailed_results")
-    artifact.add(analysis_table, "robustness_analysis_by_parameter")
-    artifact.add(faithfulness_curves_table, "faithfulness_curves_raw_data")
-    wandb.log_artifact(artifact)
-
+    run.finish()
     print("--- Finished logging to W&B ---")
+
+def _flatten_violations(row: Dict) -> Dict:
+    """
+    Nimmt ein Ergebnis-Dict und flatten’t das `violations`-Dict in einzelne Keys.
+    Falls `violations` nicht da oder nicht dict ist → wird ignoriert.
+    """
+    row = row.copy()  # prevent side effects
+    violations = row.pop("violations", None)
+    if isinstance(violations, dict):
+        flat_violations = {f"violation/{k}": v if v is not None else float("nan") for k, v in violations.items()}
+        row.update(flat_violations)
+    return row

@@ -10,9 +10,8 @@ from torch.utils.data import DataLoader
 
 
 import yaml
-
-from basemodel import get_model_wrapper
 from utils import get_class_label
+from dataset import GorillaReIDDataset, custom_collate_fn
 
 
 #TODO: rather use the transforms from the model wrapper
@@ -25,94 +24,94 @@ TRANSFORM = transforms.Compose(
     )
 
 def fill_knn_db(
-    image_dir: str, model_wrapper: TimmWrapper, output_dir: str, model_checkpoint: str, device: torch.device, batch_size: int = 64, transform: transforms.Compose = TRANSFORM
+    dataset: GorillaReIDDataset, 
+    model_wrapper: TimmWrapper, 
+    output_path: str,
+    device: torch.device, 
+    batch_size: int = 64, 
 ) -> Tuple[torch.Tensor, list]:
     """
-    Generates and saves embeddings for all images in a directory using manual batch processing.
+    Generates and saves embeddings for a given dataset.
+    Saves embeddings, labels, and filenames.
     """
-    # 1. Get all image file paths and filenames first
-    all_files = sorted(os.listdir(image_dir)) # sorted for consistent order
-    image_filenames = [f for f in all_files if f.lower().endswith((".png", ".jpg", ".jpeg"))]
-
-    if not image_filenames:
-        print(f"Warning: No images found in {image_dir}")
-        return torch.empty(0), []
-
-    dataset = ImageFileDataset(
-        image_dir=image_dir, 
-        filenames=image_filenames, 
-        transform=transform
-    )
     dataloader = DataLoader(
         dataset, 
         batch_size=batch_size, 
-        shuffle=False,      # Keep order for consistency
-        num_workers=4,      # Use 4 CPU cores for data loading
-        pin_memory=True     # Speeds up CPU-to-GPU transfer
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=custom_collate_fn
     )
+    print(f"Generating embeddings for {len(dataloader.dataset)} images...")
         
-    all_embeddings_list: List[torch.Tensor] = []
-    processed_filenames: List[str] = []
-    
+    all_embeddings_list = []
+    all_labels = []
+    all_filenames = []
     
     with torch.no_grad():
-        for image_batch, filename_batch in tqdm(dataloader, desc="Generating embeddings"):
-            stacked_images = image_batch.to(device)
-            
-            embeddings = model_wrapper(stacked_images) 
+        for batch in tqdm(dataloader, desc=f"Generating embeddings for {os.path.basename(output_path)}"):
+            images = batch["image"]
+            labels = batch["label"]
+            filenames = batch["filename"]
+
+            images = images.to(device)
+            embeddings = model_wrapper(images)
             
             all_embeddings_list.append(embeddings.cpu())
-            processed_filenames.extend(filename_batch) 
+            all_labels.extend(labels)
+            all_filenames.extend(filenames)
 
     final_embeddings = torch.cat(all_embeddings_list, dim=0)
 
-    dataset_to_save = {
-        "embeddings": final_embeddings,  
-        "filenames": processed_filenames
+    db_data = {
+        "embeddings": final_embeddings,
+        "labels": all_labels,
+        "filenames": all_filenames
     }
 
-    os.makedirs(output_dir, exist_ok=True)
-    out_path = f"{output_dir}/{model_checkpoint.split('/')[-1]}_{image_dir.split('/')[-1]}.pt"
-    torch.save(dataset_to_save, out_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    torch.save(db_data, output_path)
     
-    print(f"Saved {len(processed_filenames)} embeddings to {out_path}")
+    print(f"Saved {len(all_filenames)} embeddings to {output_path}")
 
-    return final_embeddings.to(device), processed_filenames
+    return final_embeddings.to(device), all_labels, all_filenames
 
-def get_knn_db(knn_db_dir: str, image_dir: str, model_wrapper: TimmWrapper, transforms: transforms.Compose, device: torch.device) -> Tuple[torch.Tensor, list]:
+def get_knn_db(
+    db_dir: str,
+    split_name: str, # e.g., "train" or "val"
+    dataset: GorillaReIDDataset,
+    model_wrapper: TimmWrapper, 
+    model_checkpoint_path: str,
+    batch_size: int,
+    device: torch.device
+) -> Tuple[torch.Tensor, list, list]:
+    """
+    Loads a pre-computed k-NN database or creates it if it doesn't exist.
+    The database name is a combination of the model dataset_name and the data split.
+    """
+
+    checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint_path))[0]
+    db_filename = f"{checkpoint_name}_{dataset.get_dataset_name()}_{split_name}_db.pt"
+    db_path = os.path.join(db_dir, db_filename)
+
     db_embeddings = []
     db_filenames = []
 
-    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
-    with open(model_config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-    
-    #TODO: also include data name here for comparison so that i can have multiple databases for different datasets
-    checkpoint_name = os.path.basename(cfg["checkpoint_path"]).split('.')[0]
-    dataset_name = image_dir.split('/')[-1]
-    db_name = f"{checkpoint_name}_{dataset_name}"
-
-    files_in_dir = os.listdir(knn_db_dir)
-    matching_checkpoints = [f for f in files_in_dir if db_name in f]
-    if matching_checkpoints:
-        print(f"KNN database {db_name} already exists. Loading the KNN database...")
-        dataset = torch.load(os.path.join(knn_db_dir, matching_checkpoints[0]))
-        db_embeddings = dataset["embeddings"].to(device)
-        db_filenames = dataset["filenames"]
+    if os.path.exists(db_path):
+        print(f"Loading existing k-NN database: {db_path}")
+        db_data = torch.load(db_path, map_location=device)
+        return db_data["embeddings"], db_data["labels"], db_data["filenames"]
     else:
-        print(f"KNN database {db_name} does not exist. Filling the KNN database...")
-        db_embeddings, db_filenames = fill_knn_db(
-            image_dir=image_dir,
+        print(f"k-NN database not found. Creating new one at: {db_path}")
+        return fill_knn_db(
+            dataset=dataset,
             model_wrapper=model_wrapper,
-            output_dir=knn_db_dir,
-            model_checkpoint=checkpoint_name,
+            output_path=db_path,
             device=device,
-            transform=transforms
+            batch_size=batch_size
         )
-    return db_embeddings, db_filenames
 
 
-# TODO use the GPU enhanced versions from the model_evaluation.py (gorillawatch repo)
 def compute_distances(
     query_embedding: torch.Tensor,
     db_embeddings: torch.Tensor,
@@ -178,8 +177,10 @@ def knn(
 
 def compute_knn_proxy_score(
     query_embedding: torch.Tensor,
-    query_filename: str,
+    query_label: str,         
+    query_filename: str,      
     db_embeddings: torch.Tensor,
+    db_labels: list,
     db_filenames: list,
     distance_metric: str = "cosine",
     k: int = 5,
@@ -187,44 +188,47 @@ def compute_knn_proxy_score(
     """
     Computes a differentiable proxy score for a k-NN classifier's decision.
 
-    The score is defined as: S = mean(sim_friends) - mean(sim_foes)
+    The score is defined as: S = mean(sim_friends) - mean(sim_foes).
+    The score [-2,2] is larger when the query is more similar to its friends than to its foes.
     This creates a differentiable objective that LRP can backpropagate through.
-
-    Args:
-        query_embedding (torch.Tensor): The (1, D) embedding of the input image.
-                                        This tensor MUST have requires_grad=True.
-        query_filename (str): The filename of the input image, used to infer the ground truth label
-        db_embeddings (torch.Tensor): The (N, D) embeddings in the k-NN database.
-        db_filenames (list): A list of N filenames corresponding to the db_embeddings. The labels can be infered from the filenames.
-        k (int): The number of nearest neighbors to consider.
-        metric (str): The similarity metric to use, 'cosine' or 'euclidean'.
-
-    Returns:
-        torch.Tensor: A single scalar tensor representing the proxy score,
-                      with its computation graph attached to the query_embedding.
     """
+
+    
+    num_db_samples = len(db_filenames)
+    
+    is_query_in_db = query_filename in db_filenames
+    
+    num_available_neighbors = num_db_samples - 1 if is_query_in_db else num_db_samples
+    
+    # Ensure k is not larger than the number of available neighbors.
+    # If there are no available neighbors, effective_k will be 0.
+    effective_k = min(k, num_available_neighbors)
+
+    # If there are no possible neighbors to find, we can't compute a score.
+    # Return a neutral score (0) or handle as an error. NORMALLY, THIS SHOULD NOT HAPPEN.
+    if effective_k <= 0:
+        # Returning a neutral score is often a safe default.
+        logging.warning(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
+        return torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
+
     # We must use a detached version of the query for the distance calculation
     # to find the neighbors. This is because topk is not nicely differentiable
     # and we only need the *identities* of the neighbors, not their gradient path.
-
-    ground_truth_label = query_filename.split("_")[0]
-
     with torch.no_grad():
         distances = compute_distances(query_embedding.detach(), db_embeddings, distance_metric)
-        try:
-            query_idx = db_filenames.index(query_filename)
-            distances[query_idx] = torch.inf
-        except ValueError:
-            # It's fine if the query isn't in the DB, just means no mask is needed.
-            pass
-        top_k_indices = torch.topk(distances, k, largest=False).indices
+        if is_query_in_db:
+            try:
+                query_idx = db_filenames.index(query_filename)
+                distances[query_idx] = torch.inf
+            except ValueError:
+                pass
+        top_k_indices = torch.topk(distances, effective_k, largest=False).indices
     
     friends_indices = []
     foes_indices = []
     for idx_tensor in top_k_indices:
         idx = idx_tensor.item() 
-        neighbor_label = get_class_label(db_filenames[idx])
-        if neighbor_label == ground_truth_label:
+        if db_labels[idx] == query_label:
             friends_indices.append(idx)
         else:
             foes_indices.append(idx)
@@ -242,6 +246,7 @@ def compute_knn_proxy_score(
     if friends_indices:
         dist_friends = differentiable_distances[friends_indices].mean()
     else:
+        # this case is a bit weird, since we only have foes and the score will be arbitrarily better, when the foes are closer...
         dist_friends = torch.tensor(MAX_DISTANCE, device=query_embedding.device)
 
     if foes_indices:
