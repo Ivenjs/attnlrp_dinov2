@@ -669,7 +669,7 @@ def log_nested_validation_to_wandb(
     run = wandb.init(
         project="Thesis-Iven", 
         entity="gorillawatch", 
-        name="attnlrp_gamma_sweep_NESTED_VALIDATION",  
+        name="attnlrp_gamma_sweep_tune_holdout",  
         config=cfg 
     )
 
@@ -753,10 +753,14 @@ def log_nested_validation_to_wandb(
     # Concatenate them into a single DataFrame for easy plotting
     combined_curves_df = pd.concat([approved_tune_curves_df, approved_holdout_curves_df])
 
+    # normalized curves are kind of obsolete
+    combined_curves_df = combined_curves_df[
+        ~combined_curves_df["curve_label"].str.contains("norm", case=False)
+    ].copy()
+
     curve_series_dict = {}
 
     # Group by (split, curve_label)
-    #TODO: remove the normalized plots. normalized is kind of obsolete
     grouped = combined_curves_df.groupby(["split", "curve_label"])
 
     for (split, label), group in grouped:
