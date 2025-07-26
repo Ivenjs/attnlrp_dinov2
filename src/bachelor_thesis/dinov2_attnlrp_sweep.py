@@ -270,9 +270,9 @@ def find_robust_hyperparameters(
         
         # Normalized robustness score
         norm_robustness_score = (
-            0.4 * norm_min +               # Worst case shouldn't be terrible
+            0.3 * norm_min +               # Worst case shouldn't be terrible
             0.3 * norm_stability +         # Low variance is good
-            0.2 * norm_mean +              # Good average performance
+            0.3 * norm_mean +              # Good average performance
             0.1 * norm_robustness_ratio    # High success rate
         )
         
