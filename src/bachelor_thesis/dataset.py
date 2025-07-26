@@ -6,6 +6,8 @@ from torchvision import transforms
 from typing import Tuple, List, Optional, Callable, Dict
 from torch.utils.data.dataloader import default_collate
 
+from MaskGenerator import MaskGenerator
+from tqdm import tqdm
 
 class GorillaReIDDataset(Dataset):
     """
@@ -18,6 +20,9 @@ class GorillaReIDDataset(Dataset):
                  transform: transforms.Compose, 
                  mask_dir: Optional[str] = None,
                  mask_transform: Optional[transforms.Compose] = None,
+                 generate_masks_from: Optional[str] = None, 
+                 mask_generator: Optional[MaskGenerator] = None,
+                 mask_gen_batch_size: int = 32,
                  label_extractor: Callable[[str], str] = lambda f: f.split('_')[0],
                  dataset_name: Optional[str] = None):
         """
@@ -30,9 +35,14 @@ class GorillaReIDDataset(Dataset):
             mask_transform (transforms.Compose, optional): Torchvision transforms for the masks. 
                                                           IMPORTANT: Should not include normalization.
                                                           Defaults to None.
+            generate_masks_from (Optional[str]): "None" for no masks, "cropped" for directly from images and "database" for getting frames and boxes from database
+            mask_generator (Optional[MaskGenerator]): wraps a sam2 model to generate masks
+            mask_gen_batch_size (int): Batch size for mask generation. Defaults to 32.
             label_extractor (Callable, optional): A function that extracts the individual ID (label)
                                                   from a filename. Defaults to taking the part before
                                                   the first underscore.
+            dataset_name (Optional[str], optional): Name of the dataset. If not provided, it will be derived
+                                                 from the image directory name.
         """
         self.image_dir = image_dir
         self.mask_dir = mask_dir
@@ -49,10 +59,43 @@ class GorillaReIDDataset(Dataset):
         # --- Pre-process paths and labels for efficiency ---
         self.image_paths = [os.path.join(image_dir, f) for f in self.filenames]
         self.labels = [self.label_extractor(f) for f in self.filenames]
+
+        if self.mask_dir and generate_masks_from == "cropped":
+            assert mask_generator is not None, "A MaskGenerator instance must be provided."
+            
+            print(f"Mode 'cropped' is active. Checking for and generating masks in {self.mask_dir}...")
+            #TODO: The saving logic should also take the dataset_name AND THE SPLIT (for closed set) into account.
+            os.makedirs(self.mask_dir, exist_ok=True)
+            
+            generation_jobs = []
+            for filename in self.filenames:
+                mask_path = os.path.join(self.mask_dir, os.path.basename(filename))
+                if not os.path.exists(mask_path):
+                    img_path = os.path.join(self.image_dir, os.path.basename(filename))
+                    generation_jobs.append({'img_path': img_path, 'mask_path': mask_path})
+            
+            if generation_jobs:
+                print(f"Found {len(generation_jobs)} missing masks. Generating in batches of {mask_gen_batch_size}...")
+                
+                # 2. Process jobs in batches
+                for i in tqdm(range(0, len(generation_jobs), mask_gen_batch_size), desc="Generating Mask Batches"):
+                    batch_jobs = generation_jobs[i : i + mask_gen_batch_size]
+                    
+                    try:
+                        image_batch_pil = [Image.open(job['img_path']).convert("RGB") for job in batch_jobs]
+                        
+                        generated_masks_np = mask_generator.generate_masks_from_crops_batch(image_batch_pil)
+                        
+                        for job, mask_np in zip(batch_jobs, generated_masks_np):
+                            mask_pil = Image.fromarray(mask_np * 255)
+                            mask_pil.save(job['mask_path'])
+                    
+                    except Exception as e:
+                        print(f"Warning: Failed to process a batch. Error: {e}")
+
         
         if self.mask_dir:
-            self.mask_paths = [os.path.join(mask_dir, f) for f in self.filenames]
-            # Check for mask existence upfront to be more robust
+            self.mask_paths = [os.path.join(mask_dir, os.path.basename(f)) for f in self.filenames]
             self.has_mask = [os.path.exists(p) for p in self.mask_paths]
         else:
             self.mask_paths = [None] * len(self.filenames)
