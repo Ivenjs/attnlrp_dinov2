@@ -1,4 +1,4 @@
-#dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
+dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
+#dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
 #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_all24_10_individuals_open" #THIS IS FACE :((
-batch_size: 64
+batch_size: 4 # a batch size of 8 already breaks the gpu memory for the backwards passes...

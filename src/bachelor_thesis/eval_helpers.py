@@ -364,7 +364,6 @@ def attention_inside_mask(mask: np.ndarray, relevance: torch.Tensor) -> float:
     if relevance.dim() == 4:
         relevance = relevance.squeeze(0)
 
-    # Sanity check
     assert relevance.shape[1:] == mask.shape, "Mask and relevance must have the same shape"
 
     mask_tensor = torch.from_numpy(mask).to(relevance.device).bool()

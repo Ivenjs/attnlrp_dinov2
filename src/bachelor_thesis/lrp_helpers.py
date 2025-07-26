@@ -338,6 +338,8 @@ def compute_knn_attnlrp_pass_batched(
 
             # We must use retain_graph=True because we are backpropping through the same
             # shared computational graph (from the forward pass) multiple times.
+            # TODO: This is very memory intensive. a batch_size of 8 is already too much. Maybe rather not batch?
+            # the speed gains are only from the forward pass anyway, and since the batchsize is so small, the gains might be negligible.
             model_wrapper.zero_grad() # Clear previous sample's gradients
             knn_score.backward(retain_graph=True)
 

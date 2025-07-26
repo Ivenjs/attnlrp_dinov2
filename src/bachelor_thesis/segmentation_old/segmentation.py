@@ -28,7 +28,7 @@ DB_SCHEMA = "public"
 FEATURE_TYPE = "body"  # 'body', 'body_face', 'face_45' or 'face_90'
 BATCH_SIZE = 64  # Number of detections to process in one model forward pass
 MAX_WORKERS = 64  # For saving images in parallel
-DB_QUERY_BATCH_SIZE = 1000  # How many records to fetch from the DB at once
+DB_QUERY_BATCH_SIZE = 500  # How many records to fetch from the DB at once
 
 
 # --- Model and Device Setup ---
