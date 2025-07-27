@@ -179,7 +179,7 @@ if __name__ == "__main__":
         
         # The 'best_raw' for logging is the one selected from the TUNE set.
         # The 'aggregate_stats' for logging should be the performance on the HOLDOUT set.
-        final_official_params = best_params_from_tune
+        final_official_params = best_params_raw_tune
         final_official_performance = holdout_performance
 
         print("\nOfficial Approved LRP Hyperparameters:")
