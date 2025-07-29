@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
-from knn_helpers import compute_knn_proxy_score
+from knn_helpers import compute_knn_proxy_score, score_with_fixed_neighbors
 
 
 PATCH_SIZE = 14  # Size of the patches to average over
@@ -17,6 +17,17 @@ def calculate_auc(curve: torch.Tensor) -> float:
     # The paper defines the area as (1/N) * sum(f_j(x_k)).
     # This is equivalent to the mean of the curve points.
     return torch.mean(curve).item()
+
+#TODO: Might be worth a try:
+"""
+1. (Strongly Recommended) Stabilize the Evaluation Metric
+The "neighbor flipping" is the primary source of chaos. To get more stable and interpretable curves, you can modify the evaluation to use a 
+fixed neighborhood.
+The Idea: Identify the k-nearest friends and foes once at the beginning. Then, during perturbation, 
+measure how the distances to this fixed set of neighbors change. 
+This transforms the question from "How does the k-NN decision change?" to the more stable "How does similarity to the original neighbors change?".
+
+"""
 
 def _run_knn_perturbation(
     model: torch.nn.Module, # UN-PATCHED model
@@ -48,8 +59,12 @@ def _run_knn_perturbation(
     # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad():
         initial_embedding = model(input_tensor)
-        initial_score = compute_knn_proxy_score(
-            initial_embedding, query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors
+        
+        # This function will now be responsible for finding the fixed neighbors
+        initial_score, friends_indices, foes_indices = compute_knn_proxy_score(
+            initial_embedding, query_label, query_filename, db_embeddings, 
+            db_labels, db_filenames, distance_metric, k_neighbors,
+            return_indices=True # Add this flag to your score function
         )
 
     num_patches = len(patch_order)
@@ -91,10 +106,10 @@ def _run_knn_perturbation(
         # After perturbing the chunk, run the model and get the score
         with torch.no_grad():
             current_embedding = model(perturbed_tensor)
-            score = compute_knn_proxy_score(
-                current_embedding, query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors
+            score = score_with_fixed_neighbors(
+                current_embedding, db_embeddings, friends_indices, foes_indices, distance_metric
             )
-            output_scores.append(score)
+            output_scores.append(score.item())
 
         # Update progress
         num_in_chunk = end_idx - start_idx
@@ -133,13 +148,8 @@ def srg_knn(
     Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
     A higher score is better.
     """
-    # Ensure the relevance map is a 4D tensor [N, C, H, W] for consistency.
-    # The new batched pipeline stores it as 3D [C, H, W].
-    if relevance_map.dim() == 3:
-        relevance_map = relevance_map.unsqueeze(0)  # Add a batch dimension -> [1, C, H, W]
-        
-    relevance_per_pixel = relevance_map.sum(dim=1, keepdim=True) # removed abs here because doesnt really make sense for parameter sweep that control negative vs positive relevance
-    patch_relevance = F.avg_pool2d(relevance_per_pixel, kernel_size=patch_size, stride=patch_size)
+    # relevance should be shape (1,1,H,W)
+    patch_relevance = F.avg_pool2d(relevance_map, kernel_size=patch_size, stride=patch_size)
     patch_relevance_flat = patch_relevance.flatten()
 
     lerf_order = torch.argsort(patch_relevance_flat, descending=False)
@@ -351,40 +361,50 @@ def srg(
     return delta_a_f
 
 
-def attention_inside_mask(mask: np.ndarray, relevance: torch.Tensor) -> float:
+def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> float:
     """
     Args:
-        mask (np.ndarray): Boolean or binary array of shape (H, W).
-        relevance (torch.Tensor): Tensor of shape (H, W) or (1, H, W) with relevance scores.
+        mask (np.ndarray): Boolean or binary array of shape (1 ,H, W).
+        relevance (torch.Tensor): Tensor of shape (1, 1, H, W) with relevance scores.
 
     Returns:
         Tuple[float, float, float]:
             (total_fraction, positive_fraction, negative_fraction)
     """
-    if relevance.dim() == 4:
-        relevance = relevance.squeeze(0)
 
-    assert relevance.shape[1:] == mask.shape, "Mask and relevance must have the same shape"
+    target_size = relevance.shape[-2:]  # e.g., (518, 518)
+    mask_tensor = torch.from_numpy(mask).to(relevance.device)
 
-    mask_tensor = torch.from_numpy(mask).to(relevance.device).bool()
-    mask_tensor = mask_tensor.unsqueeze(0).expand(relevance.shape)  # expand to match(3, H, W)
-    relevance_inside = relevance[mask_tensor]
-    # relevance_outside = relevance[~mask_tensor]
+    if mask_tensor.shape[-2:] != target_size:
+        # F.interpolate needs a 4D input (N, C, H, W), so we add a temporary batch dimension.
+        # We must also convert to float for the interpolation operation.
+        # 'nearest' mode is crucial for masks to avoid creating non-binary values.
+        mask_tensor = F.interpolate(
+            mask_tensor.unsqueeze(0).float(),
+            size=target_size,
+            mode='nearest'
+        ).squeeze(0) # Remove the temporary batch dimension.
 
-    # Compute total relevance values
-    total_abs_relevance = relevance.abs().sum()
+    # From this point on, mask_tensor is guaranteed to have the same H, W as relevance.
+
+    relevance_squeezed = relevance.squeeze(0).squeeze(0)  # from (1, 1, H, W) -> (H, W)
+    boolean_mask = mask_tensor.squeeze(0).bool() # from (1, H, W) -> (H, W)
+
+    relevance_inside = relevance_squeezed[boolean_mask]
+
+    total_abs_relevance = relevance_squeezed.abs().sum()
     inside_abs_relevance = relevance_inside.abs().sum()
 
-    # Compute positive and negative separately
-    positive_relevance = relevance.clamp(min=0)
-    negative_relevance = relevance.clamp(max=0).abs()
+    positive_relevance = relevance_squeezed.clamp(min=0)
+    negative_relevance = relevance_squeezed.clamp(max=0).abs()
 
-    pos_inside = positive_relevance[mask_tensor].sum()
+    pos_inside = positive_relevance[boolean_mask].sum()
     pos_total = positive_relevance.sum()
 
-    neg_inside = negative_relevance[mask_tensor].sum()
+    neg_inside = negative_relevance[boolean_mask].sum()
     neg_total = negative_relevance.sum()
 
+    # Calculate fractions, guarding against division by zero
     total_frac = (inside_abs_relevance / total_abs_relevance).item() if total_abs_relevance > 0 else 0.0
     pos_frac = (pos_inside / pos_total).item() if pos_total > 0 else 0.0
     neg_frac = (neg_inside / neg_total).item() if neg_total > 0 else 0.0
