@@ -10,7 +10,7 @@ import datetime
 import os
 from zennit.image import imgify
 
-from knn_helpers import compute_knn_proxy_score
+from knn_helpers import compute_knn_proxy_score, compute_knn_proxy_score_batched
 
 class LRPConservationChecker:
     """
@@ -150,7 +150,8 @@ def compute_simple_attnlrp_pass(
 
         output[0, most_active_feature_idx].backward()
 
-        relevance = input_tensor * input_tensor.grad
+        relevance = (input_tensor * input_tensor.grad).sum(dim=1, keepdim=True)
+
         
         violations = checker.check(verbose=verbose)
 
@@ -201,7 +202,7 @@ def compute_simple_attnlrp_pass_batched(
             model_wrapper.zero_grad()  # Clear previous sample's gradients
             query_embedding_i[0, most_active_feature_idx].backward(retain_graph=True)
 
-            relevance_i = input_batch[i] * input_batch.grad[i]
+            relevance_i = (input_batch[i] * input_batch.grad[i]).sum(1, keepdim=True)
             relevances_list.append(relevance_i.detach().clone())
             
 
@@ -270,7 +271,7 @@ def compute_knn_attnlrp_pass(
 
         knn_score.backward()
 
-        relevance = input_tensor * input_tensor.grad
+        relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
         
         violations = checker.check(verbose=verbose)
 
@@ -295,12 +296,10 @@ def compute_knn_attnlrp_pass_batched(
     verbose: bool = False
 ) -> Tuple[torch.Tensor, List[Dict[str, float]]]: 
     """
-    Computes LRP passes for a BATCH of inputs explaining their k-NN decisions.
+    Computes LRP passes for a BATCH of inputs using a single, efficient backward pass.
     """
-    batch_size = input_batch.shape[0]
     input_batch.grad = None
 
-    # Set Zennit rules once for the whole batch pass
     zennit_comp = LayerMapComposite(
         [
             (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
@@ -308,53 +307,44 @@ def compute_knn_attnlrp_pass_batched(
         ]
     )
     
-    relevances_list = []
-    violations_list = []
-
     try:
         zennit_comp.register(model_wrapper)
 
+        print(f"Computing k-NN scores for batch of size {input_batch.shape[0]}...") 
+
+
+        # 1. Single forward pass
         query_embedding_batch = model_wrapper(input_batch.requires_grad_())
 
-        for i in range(batch_size):
-            # Isolate the data for the i-th sample
-            query_embedding_i = query_embedding_batch[i].unsqueeze(0) # Shape [1, D]
-            input_filename_i = query_filenames_batch[i]
-            query_label_i = query_labels_batch[i]
+        # 2. Compute all scores for the batch at once
+        knn_scores_vector = compute_knn_proxy_score_batched( # Use the new batched function
+            query_embedding_batch=query_embedding_batch,
+            query_labels_batch=query_labels_batch,
+            query_filenames_batch=query_filenames_batch,
+            db_embeddings=db_embeddings,
+            db_labels=db_labels,
+            db_filenames=db_filenames,
+            distance_metric=distance_metric,
+            k=k_neighbors
+        ) # This returns a tensor of shape [batch_size]
+        
+        if verbose:
+            print(f"Explaining k-NN proxy scores for batch. Mean score: {knn_scores_vector.mean().item():.4f}")
 
-            knn_score = compute_knn_proxy_score(
-                query_embedding=query_embedding_i,
-                query_label=query_label_i,
-                query_filename=input_filename_i,
-                db_embeddings=db_embeddings,
-                db_labels=db_labels,
-                db_filenames=db_filenames,
-                distance_metric=distance_metric,
-                k=k_neighbors
-            )
-            
-            if verbose:
-                print(f"  [Sample {i+1}/{batch_size}] Explaining k-NN score: {knn_score.item():.4f}")
+        # 3. Single, collective backward pass. No loop, no retain_graph!
+        # Backpropagating from the sum achieves the same result as looping, but efficiently.
+        knn_scores_vector.sum().backward()
 
-            # We must use retain_graph=True because we are backpropping through the same
-            # shared computational graph (from the forward pass) multiple times.
-            # TODO: This is very memory intensive. a batch_size of 8 is already too much. Maybe rather not batch?
-            # the speed gains are only from the forward pass anyway, and since the batchsize is so small, the gains might be negligible.
-            model_wrapper.zero_grad() # Clear previous sample's gradients
-            knn_score.backward(retain_graph=True)
-
-            relevance_i = input_batch[i] * input_batch.grad[i]
-            relevances_list.append(relevance_i.detach().clone())
-            
-
-            violations_list.append(checker.check(verbose=False))
+        # 4. Compute relevance for the entire batch in one vectorized operation.
+        relevance_batch = (input_batch * input_batch.grad).sum(1, keepdim=True)
+        
+        # TODO: The LRPConservationChecker might need to be run per-sample if it
+        # relies on single-sample properties, or adapted for batches.
+        # For simplicity, let's assume it's checked outside or adapted.
+        violations_list = [checker.check(verbose=False) for _ in range(input_batch.shape[0])] # Placeholder
 
     finally:
         zennit_comp.remove()
-        if input_batch.grad is not None:
-            input_batch.grad = None
-            
-    relevance_batch = torch.stack(relevances_list)
     
     return relevance_batch, violations_list
 

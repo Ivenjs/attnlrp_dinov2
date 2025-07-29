@@ -112,7 +112,7 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
     # Calculate the relevance by computing Gradient * Input
     # This is the final step of LRP to get the pixel-wise explanation
     heatmap = (input_tensor * input_tensor.grad).sum(1)
-
+    print(f"Heatmap shape: {heatmap.shape}")
     # Normalize relevance between [-1, 1] for plotting
     heatmap = heatmap / abs(heatmap).max()
 

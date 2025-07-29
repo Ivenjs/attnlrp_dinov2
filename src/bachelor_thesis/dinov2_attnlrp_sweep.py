@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
-from lrp_helpers import compute_simple_attnlrp_pass_batched, compute_knn_attnlrp_pass_batched, LRPConservationChecker
+from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass, LRPConservationChecker
 from basemodel import TimmWrapper
 from eval_helpers import srg_knn
 
@@ -25,6 +25,7 @@ from dino_patcher import DINOPatcher
 
 CONV_GAMMAS = [0.1, 0.25, 1.0]
 LIN_GAMMAS = [0.0, 0.05, 0.1, 0.25]
+
 
 def run_gamma_sweep(
     model_wrapper: TimmWrapper, 
@@ -39,7 +40,7 @@ def run_gamma_sweep(
     conv_gamma_values: List[float] = CONV_GAMMAS,
     lin_gamma_values: List[float] = LIN_GAMMAS,
     verbose: bool = False
-) -> Tuple[Dict[int, Dict[Tuple[float, float], torch.Tensor]], Dict[int, Dict[Tuple[float, float], Any]]]:
+) -> Tuple[Dict[str, Dict[Tuple[float, float, str], torch.Tensor]], Dict[str, Dict[Tuple[float, float, str], Any]]]:
     """
     Runs a sweep over gamma parameters for multiple inputs, managing patches efficiently.
     """
@@ -63,41 +64,46 @@ def run_gamma_sweep(
                 labels_batch = batch["label"]
                 filenames_batch = batch["filename"]
 
-                # Call the inner-loop function
-                if mode == "simple":
-                    relevance_batch, violation_batch = compute_simple_attnlrp_pass_batched(
-                        conv_gamma=conv_gamma,
-                        lin_gamma=lin_gamma,
-                        model_wrapper=model_wrapper,
-                        input_batch=input_batch,  # Add batch dim back
-                        checker=checker,
-                        verbose=verbose  
-                    )
-                elif mode == "knn":
-                    assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
-                    assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
-
-                    relevance_batch, violation_batch = compute_knn_attnlrp_pass_batched(
-                        conv_gamma=conv_gamma,
-                        lin_gamma=lin_gamma,
-                        model_wrapper=model_wrapper,
-                        input_batch=input_batch, 
-                        checker=checker,
-                        query_labels_batch=labels_batch,
-                        query_filenames_batch=filenames_batch,
-                        db_embeddings=db_embeddings,
-                        db_labels=db_labels,
-                        db_filenames=db_filenames,
-                        distance_metric=distance_metric,
-                        k_neighbors=k_neighbors,
-                        verbose=verbose,
-
-                    )
-            
-                key = (conv_gamma, lin_gamma, distance_metric)
                 for j, filename in enumerate(filenames_batch):
-                    all_relevances[filename][key] = relevance_batch[j].detach().cpu()
-                    all_violations[filename][key] = violation_batch[j]
+                    # Slice the data for the j-th sample
+                    input_tensor_single = input_batch[j].unsqueeze(0) # Keep batch dim of 1
+                    label_single = labels_batch[j]
+                    
+                    if mode == "simple":
+                        # Call the non-batched LRP function directly
+                        relevance_single, violations_single = compute_simple_attnlrp_pass(
+                            conv_gamma=conv_gamma,
+                            lin_gamma=lin_gamma,
+                            model_wrapper=model_wrapper,
+                            input_tensor=input_tensor_single,  
+                            checker=checker,
+                            verbose=verbose  
+                        )
+
+                    elif mode == "knn":
+                        assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
+                        assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
+                        # Call the non-batched LRP function directly
+                        relevance_single, violations_single = compute_knn_attnlrp_pass(
+                            conv_gamma=conv_gamma,
+                            lin_gamma=lin_gamma,
+                            model_wrapper=model_wrapper,
+                            input_tensor=input_tensor_single,
+                            checker=checker,
+                            query_label=label_single,
+                            query_filename=filename,
+                            db_embeddings=db_embeddings,
+                            db_labels=db_labels,
+                            db_filenames=db_filenames,
+                            distance_metric=distance_metric,
+                            k_neighbors=k_neighbors,
+                            verbose=verbose, 
+                        )
+
+                    # Store the result directly, no intermediate list/tensor needed.
+                    key = (conv_gamma, lin_gamma, distance_metric)
+                    all_relevances[filename][key] = relevance_single.detach().cpu()
+                    all_violations[filename][key] = violations_single     
 
     print("\n--- Gamma Sweep Complete ---")
     print("Model has been restored to its original state.")
@@ -252,9 +258,9 @@ def find_robust_hyperparameters(
         
         # Raw robustness score
         raw_robustness_score = (
-            0.4 * raw_min +                # Worst case shouldn't be terrible
+            0.3 * raw_min +                # Worst case shouldn't be terrible
             0.3 * raw_stability +          # Low variance is good
-            0.2 * raw_mean +               # Good average performance
+            0.3 * raw_mean +               # Good average performance
             0.1 * raw_robustness_ratio     # High success rate
         )
         

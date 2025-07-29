@@ -33,11 +33,11 @@ if __name__ == "__main__":
     LOG_TO_WANDB = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     MODE = "knn"  # "simple" or "knn"
-    VERBOSE = True  
+    VERBOSE = False  
     random.seed(27)  
     torch.manual_seed(27)  
 
-    model_wrapper, image_transforms = get_model_wrapper(device=DEVICE)
+    model_wrapper, image_transforms = get_model_wrapper(device=DEVICE, finetuned=True)
 
     config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
     cfg = load_all_configs(config_dir)

@@ -126,6 +126,18 @@ class DINOPatcher:
 # -------------------------------------------------------------------
 # Forward Pass for timm Attention
 # -------------------------------------------------------------------
+"""
+    https://github.com/rachtibat/LRP-eXplains-Transformers/blob/main/lxt/explicit/modules.py#L87:
+    Implementing the CP-LRP (Conservative Propagation - LRP) rule for attention i.e. we don't let relevance flow through the softmax, but only through the value path. 
+    This method *only works well in Vision Transformers* because here the advanced AttnLRP rules, which do use the softmax, have similar performance to CP-LRP rules. 
+    The issue with AttnLRP is that using the softmax introduces gradient shattering, which requires applying the z-plus LRP rule. 
+    This makes AttnLRP slightly less efficient and, based on our limited experiments, the small performance gain is not worthwhile in Vision Transformers.
+    However, in Large Language Models, applying AttnLRP on the softmax is substantially better than CP-LRP and does not require the less efficient z-plus rule.
+    Therefore, we choose the more efficient CP-LRP for attention and use AttnLRP for other parts of the ViT.
+
+    Please refer to Section A.2.3. 'Tackling Noise in Vision Transformers' of the the paper
+    'AttnLRP: Attention-Aware Layer-wise Relevance Propagation for Transformers'.
+"""
 def dino_attention_forward_cp(self, x: torch.Tensor) -> torch.Tensor:
     """
     Custom forward pass for timm.models.vision_transformer.Attention

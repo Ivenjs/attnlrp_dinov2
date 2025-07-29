@@ -27,7 +27,6 @@ class TimmWrapper(nn.Module):
         dropout_p: float = 0.0,
         pool_mode: Literal["gem", "gap", "gem_c", "none"] = "none",
         load_pretrained: bool = False,
-        pretrained_weights_path: str = None,
         img_size: Optional[int] = None,
         *args: Any,
         **kwargs: Any,
@@ -42,11 +41,6 @@ class TimmWrapper(nn.Module):
             self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0)
 
         self.model = self.model.to(dtype=dtype)
-        
-        # Load pretrained weights if specified
-        if load_pretrained:
-            print(f"Loading pretrained weights from {pretrained_weights_path}")
-            self.model.load_state_dict(torch.load(pretrained_weights_path, weights_only=True), strict=True)
 
         self.num_features = self.model.num_features
 
@@ -234,21 +228,18 @@ def get_embedding_layer(id: str, feature_dim: int, embedding_dim: int, dropout_p
         return nn.Identity()
 
 
-BACKBONE_NAME = "vit_giant_patch14_dinov2.lvd142m"
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 def extract_clean_state_dict_for_wrapper(checkpoint, wrapper_key="model_wrapper.", model_key="model."):
     state_dict = checkpoint.get("state_dict", checkpoint)
     cleaned_state_dict = {k.replace(wrapper_key, ""): v for k, v in state_dict.items()}
     return cleaned_state_dict
 
 
-def load_finetuned_timm_wrapper(
+def load_timm_wrapper(
     checkpoint_path: str,
     backbone_name: str,
     embedding_size: int,
     image_size: int,
+    finetuned: bool = True,
     device: str = "cuda",
     model_dtype: torch.dtype = torch.float32
 ) -> Tuple[TimmWrapper, Any]:
@@ -274,9 +265,10 @@ def load_finetuned_timm_wrapper(
     print(f"Building model architecture with backbone '{backbone_name}' and embedding size {embedding_size}...")
     model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, model_dtype=model_dtype,img_size=image_size)
 
-    cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
-    msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
-    print(f"State dict loading message: {msg}")
+    if finetuned:
+        cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
+        msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
+        #print(f"State dict loading message: {msg}")
 
     model_wrapper.to(device)
     model_wrapper.eval()
@@ -289,7 +281,7 @@ def load_finetuned_timm_wrapper(
     print("--- Model loading complete ---")
     return model_wrapper, transforms
 
-def get_model_wrapper(device, cfg=None, **overrides):
+def get_model_wrapper(device, finetuned=True, cfg=None, **overrides):
     model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
     if cfg is None:
         with open(model_config_path, "r") as f:
@@ -303,11 +295,13 @@ def get_model_wrapper(device, cfg=None, **overrides):
     if device.type == "cuda" and not torch.cuda.is_bf16_supported():
         model_dtype = torch.bfloat32
 
-    model_wrapper, transforms = load_finetuned_timm_wrapper(
+
+    model_wrapper, transforms = load_timm_wrapper(
         checkpoint_path=cfg["checkpoint_path"],
         backbone_name=cfg["backbone"],
         embedding_size=cfg["embedding_dim"],
         image_size=cfg["img_size"],
+        finetuned=finetuned,
         device=device,
         model_dtype=model_dtype,
     )
