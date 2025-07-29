@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 import hydra
 from pathlib import Path
+from typing import List
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
@@ -11,17 +12,17 @@ class MaskGenerator:
     A class to encapsulate SAM2 model loading and mask generation
     for pre-cropped images.
     """
-    def __init__(self, model_checkpoint: str, model_config_dir: str):
+    def __init__(self, model_checkpoint_path: str, model_config_dir: str):
         """
         Initializes the device and the SAM2 model.
         Args:
-            model_checkpoint (str): Path to the SAM .pt file.
+            model_checkpoint_path (str): Path to the SAM .pt file.
             model_config_dir (str): Path to the directory containing model YAMLs.
         """
         print("Initializing MaskGenerator...")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        if device.type == "cuda":
+        if self.device.type == "cuda":
             torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
             if torch.cuda.get_device_properties(0).major >= 8:
                 torch.backends.cuda.matmul.allow_tf32 = True
@@ -31,7 +32,7 @@ class MaskGenerator:
         hydra.core.global_hydra.GlobalHydra.instance().clear()
         hydra.initialize_config_dir(config_dir=str(Path(model_config_dir).resolve()), version_base="1.2")
         
-        sam2_model = build_sam2("sam2.1_hiera_l.yaml", model_checkpoint, device=self.device)
+        sam2_model = build_sam2("sam2.1_hiera_l.yaml", model_checkpoint_path, device=self.device)
         self.predictor = SAM2ImagePredictor(sam2_model)
 
     def generate_mask_from_crop(self, image_crop: Image.Image) -> np.ndarray:
@@ -85,14 +86,41 @@ class MaskGenerator:
         self.predictor.set_image_batch(image_np_batch)
 
         # 3. Predict the batch
-        masks_batch, _, _ = self.predictor.predict_batch(
-            point_coords=None,
-            point_labels=None,
+        masks_batch, scores, _ = self.predictor.predict_batch(
+            None,
+            None,
             box_batch=box_prompts_batch,
             multimask_output=False,
         )
 
-        # masks_batch is a tensor of shape [B, 1, H, W]
-        binary_masks = [m.squeeze().cpu().numpy().astype(np.uint8) for m in masks_batch]
+        # masks_batch is a tensor of shape [1, H, W]
+        binary_masks = [m.squeeze().astype(np.uint8) for m in masks_batch]
+        
+        return binary_masks
+        
+    def generate_masks_from_boxes_batch(self, full_images: List[np.ndarray], box_prompts: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Generates a batch of binary masks for a list of full images using box prompts.
+        
+        Args:
+            full_images (List[np.ndarray]): A list of full-frame images as RGB NumPy arrays.
+            box_prompts (List[np.ndarray]): A list of corresponding bounding boxes [x0, y0, x1, y1].
+
+        Returns:
+            List[np.ndarray]: A list of binary NumPy array masks.
+        """
+        if not full_images:
+            return []
+
+        self.predictor.set_image_batch(full_images)
+
+        masks_batch, _, _ = self.predictor.predict_batch(
+            None,
+            None,
+            box_batch=box_prompts,
+            multimask_output=False,
+        )
+
+        binary_masks = [m.squeeze().astype(np.uint8) for m in masks_batch]
         
         return binary_masks

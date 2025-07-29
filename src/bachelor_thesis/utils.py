@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Tuple, Dict
 from collections import defaultdict
 import random
+from PIL import Image
 
 def get_class_label(filename: str) -> str:
     """
@@ -88,6 +89,7 @@ def load_all_configs(config_dir: str):
         with open(file, "r") as f:
             config[key] = yaml.safe_load(f)
     return config
+
 
 if __name__ == "__main__":
     data_path = "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train"
