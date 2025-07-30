@@ -240,9 +240,8 @@ def compute_knn_proxy_score(
     """
     Computes a differentiable proxy score for a k-NN classifier's decision.
 
-    The score is defined as: S = mean(sim_friends) - mean(sim_foes).
-    The score [-2,2] is larger when the query is more similar to its friends than to its foes.
-    This creates a differentiable objective that LRP can backpropagate through.
+    The score is defined as: S = - mean(sim_friends) as LRP wants to backpropagate from a value
+    that should be maximized, so we use the negative distance to friends (ecause we want to minimize dist_friends).
     """
 
     
@@ -285,29 +284,19 @@ def compute_knn_proxy_score(
         else:
             foes_indices.append(idx)
 
-    """print(f"Query: {query_filename}, Friends: {len(friends_indices)}, Foes: {len(foes_indices)}")
-    for friends in friends_indices:
-        print(f"Found friend: {db_filenames[friends]} with label {get_class_label(db_filenames[friends])}")
-    for foes in foes_indices:
-        print(f"Found foe: {db_filenames[foes]} with label {get_class_label(db_filenames[foes])}")"""
 
     differentiable_distances = compute_distances(query_embedding, db_embeddings, distance_metric)
 
-    MAX_DISTANCE = 2.0 # both euclidean and cosine distances are in [0, 2]
-
     if friends_indices:
-        dist_friends = differentiable_distances[friends_indices].mean()
+        # We want to MINIMIZE dist_friends, which is equivalent to MAXIMIZING -dist_friends.
+        # LRP explains what contributes to MAXIMIZING the output.
+        score = -differentiable_distances[friends_indices].mean() 
     else:
-        # this case is a bit weird, since we only have foes and the score will be arbitrarily better, when the foes are closer...
-        dist_friends = torch.tensor(MAX_DISTANCE, device=query_embedding.device)
-
-    if foes_indices:
-        dist_foes = differentiable_distances[foes_indices].mean()
-    else:
-        dist_foes = torch.tensor(MAX_DISTANCE, device=query_embedding.device)
-
-    score = dist_foes - dist_friends
-    
+        # If no friends, there's nothing to explain. We can return a zero map
+        # or handle it gracefully. A neutral score of 0 is a safe bet.
+        # Backpropagating from a constant gives zero gradients.
+        score = torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
+        
     if return_indices:
         return score, friends_indices, foes_indices
     else:
@@ -418,22 +407,51 @@ def compute_knn_proxy_score_batched(
 
     return scores
 
-def score_with_fixed_neighbors(query_embedding, db_embeddings, friends_indices, foes_indices, distance_metric):
-    """Calculates the score against a fixed set of neighbors."""
-    differentiable_distances = compute_distances(query_embedding, db_embeddings, distance_metric)
-    MAX_DISTANCE = 2.0
+def compute_evaluation_score(
+    current_embedding: torch.Tensor,
+    db_embeddings: torch.Tensor,
+    friends_indices: list,
+    distance_metric: str,
+) -> torch.Tensor:
+    """
+    Computes an intuitive, similarity-like score for evaluation purposes.
+    This score is designed to be high when the query is close to its friends.
 
-    if friends_indices:
-        dist_friends = differentiable_distances[friends_indices].mean()
+    - For cosine distance, it converts the [0, 2] distance back to a [-1, 1] similarity.
+    - For Euclidean distance, it maps the [0, 2] distance to a [1, 0] similarity.
+
+    Args:
+        current_embedding (torch.Tensor): The embedding of the (perturbed) query image.
+        db_embeddings (torch.Tensor): The database embeddings.
+        friends_indices (list): The list of indices for the *fixed* set of friends.
+        distance_metric (str): The metric used, 'cosine' or 'euclidean'.
+
+    Returns:
+        torch.Tensor: A single scalar score. Larger is better.
+    """
+    if not friends_indices:
+        # If there are no friends, the score is undefined. Return 0.
+        return torch.tensor(0.0, device=current_embedding.device)
+
+    # We don't need gradients here, but using the main distance function is fine.
+    all_distances = compute_distances(current_embedding, db_embeddings, distance_metric)
+    dist_to_friends = all_distances[friends_indices]
+
+    if distance_metric == "cosine":
+        # Cosine distance = 1 - similarity.
+        # So, similarity = 1 - distance.
+        # This will be in the range [-1, 1].
+        similarity_score = 1 - dist_to_friends.mean()
+    elif distance_metric == "euclidean":
+        # Euclidean distance on the unit hypersphere is in [0, 2].
+        # We can map this to a [1, 0] similarity range to make it intuitive.
+        # score = 1 - (dist / 2).
+        # When dist=0, score=1. When dist=2, score=0.
+        similarity_score = 1 - (dist_to_friends.mean() / 2.0)
     else:
-        dist_friends = torch.tensor(MAX_DISTANCE, device=query_embedding.device)
+        raise ValueError(f"Unknown metric for evaluation: {distance_metric}")
 
-    if foes_indices:
-        dist_foes = differentiable_distances[foes_indices].mean()
-    else:
-        dist_foes = torch.tensor(MAX_DISTANCE, device=query_embedding.device)
-
-    return dist_foes - dist_friends
+    return similarity_score
 
 def get_query_performance_metrics(
     query_embedding: torch.Tensor,

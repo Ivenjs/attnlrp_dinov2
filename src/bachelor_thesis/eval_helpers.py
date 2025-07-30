@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
-from knn_helpers import compute_knn_proxy_score, score_with_fixed_neighbors
+from knn_helpers import compute_knn_proxy_score, compute_evaluation_score
 
 
 PATCH_SIZE = 14  # Size of the patches to average over
@@ -18,16 +18,6 @@ def calculate_auc(curve: torch.Tensor) -> float:
     # This is equivalent to the mean of the curve points.
     return torch.mean(curve).item()
 
-#TODO: Might be worth a try:
-"""
-1. (Strongly Recommended) Stabilize the Evaluation Metric
-The "neighbor flipping" is the primary source of chaos. To get more stable and interpretable curves, you can modify the evaluation to use a 
-fixed neighborhood.
-The Idea: Identify the k-nearest friends and foes once at the beginning. Then, during perturbation, 
-measure how the distances to this fixed set of neighbors change. 
-This transforms the question from "How does the k-NN decision change?" to the more stable "How does similarity to the original neighbors change?".
-
-"""
 
 def _run_knn_perturbation(
     model: torch.nn.Module, # UN-PATCHED model
@@ -61,18 +51,29 @@ def _run_knn_perturbation(
         initial_embedding = model(input_tensor)
         
         # This function will now be responsible for finding the fixed neighbors
-        initial_score, friends_indices, foes_indices = compute_knn_proxy_score(
+        _, friends_indices, _ = compute_knn_proxy_score(
             initial_embedding, query_label, query_filename, db_embeddings, 
             db_labels, db_filenames, distance_metric, k_neighbors,
             return_indices=True # Add this flag to your score function
+        )
+
+        # If there are no friends in the initial k-NN, the evaluation is meaningless.
+        if not friends_indices:
+            logging.warning(f"No friends found for {query_filename} in its initial k-NN set. "
+                            "Perturbation curve will be flat at 0.")
+            num_steps = (len(patch_order) // patches_per_step) + 1
+            return torch.zeros(num_steps, device=input_tensor.device)
+
+        # Step 2: Calculate the initial score for the curve using the *evaluation* score.
+        initial_score = compute_evaluation_score(
+            initial_embedding, db_embeddings, friends_indices, distance_metric
         )
 
     num_patches = len(patch_order)
     h, w = input_tensor.shape[-2:]
     num_patches_w = w // patch_size
 
-    # Use a list to store scores, as the length depends on patches_per_step.
-    # It's more flexible than a pre-allocated tensor.
+
     output_scores = [initial_score]
 
     if perturbation_type == 'deletion':
@@ -80,15 +81,12 @@ def _run_knn_perturbation(
     else: # insertion
         perturbed_tensor = torch.full_like(input_tensor, baseline_value)
 
-    # We iterate through the patches in steps of `patches_per_step`.
-    # This loop is much more direct than the previous one.
+
     patches_processed_so_far = 0
     
-    # The progress bar now tracks the number of patches processed.
     pbar = tqdm(total=num_patches, desc=f"{perturbation_type.capitalize()} Eval (Granular)")
 
     while patches_processed_so_far < num_patches:
-        # Determine the next chunk of patches to process
         start_idx = patches_processed_so_far
         end_idx = min(start_idx + patches_per_step, num_patches)
         patches_to_process = patch_order[start_idx:end_idx]
@@ -106,8 +104,8 @@ def _run_knn_perturbation(
         # After perturbing the chunk, run the model and get the score
         with torch.no_grad():
             current_embedding = model(perturbed_tensor)
-            score = score_with_fixed_neighbors(
-                current_embedding, db_embeddings, friends_indices, foes_indices, distance_metric
+            score = compute_evaluation_score(
+                current_embedding, db_embeddings, friends_indices, distance_metric
             )
             output_scores.append(score.item())
 

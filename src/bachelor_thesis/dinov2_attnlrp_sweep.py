@@ -759,10 +759,6 @@ def log_nested_validation_to_wandb(
     # Concatenate them into a single DataFrame for easy plotting
     combined_curves_df = pd.concat([approved_tune_curves_df, approved_holdout_curves_df])
 
-    # normalized curves are kind of obsolete
-    combined_curves_df = combined_curves_df[
-        ~combined_curves_df["curve_label"].str.contains("norm", case=False)
-    ].copy()
 
     curve_series_dict = {}
 
