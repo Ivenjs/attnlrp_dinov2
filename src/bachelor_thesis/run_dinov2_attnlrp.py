@@ -9,7 +9,7 @@ from eval_helpers import attention_inside_mask
 from tqdm import tqdm
 from typing import Dict, Tuple, Any, List
 from collections import defaultdict
-from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass, LRPConservationChecker
+from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass
 from dino_patcher import DINOPatcher
 from basemodel import TimmWrapper
 from torch.utils.data import DataLoader
@@ -155,10 +155,9 @@ def compute_relevances(
     mode: str = "knn", 
     verbose: bool = False, 
     distance_metric: str = "cosine"
-) -> Tuple[Dict[float, Tuple[torch.Tensor, np.ndarray]], Dict[int, Dict[Tuple[float, float], Any]]]:
+) -> Dict[float, Tuple[torch.Tensor, np.ndarray]]:
     relevance_mask_dict = defaultdict(dict)
-    violations = defaultdict(dict)
-    with DINOPatcher(model_wrapper), LRPConservationChecker(model_wrapper) as checker:
+    with DINOPatcher(model_wrapper):
         for batch in tqdm(dataloader, desc="Processing batches"):
             input_batch = batch["image"].to(device)
             labels_batch = batch["label"]
@@ -171,12 +170,11 @@ def compute_relevances(
 
                 if mode == "simple":
                     # Call the non-batched LRP function directly
-                    relevance_single, violations_single = compute_simple_attnlrp_pass(
+                    relevance_single = compute_simple_attnlrp_pass(
                         conv_gamma=conv_gamma,
                         lin_gamma=lin_gamma,
                         model_wrapper=model_wrapper,
                         input_tensor=input_tensor_single,  
-                        checker=checker,
                         verbose=verbose  
                     )
 
@@ -184,12 +182,11 @@ def compute_relevances(
                     assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
                     assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
                     # Call the non-batched LRP function directly
-                    relevance_single, violations_single = compute_knn_attnlrp_pass(
+                    relevance_single = compute_knn_attnlrp_pass(
                         conv_gamma=conv_gamma,
                         lin_gamma=lin_gamma,
                         model_wrapper=model_wrapper,
                         input_tensor=input_tensor_single,
-                        checker=checker,
                         query_label=label_single,
                         query_filename=filename,
                         db_embeddings=db_embeddings,
@@ -217,8 +214,7 @@ def compute_relevances(
                 # relevance_single is detached from graph and moved to CPU
                 # mask_np_copy is a plain NumPy array with no ties to the DataLoader
                 relevance_mask_dict[filename] = (relevance_single.detach().cpu(), mask_np_copy)
-                violations[filename] = violations_single
-    return relevance_mask_dict, violations
+    return relevance_mask_dict
 
 def analyze_masking_exp(masking_results_df, cfg: Dict) -> None:
     # --- Basic Analysis of the Results ---
@@ -305,7 +301,7 @@ if __name__ == "__main__":
     distance_metric = cfg["knn"]["distance_metric"]
     k_neighbors = cfg["knn"]["k"]
 
-    relevance_mask_dict_finetuned, violations = compute_relevances(
+    relevance_mask_dict_finetuned = compute_relevances(
         model_wrapper=model_wrapper_finetuned,
         conv_gamma=conv_gamma,
         lin_gamma=lin_gamma,

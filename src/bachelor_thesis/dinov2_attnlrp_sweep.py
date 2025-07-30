@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
-from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass, LRPConservationChecker
+from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass
 from basemodel import TimmWrapper
 from eval_helpers import srg_knn
 
@@ -40,17 +40,16 @@ def run_gamma_sweep(
     conv_gamma_values: List[float] = CONV_GAMMAS,
     lin_gamma_values: List[float] = LIN_GAMMAS,
     verbose: bool = False
-) -> Tuple[Dict[str, Dict[Tuple[float, float, str], torch.Tensor]], Dict[str, Dict[Tuple[float, float, str], Any]]]:
+) -> Dict[str, Dict[Tuple[float, float, str], torch.Tensor]]:
     """
     Runs a sweep over gamma parameters for multiple inputs, managing patches efficiently.
     """
     all_relevances = defaultdict(dict)
-    all_violations = defaultdict(dict)
 
     print("--- Starting Gamma Sweep ---")
     print("Patching model for LRP and Conservation Checking for the duration of the sweep...")
 
-    with DINOPatcher(model_wrapper), LRPConservationChecker(model_wrapper) as checker:
+    with DINOPatcher(model_wrapper):
         
         param_combinations = list(itertools.product(conv_gamma_values, lin_gamma_values, 
                                                      distance_metrics))
@@ -71,12 +70,11 @@ def run_gamma_sweep(
                     
                     if mode == "simple":
                         # Call the non-batched LRP function directly
-                        relevance_single, violations_single = compute_simple_attnlrp_pass(
+                        relevance_single = compute_simple_attnlrp_pass(
                             conv_gamma=conv_gamma,
                             lin_gamma=lin_gamma,
                             model_wrapper=model_wrapper,
                             input_tensor=input_tensor_single,  
-                            checker=checker,
                             verbose=verbose  
                         )
 
@@ -84,12 +82,11 @@ def run_gamma_sweep(
                         assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
                         assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
                         # Call the non-batched LRP function directly
-                        relevance_single, violations_single = compute_knn_attnlrp_pass(
+                        relevance_single = compute_knn_attnlrp_pass(
                             conv_gamma=conv_gamma,
                             lin_gamma=lin_gamma,
                             model_wrapper=model_wrapper,
                             input_tensor=input_tensor_single,
-                            checker=checker,
                             query_label=label_single,
                             query_filename=filename,
                             db_embeddings=db_embeddings,
@@ -103,16 +100,14 @@ def run_gamma_sweep(
                     # Store the result directly, no intermediate list/tensor needed.
                     key = (conv_gamma, lin_gamma, distance_metric)
                     all_relevances[filename][key] = relevance_single.detach().cpu()
-                    all_violations[filename][key] = violations_single     
 
     print("\n--- Gamma Sweep Complete ---")
     print("Model has been restored to its original state.")
 
-    return dict(all_relevances), dict(all_violations)
+    return dict(all_relevances)
 
 def evaluate_gamma_sweep(
     relevances_by_parameters: Dict[str, Dict[Tuple[float, float, str], torch.Tensor]], 
-    violations_by_parameters: Dict[str, Dict[Tuple[float, float, str], Any]],
     evaluation_dataloader: DataLoader,
     model_wrapper: TimmWrapper,
     db_embeddings: torch.Tensor,
@@ -134,8 +129,7 @@ def evaluate_gamma_sweep(
                 "input_idx": 0,
                 "conv_gamma": 0.1,
                 "lin_gamma": 0.1,
-                "faithfulness_score": 0.85,
-                "violations": {...}
+                "faithfulness_score": 0.85
             },
             ...
         ]
@@ -163,9 +157,6 @@ def evaluate_gamma_sweep(
                 continue
 
             relevance_map = relevances_by_parameters[input_filename][parameters]
-            violations = violations_by_parameters[input_filename][parameters]
-
-            
             print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}, dist={distance_metric}")
             srg_results = srg_knn(
                 relevance_map=relevance_map,
@@ -190,7 +181,6 @@ def evaluate_gamma_sweep(
                 "distance_metric": distance_metric,
                 "faithfulness_score": srg_results["faithfulness_score"],
                 "normalized_faithfulness_score": srg_results["normalized_faithfulness_score"],
-                "violations": violations,
                 "auc_morf": srg_results["auc_morf"],
                 "auc_lerf": srg_results["auc_lerf"],
             })
@@ -697,12 +687,9 @@ def log_nested_validation_to_wandb(
     
     # --- 2. Log Detailed Data as Tables ---
     # Log the full, per-image results for deep dives
-        # Flatten the tune_results_list
-    flat_tune_results = [_flatten_violations(r) for r in tune_results_list]
-    flat_holdout_results = [_flatten_violations(r) for r in holdout_results_list]
 
-    tune_results_table = wandb.Table(dataframe=pd.DataFrame(flat_tune_results))
-    holdout_results_table = wandb.Table(dataframe=pd.DataFrame(flat_holdout_results))
+    tune_results_table = wandb.Table(dataframe=pd.DataFrame(tune_results_list))
+    holdout_results_table = wandb.Table(dataframe=pd.DataFrame(holdout_results_list))
 
     # Log the analysis dataframes (grouped by parameter)
     tune_analysis_table = wandb.Table(dataframe=analysis_df_tune)
@@ -834,14 +821,3 @@ def log_nested_validation_to_wandb(
     run.finish()
     print("--- Finished logging to W&B ---")
 
-def _flatten_violations(row: Dict) -> Dict:
-    """
-    Nimmt ein Ergebnis-Dict und flatten’t das `violations`-Dict in einzelne Keys.
-    Falls `violations` nicht da oder nicht dict ist → wird ignoriert.
-    """
-    row = row.copy()  # prevent side effects
-    violations = row.pop("violations", None)
-    if isinstance(violations, dict):
-        flat_violations = {f"violation/{k}": v if v is not None else float("nan") for k, v in violations.items()}
-        row.update(flat_violations)
-    return row
