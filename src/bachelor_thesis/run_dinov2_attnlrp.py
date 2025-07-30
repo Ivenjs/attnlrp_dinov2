@@ -14,6 +14,11 @@ from dino_patcher import DINOPatcher
 from basemodel import TimmWrapper
 from torch.utils.data import DataLoader
 from dinov2_attnlrp_sweep import run_gamma_sweep
+from visualize import Visualizer 
+import matplotlib.pyplot as plt
+from zennit.image import imgify
+import pandas as pd
+from PIL import Image
 import gc
 import numpy as np
 import subprocess
@@ -23,10 +28,119 @@ import torch
 # 1) run sam to get segmentation masks of data split, if not already saved
 # 2) create dataset with masks
 # 3) run lrp with swept parameters on images in dataset and compute the mask score
-# 3a) compare basemodel vs finetuned model on val
+# 3a) compare basemodel vs finetuned model on val (maybe try train to see of results are better?)
 # 3b) compare finetuned model on train vs val (overfitting?)
 # 4) save worst performing images and mask their background. How does the knn score change? can I also recompute accuracy with only these few images?
 
+
+#faithfullnes score durchschnittskurve berechnen
+#knn score weird?
+#implement relevance chcker correctly to validate relevance maps, like in github issue
+def get_denormalization_transform(mean: tuple, std: tuple) -> transforms.Compose:
+    """Creates a transform to de-normalize image tensors."""
+    denorm_mean = [-m/s for m, s in zip(mean, std)]
+    denorm_std = [1/s for s in std]
+    return transforms.Compose([
+        transforms.Normalize(mean=[0., 0., 0.], std=denorm_std),
+        transforms.Normalize(mean=denorm_mean, std=[1., 1., 1.])
+    ])
+
+def run_masking_experiment(
+    model_wrapper: TimmWrapper,
+    dataset: GorillaReIDDataset,
+    db_embeddings: torch.Tensor,
+    db_labels: List[str],
+    db_filenames: List[str],
+    relevance_scores: Dict[str, Tuple], # The output from attention_inside_mask
+    device: torch.device,
+    cfg: Dict
+) -> pd.DataFrame:
+    """
+    Performs the causal masking experiment systematically on the entire dataset.
+
+    For each image, it calculates performance metrics before and after masking
+    the background, allowing for a quantitative analysis of the background's role.
+    """
+    print("\n--- Starting Systematic Masking Experiment ---")
+    results_list = []
+    
+    # Use the original dataloader without shuffling to iterate through the dataset
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4, collate_fn=custom_collate_fn)
+
+    model_wrapper.eval() # Ensure model is in eval mode
+    
+    with torch.no_grad(): # We are only doing inference
+        for batch in tqdm(dataloader, desc="Running masking experiment"):
+            # Unpack the single-item batch
+            image_orig = batch["image"].to(device)
+            mask = batch["mask"].to(device)
+            label = batch["label"][0]
+            filename = batch["filename"][0]
+
+            # --- 1. Baseline Performance (on original image) ---
+            embedding_orig = model_wrapper(image_orig)
+            
+            baseline_metrics = get_query_performance_metrics(
+                query_embedding=embedding_orig,
+                query_label=label,
+                query_filename=filename,
+                db_embeddings=db_embeddings,
+                db_labels=db_labels,
+                db_filenames=db_filenames,
+                distance_metric=cfg["knn"]["distance_metric"]
+            )
+            
+            baseline_proxy_score = compute_knn_proxy_score(
+                query_embedding=embedding_orig,
+                query_label=label, query_filename=filename, db_embeddings=db_embeddings,
+                db_labels=db_labels, db_filenames=db_filenames, k=cfg["knn"]["k"],
+                distance_metric=cfg["knn"]["distance_metric"]
+            ).item()
+
+            # --- 2. Masked Performance ---
+            # Create the masked image by multiplying the original image with the mask
+            # The mask is [1, H, W] and image is [C, H, W]. Broadcasting works correctly.
+            image_masked = image_orig * mask
+            embedding_masked = model_wrapper(image_masked)
+
+            masked_metrics = get_query_performance_metrics(
+                query_embedding=embedding_masked,
+                query_label=label,
+                query_filename=filename,
+                db_embeddings=db_embeddings,
+                db_labels=db_labels,
+                db_filenames=db_filenames,
+                distance_metric=cfg["knn"]["distance_metric"]
+            )
+
+            masked_proxy_score = compute_knn_proxy_score(
+                query_embedding=embedding_masked,
+                query_label=label, query_filename=filename, db_embeddings=db_embeddings,
+                db_labels=db_labels, db_filenames=db_filenames, k=cfg["knn"]["k"],
+                distance_metric=cfg["knn"]["distance_metric"]
+            ).item()
+
+            # --- 3. Aggregate Results ---
+            AoGR = relevance_scores[filename][1] # Positive Relevance Fraction
+            
+            results_list.append({
+                'filename': filename,
+                'label': label,
+                'AoGR_positive': AoGR.item(), # Attention on Gorilla Ratio (Positive Relevance)
+                'background_attention': 1 - AoGR.item(),
+                'rank_orig': baseline_metrics['rank'],
+                'rank_masked': masked_metrics['rank'],
+                'gt_sim_orig': baseline_metrics['gt_similarity'],
+                'gt_sim_masked': masked_metrics['gt_similarity'],
+                'proxy_score_orig': baseline_proxy_score,
+                'proxy_score_masked': masked_proxy_score,
+                'delta_rank': baseline_metrics['rank'] - masked_metrics['rank'], # Positive means improvement
+                'delta_gt_sim': masked_metrics['gt_similarity'] - baseline_metrics['gt_similarity'], # Positive means improvement
+                'delta_proxy_score': masked_proxy_score - baseline_proxy_score # Positive means improvement
+            })
+
+    print("--- Masking Experiment Complete ---")
+    return pd.DataFrame(results_list)
 
 def compute_relevances(
     model_wrapper: TimmWrapper, 
@@ -88,13 +202,16 @@ def compute_relevances(
 
                 mask_tensor_single = mask_batch[j]
             
-                # Create a memory-safe NumPy copy of the mask
+                # Check if this mask is the default "all ones" mask created by the collate_fn.
+                # If the sum of the mask is equal to the number of elements, it's all ones.
+                # This is a robust way to detect our default mask.
+                is_default_mask = (mask_tensor_single.sum() == mask_tensor_single.numel())
+
                 mask_np_copy = None
-                if mask_tensor_single is not None:
-                    # 1. Move tensor to CPU
-                    # 2. Convert to NumPy array
-                    # 3. This implicitly copies the data, breaking the memory link.
+                if not is_default_mask:
+                    # Only create a numpy copy if it's a real segmentation mask.
                     mask_np_copy = mask_tensor_single.cpu().numpy()
+                # If it IS the default mask, mask_np_copy remains None, preserving the original logic.
 
                 # Store the final, safe data
                 # relevance_single is detached from graph and moved to CPU
@@ -103,6 +220,31 @@ def compute_relevances(
                 violations[filename] = violations_single
     return relevance_mask_dict, violations
 
+def analyze_masking_exp(masking_results_df, cfg: Dict) -> None:
+    # --- Basic Analysis of the Results ---
+    print("\n--- Masking Experiment Summary ---")
+    print(masking_results_df.describe())
+    
+    # Calculate overall change in Rank-1 accuracy
+    rank1_orig = (masking_results_df['rank_orig'] == 1).mean()
+    rank1_masked = (masking_results_df['rank_masked'] == 1).mean()
+    print(f"\nOverall Rank-1 Accuracy (Orig):   {rank1_orig:.4f}")
+    print(f"Overall Rank-1 Accuracy (Masked): {rank1_masked:.4f}")
+    
+    # --- Correlation Plot ---
+    plt.figure(figsize=(10, 6))
+    plt.scatter(
+        masking_results_df['background_attention'],
+        masking_results_df['delta_proxy_score'],
+        alpha=0.6
+    )
+    plt.title('Performance Change vs. Background Attention')
+    plt.xlabel('Background Attention (1 - AoGR)')
+    plt.ylabel('Change in k-NN Proxy Score (Masked - Original)')
+    plt.grid(True)
+    correlation_plot_path = os.path.join(cfg["data"]["visualization_dir"], "correlation_plot.png")
+    plt.savefig(correlation_plot_path)
+    print(f"Saved correlation plot to: {correlation_plot_path}")
 
 if __name__ == "__main__":
 
@@ -115,15 +257,16 @@ if __name__ == "__main__":
 
     LOG_TO_WANDB = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    MODE = "knn"  # "simple" or "knn"
     VERBOSE = False  
     random.seed(27)  
     torch.manual_seed(27)  
 
-    model_wrapper_finetuned, image_transforms = get_model_wrapper(device=DEVICE, finetuned=True)
+    model_wrapper_finetuned, image_transforms, data_config = get_model_wrapper(device=DEVICE, finetuned=True)
 
     config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
     cfg = load_all_configs(config_dir)
+    MODE = cfg["lrp"]["mode"]
+
 
     root_dir = cfg["data"]["dataset_dir"]
     val_dir = os.path.join(root_dir, "val")
@@ -149,6 +292,7 @@ if __name__ == "__main__":
         base_mask_dir=cfg["data"]["base_mask_dir"],
         mask_transform=mask_transform  # The spatial-only transform for the mask
     )
+
 
     val_db_embeddings_finetuned, val_db_labels_finetuned, val_db_filenames_finetuned = get_knn_db(
         db_dir=cfg["knn"]["db_embeddings_dir"], split_name="val", dataset=val_dataset,
@@ -176,9 +320,27 @@ if __name__ == "__main__":
         distance_metric=distance_metric
     )
 
-    mask_score_finetuned = defaultdict()
-    for filename, (relevance,mask) in relevance_mask_dict_finetuned.items():
-        mask_score_finetuned[filename] = attention_inside_mask(relevance, mask)
+    scores_finetuned = {}
+    for filename, (relevance, mask) in relevance_mask_dict_finetuned.items():
+        scores_finetuned[filename] = attention_inside_mask(relevance, mask)
+
+
+    masking_results_df = run_masking_experiment(
+        model_wrapper=model_wrapper_finetuned,
+        dataset=val_dataset,
+        db_embeddings=val_db_embeddings_finetuned,
+        db_labels=val_db_labels_finetuned,
+        db_filenames=val_db_filenames_finetuned,
+        relevance_scores=scores_finetuned, # Pass the AoGR scores
+        device=DEVICE,
+        cfg=cfg
+    )
+
+    analyze_masking_exp(masking_results_df, cfg)
+
+    results_path = os.path.join(cfg["data"]["visualization_dir"], "masking_experiment_results.csv")
+    masking_results_df.to_csv(results_path, index=False)
+    print(f"\nSaved systematic masking experiment results to: {results_path}")
 
 
     print(f"Clearing model finetuned from GPU memory...")
@@ -186,8 +348,8 @@ if __name__ == "__main__":
     gc.collect() # Trigger Python's garbage collection
     torch.cuda.empty_cache() # Release cached memory back to the OS
 
-    #TODO: New knn database for the base model!!!!
-    model_wrapper_base, _ = get_model_wrapper(device=DEVICE, finetuned=False)
+    #TODO: does the base model have the same transforms and data config?
+    model_wrapper_base, _, _ = get_model_wrapper(device=DEVICE, finetuned=False)
     val_db_embeddings_base, val_db_labels_base, val_db_filenames_base = get_knn_db(
         db_dir=cfg["knn"]["db_embeddings_dir"], split_name="val", dataset=val_dataset,
         model_wrapper=model_wrapper_base, model_checkpoint_path="/workspaces/bachelor_thesis_code/base", batch_size=cfg["data"]["batch_size"], device=DEVICE
@@ -208,18 +370,79 @@ if __name__ == "__main__":
         distance_metric=distance_metric
     )
 
-    mask_score_base = defaultdict()
+    scores_base = {}
     for filename, (relevance, mask) in relevance_mask_dict_base.items():
-        mask_score_base[filename] = attention_inside_mask(relevance, mask)
+        scores_base[filename] = attention_inside_mask(relevance, mask)
 
-    #compute and print the mean, max and mix mask scores for both models
-    mean_mask_score_finetuned = torch.tensor(list(mask_score_finetuned.values())).mean()
-    max_mask_score_finetuned = torch.tensor(list(mask_score_finetuned.values())).max()
-    min_mask_score_finetuned = torch.tensor(list(mask_score_finetuned.values())).min()
+    def print_stats(name, scores_dict):
+        totals = torch.tensor([v[0] for v in scores_dict.values()])
+        positives = torch.tensor([v[1] for v in scores_dict.values()])
+        negatives = torch.tensor([v[2] for v in scores_dict.values()])
+        print(f"\n--- {name} Stats ---")
+        print(f"  Total Frac   - Mean: {totals.mean():.4f}, Max: {totals.max():.4f}, Min: {totals.min():.4f}")
+        print(f"  Positive Frac - Mean: {positives.mean():.4f}, Max: {positives.max():.4f}, Min: {positives.min():.4f}")
+        print(f"  Negative Frac - Mean: {negatives.mean():.4f}, Max: {negatives.max():.4f}, Min: {negatives.min():.4f}")
 
-    mean_mask_score_base = torch.tensor(list(mask_score_base.values())).mean()
-    max_mask_score_base = torch.tensor(list(mask_score_base.values())).max()
-    min_mask_score_base = torch.tensor(list(mask_score_base.values())).min()
+    print_stats("Finetuned Model", scores_finetuned)
+    print_stats("Base Model", scores_base)
 
-    print(f"Finetuned Model - Mean Mask Score: {mean_mask_score_finetuned}, Max: {max_mask_score_finetuned}, Min: {min_mask_score_finetuned}")
-    print(f"Base Model - Mean Mask Score: {mean_mask_score_base}, Max: {max_mask_score_base}, Min: {min_mask_score_base}")
+    # ====================================================================
+    # UPDATED VISUALIZATION SECTION
+    # ====================================================================
+    print("\n--- Starting Visualization ---")
+    
+    # 1. Instantiate the Visualizer with the correct denorm transform
+    denorm_transform = get_denormalization_transform(mean=data_config['mean'], std=data_config['std'])
+    visualizer = Visualizer(
+        save_dir=cfg["data"]["visualization_dir"],
+        denorm_transform=denorm_transform
+    )
+
+    # 2. Find interesting samples to plot (using POSITIVE relevance as the key metric)
+    all_scores = []
+    for fname in scores_finetuned.keys():
+        ft_pos_score = scores_finetuned[fname][1]
+        base_pos_score = scores_base[fname][1]
+        diff = base_pos_score - ft_pos_score # Positive if base has higher positive fraction
+        all_scores.append((fname, ft_pos_score, base_pos_score, diff))
+
+    by_finetuned_pos_asc = sorted(all_scores, key=lambda x: x[1])
+    by_base_advantage_desc = sorted(all_scores, key=lambda x: x[3], reverse=True)
+
+    samples_to_plot = {
+        "finetuned_worst_pos_relevance": by_finetuned_pos_asc[0][0],
+        "finetuned_best_pos_relevance": by_finetuned_pos_asc[-1][0],
+        "base_model_biggest_advantage": by_base_advantage_desc[0][0],
+        "finetuned_biggest_advantage": by_base_advantage_desc[-1][0],
+    }
+
+    print(f"\nSelected samples for plotting: {list(samples_to_plot.values())}")
+
+    # 3. Generate and save plots for the selected samples
+    fname_to_idx = {
+        os.path.splitext(fname)[0]: i
+        for i, fname in enumerate(val_dataset.filenames)
+    }
+
+    for reason, filename in samples_to_plot.items():
+        print(f"Plotting '{reason}': {filename}")
+        
+        sample_data = val_dataset[fname_to_idx[filename]]
+        image_tensor = sample_data["image"]
+
+        relevance_ft, mask = relevance_mask_dict_finetuned[filename]
+        relevance_base, _ = relevance_mask_dict_base[filename]
+        #TODO: # Normalize relevance between [-1, 1] for plotting, heatmap = heatmap / abs(heatmap).max()
+        #imgify(relevance_ft.detach().cpu().numpy(), vmin=-1, vmax=1, grid=(1,1)).save(os.path.join(cfg["data"]["visualization_dir"], f"{filename}.png"))
+        
+        visualizer.plot_comparison(
+            filename=f"{reason}_{filename}",
+            image_tensor=image_tensor,
+            mask=mask,
+            base_relevance=relevance_base,
+            finetuned_relevance=relevance_ft,
+            base_scores=scores_base[filename],
+            finetuned_scores=scores_finetuned[filename]
+        )
+
+    print("\n--- Visualization complete ---")

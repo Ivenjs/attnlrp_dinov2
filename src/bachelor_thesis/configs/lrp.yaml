@@ -1,2 +1,4 @@
 conv_gamma: 0.15
 lin_gamma: 0.05
+mode: "knn"
+# "simple"

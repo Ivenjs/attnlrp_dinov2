@@ -435,3 +435,65 @@ def score_with_fixed_neighbors(query_embedding, db_embeddings, friends_indices, 
 
     return dist_foes - dist_friends
 
+def get_query_performance_metrics(
+    query_embedding: torch.Tensor,
+    query_label: str,
+    query_filename: str,
+    db_embeddings: torch.Tensor,
+    db_labels: list[str],
+    db_filenames: list[str],
+    distance_metric: str = "cosine"
+) -> dict:
+    """
+    Computes multiple performance metrics for a single query against a database.
+
+    Args:
+        query_embedding (torch.Tensor): The (1, D) embedding of the query image.
+        query_label (str): The ground-truth label of the query.
+        ... and other db parameters
+
+    Returns:
+        dict: A dictionary containing 'rank', 'gt_similarity', and 'proxy_score'.
+    """
+    device = query_embedding.device
+    db_labels_np = np.array(db_labels)
+    db_filenames_np = np.array(db_filenames)
+
+    # --- 1. Compute Distances (non-differentiable) ---
+    with torch.no_grad():
+        distances = compute_distances(query_embedding, db_embeddings, distance_metric)
+        # Exclude self-match from the ranking if the query is in the DB
+        try:
+            query_idx = db_filenames.index(query_filename)
+            distances[query_idx] = torch.inf
+        except ValueError:
+            pass # Query is not in the DB, no need to exclude anything
+
+        sorted_indices = torch.argsort(distances)
+        sorted_labels = db_labels_np[sorted_indices.cpu().numpy()]
+
+    # --- 2. Calculate Rank ---
+    # Find the first occurrence of the correct label in the sorted list
+    match_indices = np.where(sorted_labels == query_label)[0]
+    rank = match_indices[0] + 1 if len(match_indices) > 0 else -1 # Use -1 or float('inf') for no match
+
+    # --- 3. Calculate Ground-Truth Similarity ---
+    # Find all embeddings in the DB that are from the same individual (ground-truth positives)
+    gt_positive_mask = (db_labels_np == query_label) & (db_filenames_np != query_filename)
+    gt_positive_indices = np.where(gt_positive_mask)[0]
+
+    gt_similarity = -1.0 # Default if no other images of the same individual exist
+    if gt_positive_indices.size > 0:
+        # Get distances to all ground-truth positives
+        gt_distances = distances[gt_positive_indices]
+        # Find the minimum distance (i.e., most similar)
+        min_gt_distance = torch.min(gt_distances)
+        # Convert distance back to similarity (1 - distance)
+        gt_similarity = 1.0 - min_gt_distance.item()
+
+
+    return {
+        'rank': rank,
+        'gt_similarity': gt_similarity
+    }
+

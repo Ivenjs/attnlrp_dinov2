@@ -347,29 +347,3 @@ def compute_knn_attnlrp_pass_batched(
         zennit_comp.remove()
     
     return relevance_batch, violations_list
-
-def visualize_relevances(
-    relevances: Dict[Any, torch.Tensor], 
-    mode: str,
-    image_name: str,
-    output_dir: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/heatmaps",
-    dim: Tuple[int, int] = (3,5)
-) -> None: 
-    heatmaps = [] 
-    
-    for parameters, relevance in relevances.items():
-        heatmap = relevance.sum(0)
-        
-        denom = abs(heatmap).max()
-        
-        #TODO label the heatmap with the gammas (your note)
-        
-        heatmap = heatmap / denom
-
-        heatmaps.append(heatmap.detach().cpu().numpy())
-    
-    save_path = f"{output_dir}/{mode}/{image_name}/"
-    os.makedirs(save_path, exist_ok=True)
-    current_dt = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    imgify(heatmaps, vmin=-1, vmax=1, grid=dim).save(os.path.join(save_path, f"dinov2_heatmap_{current_dt}.png"))

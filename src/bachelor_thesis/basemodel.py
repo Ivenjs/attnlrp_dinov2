@@ -256,7 +256,7 @@ def load_timm_wrapper(
     - device (str): Device to load the model on.
 
     Returns:
-    - tuple: (model, transforms_object)
+    - tuple: (model, transforms_object, data_config)
     """
     print("--- Loading Finetuned TimmWrapper Model ---")
 
@@ -279,7 +279,7 @@ def load_timm_wrapper(
     print("Associated model transforms created successfully.")
 
     print("--- Model loading complete ---")
-    return model_wrapper, transforms
+    return model_wrapper, transforms, data_config
 
 def get_model_wrapper(device, finetuned=True, cfg=None, **overrides):
     model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
@@ -296,7 +296,7 @@ def get_model_wrapper(device, finetuned=True, cfg=None, **overrides):
         model_dtype = torch.bfloat32
 
 
-    model_wrapper, transforms = load_timm_wrapper(
+    model_wrapper, transforms, data_config = load_timm_wrapper(
         checkpoint_path=cfg["checkpoint_path"],
         backbone_name=cfg["backbone"],
         embedding_size=cfg["embedding_dim"],
@@ -306,4 +306,4 @@ def get_model_wrapper(device, finetuned=True, cfg=None, **overrides):
         model_dtype=model_dtype,
     )
 
-    return model_wrapper, transforms
+    return model_wrapper, transforms, data_config

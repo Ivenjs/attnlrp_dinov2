@@ -20,7 +20,6 @@ from dinov2_attnlrp_sweep import (
     find_robust_hyperparameters,
     log_nested_validation_to_wandb
     )
-from lrp_helpers import visualize_relevances
 from knn_helpers import get_knn_db
 from dataset import GorillaReIDDataset, custom_collate_fn
 from utils import get_balanced_individual_splits, load_all_configs
@@ -32,15 +31,16 @@ if __name__ == "__main__":
 
     LOG_TO_WANDB = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    MODE = "knn"  # "simple" or "knn"
     VERBOSE = False  
     random.seed(27)  
     torch.manual_seed(27)  
 
-    model_wrapper, image_transforms = get_model_wrapper(device=DEVICE, finetuned=True)
+    model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, finetuned=True)
 
     config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
     cfg = load_all_configs(config_dir)
+    MODE = cfg["lrp"]["mode"]
+
 
     root_dir = cfg["data"]["dataset_dir"]
     train_dir = os.path.join(root_dir, "train")

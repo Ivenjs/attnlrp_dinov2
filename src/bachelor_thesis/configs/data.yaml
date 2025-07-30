@@ -3,3 +3,4 @@ dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
 #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_all24_10_individuals_open" #THIS IS FACE :((
 batch_size: 32 # a batch size of 8 already breaks the gpu memory for the backwards passes...
 base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
+visualization_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/visualizations"
