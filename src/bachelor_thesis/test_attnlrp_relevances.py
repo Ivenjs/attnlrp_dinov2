@@ -1,8 +1,8 @@
 import torch
 import unittest
-from .checkers import LRPConservationChecker, BiasManager
-from .dino_patcher import DINOPatcher
-from .basemodel import get_model_wrapper
+from checkers import LRPConservationChecker, BiasManager
+from dino_patcher import DINOPatcher
+from basemodel import get_model_wrapper
 from typing import Tuple, Dict
 import torch.nn as nn
 
@@ -61,7 +61,7 @@ class TestLRPConservation(unittest.TestCase):
 
         # 2. Create the "pure" testing environment
         with BiasManager(model_wrapper), \
-             DINOPatcher(model_wrapper), \
+             DINOPatcher(model_wrapper, conservation_test=True), \
              LRPConservationChecker(model_wrapper) as checker:
 
             violations = compute_conservation_pass(

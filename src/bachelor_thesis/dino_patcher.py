@@ -2,10 +2,12 @@ import types
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from lxt.efficient.rules import divide_gradient, identity_rule_implicit, stop_gradient
 from timm.layers.layer_scale import LayerScale
 from timm.layers.mlp import GluMlp
 from timm.models.vision_transformer import Attention 
+
 
 """
 --- DINOv2 Image Backbone ---
@@ -81,13 +83,16 @@ Linear(in_features=1536, out_features=256, bias=True)
 
 class DINOPatcher:
     # Use cp_lrp for ViTs
-    def __init__(self, model_wrapper, attention_mode="cp_lrp"):
+    def __init__(self, model_wrapper, attention_mode="cp_lrp", conservation_test=False):
         self.wrapper = model_wrapper
         self.attention_mode = attention_mode
+        self.conservation_test = conservation_test
         self.original_forwards = {}
 
     def __enter__(self):
-        if self.attention_mode == "attn_lrp":
+        if self.conservation_test:
+            attn_patch_fn = dino_attention_forward_conservation_test
+        elif self.attention_mode == "attn_lrp":
             attn_patch_fn = dino_attention_forward
         else:
             attn_patch_fn = dino_attention_forward_cp
@@ -99,17 +104,25 @@ class DINOPatcher:
                 self.original_forwards[key] = module.forward
                 module.forward = types.MethodType(attn_patch_fn, module)
 
-            elif isinstance(module, nn.LayerNorm):
-                self.original_forwards[key] = module.forward
-                module.forward = types.MethodType(dino_layernorm_forward, module)
-
             elif isinstance(module, GluMlp):
                 self.original_forwards[key] = module.forward
                 module.forward = types.MethodType(dino_glumlp_forward, module)
 
+            elif isinstance(module, nn.LayerNorm):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(dino_layernorm_forward, module)
+
             elif isinstance(module, LayerScale):
                 self.original_forwards[key] = module.forward
                 module.forward = types.MethodType(dino_layerscale_forward, module)
+            
+            elif self.conservation_test and isinstance(module, nn.Linear):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(dino_linear_forward_test, module)
+
+            elif self.conservation_test and isinstance(module, nn.Conv2d):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(dino_conv2d_forward_test, module)
 
         return self.wrapper 
 
@@ -208,7 +221,6 @@ def dino_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     x = self.proj_drop(x)
     return x
 
-
 # -------------------------------------------------------------------
 # Custom Forward Pass for Gated MLP (GluMlp)
 # -------------------------------------------------------------------
@@ -245,11 +257,8 @@ def dino_layerscale_forward(self, x: torch.Tensor) -> torch.Tensor:
     Custom forward pass for timm.models.vision_transformer.LayerScale
     with LRP rule applied for element-wise multiplication.
     """
-    # The original forward is `x * self.gamma`
-    # --- LRP Rule: Uniform rule on element-wise multiplication ---
-    # Split relevance equally between the input x and the scaling factor gamma
-    return divide_gradient(x * self.gamma, 2)
-    # --------------------------------------------------------------
+    # Activation x Activation vs. Activation x Parameter. Here we use the latter.
+    return x * self.gamma
 
 
 # -------------------------------------------------------------------
@@ -257,18 +266,61 @@ def dino_layerscale_forward(self, x: torch.Tensor) -> torch.Tensor:
 # -------------------------------------------------------------------
 def dino_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
-    Custom forward pass for nn.LayerNorm with LRP rule (stop_gradient).
+    Custom forward pass for nn.LayerNorm with LRP rules applied.
     """
     mean = x.mean(dim=-1, keepdim=True)
     var = torch.var(x, dim=-1, keepdim=True, unbiased=False)
 
-    # --- LRP Rule: Stop gradient on variance ---
-    x = (x - mean) / stop_gradient(torch.sqrt(var + self.eps))
-    # ------------------------------------------
+    x_normalized = (x - mean) / stop_gradient(torch.sqrt(var + self.eps))
 
     if self.weight is not None:
-        x *= self.weight
+        x_normalized = x_normalized * self.weight
+        
     if self.bias is not None:
-        x += self.bias
+        x_normalized = x_normalized + self.bias
+        
+    return x_normalized
+
+
+
+# -------------------------------------------------------------------
+# Custom Forward Pass for DINOV2 Attention with Conservation Test
+# -------------------------------------------------------------------
+def dino_attention_forward_conservation_test(self, x: torch.Tensor) -> torch.Tensor:
+    """
+    A special forward pass for timm.models.vision_transformer.Attention
+    DESIGNED ONLY FOR LRP CONSERVATION TESTING.
+    It detaches the softmax to ensure relevance is conserved.
+    """
+    B, N, C = x.shape
+    qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+    q, k, v = qkv.unbind(0)
+    q, k = self.q_norm(q), self.k_norm(k)
+
+    # Use the non-SDPA path for clarity in testing
+    q = q * self.scale
+    attn = torch.matmul(q, k.transpose(-2, -1))
+
+    # --- KEY CHANGE FOR CONSERVATION TEST ---
+    # Detach the softmax from the graph.
+    # This treats the attention weights as constants during backprop.
+    attn = attn.softmax(dim=-1).detach() 
+    # ----------------------------------------
+
+    attn = self.attn_drop(attn) # Dropout with p=0 is identity
+    x = torch.matmul(attn, v)
+
+    x = x.transpose(1, 2).reshape(B, N, C)
+    x = self.proj(x)
+    x = self.proj_drop(x)
     return x
 
+def dino_linear_forward_test(self, x: torch.Tensor) -> torch.Tensor:
+    """A conservative forward pass for nn.Linear FOR TESTING ONLY."""
+    output = F.linear(x, self.weight, None) # Bias is None via BiasManager
+    return divide_gradient(output, 2)
+
+def dino_conv2d_forward_test(self, x: torch.Tensor) -> torch.Tensor:
+    """A conservative forward pass for nn.Conv2d FOR TESTING ONLY."""
+    output = self._conv_forward(x, self.weight, None) # Bias is None via BiasManager
+    return divide_gradient(output, 2)
