@@ -655,7 +655,8 @@ def log_nested_validation_to_wandb(
     tune_results_list: List[Dict],
     holdout_results_list: List[Dict],
     tune_curves_list: List,
-    holdout_curves_list: List
+    holdout_curves_list: List,
+    plot_normalized_curves: bool = False
 ):
     """
     Logs the complete story of a nested validation experiment to a single W&B run.
@@ -705,8 +706,8 @@ def log_nested_validation_to_wandb(
     # --- 3. Log Visualizations ---
     # You can generate and log the heatmap plots for both sets
     # maybe not that clean to return the paths here, but it works
-    tune_paths = visualize_robustness_analysis(analysis_df_tune, save_path="tune_analysis.png")
-    holdout_paths = visualize_robustness_analysis(analysis_df_holdout, save_path="holdout_analysis.png")
+    tune_paths = visualize_robustness_analysis(analysis_df_tune, save_path="wandb_plots/tune_analysis.png")
+    holdout_paths = visualize_robustness_analysis(analysis_df_holdout, save_path="wandb_plots/holdout_analysis.png")
 
     wandb.log({
         "plots/tune_set_analysis_heatmaps": [wandb.Image(p) for p in tune_paths],
@@ -739,15 +740,45 @@ def log_nested_validation_to_wandb(
         (holdout_curves_df['distance_metric'] == approved_params['distance_metric'])
     ].copy()
 
-    # Add a 'split' column to distinguish them in the plot
     approved_tune_curves_df['split'] = 'tune'
     approved_holdout_curves_df['split'] = 'holdout'
 
     # Concatenate them into a single DataFrame for easy plotting
     combined_curves_df = pd.concat([approved_tune_curves_df, approved_holdout_curves_df])
 
+    mean_curve_plot_paths = []
+    # Iterate over each data split ('tune', 'holdout') to create separate plots
+    for split in ['tune', 'holdout']:
+        if split not in combined_curves_df['split'].unique(): continue
+            
+        split_df = combined_curves_df[combined_curves_df['split'] == split]
+
+        if not plot_normalized_curves:
+            plot_data_df = split_df[~split_df['curve_label'].str.endswith('_norm')]
+            title_suffix = "(Raw Scores)"
+        else:
+            plot_data_df = split_df
+            title_suffix = "(All Scores)"
+
+        if plot_data_df.empty:
+            print(f"Skipping plot for '{split}' split as no data is available.")
+            continue
+            
+        # Define a unique key and title for the plot
+        log_key = f"plots/mean_faithfulness_curves_{split}"
+        title = f"Mean Faithfulness Curves on {split.capitalize()} Set {title_suffix}"
+
+        # Use the helper function to generate and log the plot
+        plot_path = plot_and_log_mean_curve(
+            df=plot_data_df,
+            title=title,
+            log_key=log_key
+        )
+        mean_curve_plot_paths.append(plot_path)
+
 
     curve_series_dict = {}
+    combined_curves_df['series'] = combined_curves_df['split'] + '/' + combined_curves_df['curve_label']
 
     # Group by (split, curve_label)
     grouped = combined_curves_df.groupby(["split", "curve_label"])
@@ -813,6 +844,9 @@ def log_nested_validation_to_wandb(
     for holdout_path in holdout_paths:
         artifact.add_file(holdout_path)
 
+    for mean_curve_path in mean_curve_plot_paths:
+        artifact.add_file(mean_curve_path)
+
     # You could also save the dataframes as CSVs and add them
     # analysis_df_tune.to_csv("tune_analysis.csv")
     # artifact.add_file("tune_analysis.csv")
@@ -821,3 +855,71 @@ def log_nested_validation_to_wandb(
     run.finish()
     print("--- Finished logging to W&B ---")
 
+def plot_and_log_mean_curve(
+    df: pd.DataFrame,
+    title: str,
+    log_key: str,
+    save_dir: str = "wandb_plots"
+) -> str:
+    """
+    Calculates and plots mean curves with std deviation bands from a dataframe.
+    Logs the resulting plot to Weights & Biases as a static image.
+    
+    Args:
+        df (pd.DataFrame): DataFrame containing columns 'curve_label', 
+                           'step', and 'score'.
+        title (str): The title for the plot.
+        log_key (str): The key to use when logging to wandb.
+    """
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    colors = {
+        'morf_raw': 'red', 'lerf_raw': 'blue',
+        'morf_norm': 'orangered', 'lerf_norm': 'deepskyblue',
+    }
+    
+    for label, group in df.groupby('curve_label'):
+        # --- CHANGE HERE ---
+        # Group by the 'step' column now
+        agg_data = group.groupby('step')['score'].agg(['mean', 'std']).reset_index()
+        agg_data = agg_data.sort_values('step')
+
+        # --- AND HERE ---
+        x = agg_data['step']
+        mean_score = agg_data['mean']
+        std_score = agg_data['std'].fillna(0)
+
+        ax.plot(x, mean_score, label=f"Mean {label}", color=colors.get(label, 'black'))
+
+        ax.fill_between(
+            x,
+            mean_score - std_score,
+            mean_score + std_score,
+            alpha=0.2,
+            color=colors.get(label, 'gray'),
+            label=f'Std Dev {label}'
+        )
+
+    ax.set_title(title, fontsize=16)
+    # The axis label can remain descriptive, even if the column name is 'step'
+    ax.set_xlabel("Fraction of Patches Perturbed (Step)", fontsize=12)
+    ax.set_ylabel("Mean Score", fontsize=12)
+    
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys())
+    
+    ax.set_ylim(bottom=0)
+    fig.tight_layout()
+
+    filename = f"{log_key.replace('/', '_')}.png"
+    save_path = os.path.join(save_dir, filename)
+
+    plt.savefig(save_path, dpi=150)
+    print(f"Saved mean curve plot to: {save_path}")
+
+    wandb.log({log_key: wandb.Image(save_path)})
+    
+    plt.close(fig)
+    return save_path
