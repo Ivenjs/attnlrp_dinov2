@@ -58,11 +58,12 @@ class TestLRPConservation(unittest.TestCase):
         
         # Use a random tensor with the dinov2 giant input size
         dummy_input = torch.randn(1, 3, 518, 518, device=DEVICE)
+        INPUT_LAYER_NAME = "model.patch_embed.proj"
 
         # 2. Create the "pure" testing environment
         with BiasManager(model_wrapper), \
              DINOPatcher(model_wrapper, conservation_test=True), \
-             LRPConservationChecker(model_wrapper) as checker:
+             LRPConservationChecker(model_wrapper, input_layer_name=INPUT_LAYER_NAME) as checker:
 
             violations = compute_conservation_pass(
                 model_wrapper=model_wrapper,

@@ -18,10 +18,12 @@ class LRPConservationChecker:
         model (nn.Module): The PyTorch model to inspect.
     """
     
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, input_layer_name: Optional[str] = None):
         self.model = model
         self.handles: List[torch.utils.hooks.RemovableHandle] = []
         self.results: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+        # The name of the first layer that processes the input tensor
+        self.input_layer_name = input_layer_name
 
     def _create_hook(self, name: str):
         """Creates a backward hook for a specific module."""
@@ -98,21 +100,34 @@ class LRPConservationChecker:
             else:
                 print(f"Found {len(violations)} conservation violation(s).")
             print("-" * 100 + "\n")
-            print("-" * 100)
-            if not sorted_results:
-                print("No relevance data was captured.")
+            print("--- Overall Conservation Summary ---")
+            print(f"Target Logit Value:        {target_logit_value:>15.6f}")
+
+            total_input_relevance = None
+            input_layer_full_name = "N/A"
+
+            if self.input_layer_name:
+                # Find the full name of the input layer from the results
+                for name in self.results.keys():
+                    if name.startswith(self.input_layer_name):
+                        input_layer_full_name = name
+                        _, rout = self.results[name]
+                        total_input_relevance = rout
+                        break
+            
+            if total_input_relevance is not None:
+                print(f"Total Input Relevance:       {total_input_relevance:>15.6f} (from '{input_layer_full_name}')")
+                overall_diff = target_logit_value - total_input_relevance
+                overall_status = "OK" if torch.isclose(torch.tensor(target_logit_value), torch.tensor(total_input_relevance), atol=1e-4) else "VIOLATION"
+                print(f"Overall Difference:          {overall_diff:>15.6f} ({overall_status})")
             else:
-                # The first layer's R_out is the total input relevance to the network
-                first_layer_name, (_, first_rout) = sorted_results[0]
-                print("--- Overall Conservation Summary ---")
-                print(f"Target Logit Value:        {target_logit_value:>15.6f}")
-                if first_rout is not None:
-                    print(f"Total Input Relevance:       {first_rout:>15.6f} (from '{first_layer_name}')")
-                    overall_diff = target_logit_value - first_rout
-                    overall_status = "OK" if abs(overall_diff) < 1e-4 else "VIOLATION"
-                    print(f"Overall Difference:          {overall_diff:>15.6f} ({overall_status})")
-                else:
-                    print("Could not determine total input relevance.")
+                print(f"Could not find input layer '{self.input_layer_name}' in captured results.")
+                print("Using alphabetically first layer as a fallback (likely incorrect):")
+                if sorted_results:
+                    first_layer_name, (_, first_rout) = sorted_results[0]
+                    if first_rout is not None:
+                         print(f"Fallback Input Relevance:    {first_rout:>15.6f} (from '{first_layer_name}')")
+
             print("-" * 100 + "\n")
             
         return violations
