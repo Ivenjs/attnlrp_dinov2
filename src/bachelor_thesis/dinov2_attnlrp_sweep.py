@@ -356,6 +356,9 @@ def visualize_robustness_analysis(
     
     # Get the base path and extension for saving files
     path_root, path_ext = os.path.splitext(save_path)
+
+    output_dir = os.path.dirname(save_path)
+    os.makedirs(output_dir, exist_ok=True)
     
     saved_paths = []
 
@@ -912,6 +915,8 @@ def plot_and_log_mean_curve(
     
     ax.set_ylim(bottom=0)
     fig.tight_layout()
+
+    os.makedirs(save_dir, exist_ok=True)
 
     filename = f"{log_key.replace('/', '_')}.png"
     save_path = os.path.join(save_dir, filename)

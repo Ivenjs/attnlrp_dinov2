@@ -19,6 +19,7 @@
 # Container Settings
 
 srun --container-image=/sc/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatch+1.2.1.sqsh \
+     --container-mount-home \
      --container-name=gorillawatch \
      --container-workdir=/workspaces \
      --container-mounts=/sc/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/sc/projects/sci-aisc/gorilla/:/workspaces/vast-gorilla \
