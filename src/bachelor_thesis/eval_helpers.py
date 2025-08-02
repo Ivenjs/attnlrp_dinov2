@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
+from typing import Tuple, List
 from knn_helpers import compute_knn_proxy_score, compute_evaluation_score
 
 
@@ -359,7 +360,7 @@ def srg(
     return delta_a_f
 
 
-def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> float:
+def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[float, float, float]:
     """
     Args:
         mask (np.ndarray): Boolean or binary array of shape (1 ,H, W).

@@ -130,31 +130,40 @@ def prepare_segmentation_masks(
                     h_img, w_img = full_mask_np.shape
                     ideal_box_float = job_data['ideal_box_float']
 
-                    x0, y0, x1, y1 = ideal_box_float.astype(int)
-                    
-                    canvas_side_w = x1 - x0
-                    canvas_side_h = y1 - y0
-                    
 
-                    final_mask_np = np.zeros((canvas_side_h, canvas_side_w), dtype=np.uint8)
+                    side = int(np.ceil(max(ideal_box_float[2] - ideal_box_float[0], ideal_box_float[3] - ideal_box_float[1])))
+
+                    final_mask_np = np.zeros((side, side), dtype=np.uint8)
+
+                    x0, y0, x1, y1 = ideal_box_float.astype(int)
 
                     src_x_start = max(x0, 0)
                     src_y_start = max(y0, 0)
                     src_x_end = min(x1, w_img)
                     src_y_end = min(y1, h_img)
 
+
+                    slice_w = src_x_end - src_x_start
+                    slice_h = src_y_end - src_y_start
+
+                    # If there's nothing to copy, just save the blank mask.
+                    if slice_w <= 0 or slice_h <= 0:
+                        mask_pil = Image.fromarray(final_mask_np * 255)
+                        mask_pil.save(job_data['job_info']['mask_path'])
+                        continue
+
+
                     dest_x_start = max(0, -x0)
                     dest_y_start = max(0, -y0)
                     
-                    copy_w = src_x_end - src_x_start
-                    copy_h = src_y_end - src_y_start
+                    dest_x_end = min(dest_x_start + slice_w, side)
+                    dest_y_end = min(dest_y_start + slice_h, side)
 
-                    if copy_w > 0 and copy_h > 0:
-                        dest_x_end = dest_x_start + copy_w
-                        dest_y_end = dest_y_start + copy_h
+                    final_copy_w = dest_x_end - dest_x_start
+                    final_copy_h = dest_y_end - dest_y_start
 
-                        final_mask_np[dest_y_start:dest_y_end, dest_x_start:dest_x_end] = \
-                            full_mask_np[src_y_start:src_y_end, src_x_start:src_x_end]
+                    final_mask_np[dest_y_start:dest_y_end, dest_x_start:dest_x_end] = \
+                        full_mask_np[src_y_start:src_y_start + final_copy_h, src_x_start:src_x_start + final_copy_w]
 
                     mask_pil = Image.fromarray(final_mask_np * 255)
                     mask_pil.save(job_data['job_info']['mask_path'])

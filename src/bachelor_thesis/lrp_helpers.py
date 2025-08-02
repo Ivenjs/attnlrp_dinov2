@@ -142,7 +142,6 @@ def compute_knn_attnlrp_pass(
         zennit_comp.register(model_wrapper)
 
         query_embedding = model_wrapper(input_tensor.requires_grad_())
-
         knn_score = compute_knn_proxy_score(
             query_embedding=query_embedding,
             query_label=query_label,
@@ -153,14 +152,11 @@ def compute_knn_attnlrp_pass(
             distance_metric=distance_metric,
             k=k_neighbors
         )
-        
         if verbose:
             print(f"Explaining k-NN proxy score: {knn_score.item():.4f} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
 
         knn_score.backward()
-
         relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
-        
 
     finally:
         zennit_comp.remove()

@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from typing import Tuple
 from torch.utils.data import DataLoader
 
+import numpy as np
 
 import yaml
 from utils import get_class_label
@@ -261,7 +262,6 @@ def compute_knn_proxy_score(
         # Returning a neutral score is often a safe default.
         logging.warning(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
         return torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
-
     # We must use a detached version of the query for the distance calculation
     # to find the neighbors. This is because topk is not nicely differentiable
     # and we only need the *identities* of the neighbors, not their gradient path.
@@ -283,7 +283,6 @@ def compute_knn_proxy_score(
             friends_indices.append(idx)
         else:
             foes_indices.append(idx)
-
 
     differentiable_distances = compute_distances(query_embedding, db_embeddings, distance_metric)
 

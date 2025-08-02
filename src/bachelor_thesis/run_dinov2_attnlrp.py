@@ -4,7 +4,7 @@ from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
 from basemodel import get_model_wrapper
-from knn_helpers import get_knn_db
+from knn_helpers import get_knn_db, get_query_performance_metrics, compute_knn_proxy_score
 from eval_helpers import attention_inside_mask
 from tqdm import tqdm
 from typing import Dict, Tuple, Any, List
@@ -51,7 +51,8 @@ def run_masking_experiment(
     db_embeddings: torch.Tensor,
     db_labels: List[str],
     db_filenames: List[str],
-    relevance_scores: Dict[str, Tuple], # The output from attention_inside_mask
+    mask_scores: Dict[str, Tuple], # The output from attention_inside_mask
+    batch_size: int,
     device: torch.device,
     cfg: Dict
 ) -> pd.DataFrame:
@@ -65,79 +66,85 @@ def run_masking_experiment(
     results_list = []
     
     # Use the original dataloader without shuffling to iterate through the dataset
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4, collate_fn=custom_collate_fn)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=custom_collate_fn)
 
-    model_wrapper.eval() # Ensure model is in eval mode
     
-    with torch.no_grad(): # We are only doing inference
+    with torch.no_grad():
         for batch in tqdm(dataloader, desc="Running masking experiment"):
-            # Unpack the single-item batch
-            image_orig = batch["image"].to(device)
-            mask = batch["mask"].to(device)
-            label = batch["label"][0]
-            filename = batch["filename"][0]
-
-            # --- 1. Baseline Performance (on original image) ---
-            embedding_orig = model_wrapper(image_orig)
+            # --- ROBUST BATCH HANDLING START ---
             
-            baseline_metrics = get_query_performance_metrics(
-                query_embedding=embedding_orig,
-                query_label=label,
-                query_filename=filename,
-                db_embeddings=db_embeddings,
-                db_labels=db_labels,
-                db_filenames=db_filenames,
-                distance_metric=cfg["knn"]["distance_metric"]
-            )
+            # Move the entire batch of images to the device at once
+            images_orig_batch = batch["image"].to(device)
+            masks_batch = batch["mask"] # This is a list of tensors/Nones
+            labels_batch = batch["label"]
+            filenames_batch = batch["filename"]
             
-            baseline_proxy_score = compute_knn_proxy_score(
-                query_embedding=embedding_orig,
-                query_label=label, query_filename=filename, db_embeddings=db_embeddings,
-                db_labels=db_labels, db_filenames=db_filenames, k=cfg["knn"]["k"],
-                distance_metric=cfg["knn"]["distance_metric"]
-            ).item()
+            # --- Process each item within the batch individually ---
+            for i in range(len(filenames_batch)):
+                # Isolate the data for the i-th sample
+                image_orig = images_orig_batch[i].unsqueeze(0) # Keep batch dim -> [1, C, H, W]
+                mask_tensor = masks_batch[i]
+                label = labels_batch[i]
+                filename = filenames_batch[i]
 
-            # --- 2. Masked Performance ---
-            # Create the masked image by multiplying the original image with the mask
-            # The mask is [1, H, W] and image is [C, H, W]. Broadcasting works correctly.
-            image_masked = image_orig * mask
-            embedding_masked = model_wrapper(image_masked)
+                # The experiment cannot proceed without a valid mask.
+                if mask_tensor is None:
+                    print(f"Warning: Skipping {filename} in masking experiment, no mask available.")
+                    continue
+                
+                mask = mask_tensor.to(device)
 
-            masked_metrics = get_query_performance_metrics(
-                query_embedding=embedding_masked,
-                query_label=label,
-                query_filename=filename,
-                db_embeddings=db_embeddings,
-                db_labels=db_labels,
-                db_filenames=db_filenames,
-                distance_metric=cfg["knn"]["distance_metric"]
-            )
+                # --- 1. Baseline Performance ---
+                embedding_orig = model_wrapper(image_orig)
+                
+                baseline_metrics = get_query_performance_metrics(
+                    query_embedding=embedding_orig, query_label=label, query_filename=filename,
+                    db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                    distance_metric=cfg["knn"]["distance_metric"]
+                )
+                
+                baseline_proxy_score = compute_knn_proxy_score(
+                    query_embedding=embedding_orig, query_label=label, query_filename=filename,
+                    db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                    k=cfg["knn"]["k"], distance_metric=cfg["knn"]["distance_metric"]
+                ).item()
 
-            masked_proxy_score = compute_knn_proxy_score(
-                query_embedding=embedding_masked,
-                query_label=label, query_filename=filename, db_embeddings=db_embeddings,
-                db_labels=db_labels, db_filenames=db_filenames, k=cfg["knn"]["k"],
-                distance_metric=cfg["knn"]["distance_metric"]
-            ).item()
+                # --- 2. Masked Performance ---
+                image_masked = image_orig * mask
+                embedding_masked = model_wrapper(image_masked)
 
-            # --- 3. Aggregate Results ---
-            AoGR = relevance_scores[filename][1] # Positive Relevance Fraction
-            
-            results_list.append({
-                'filename': filename,
-                'label': label,
-                'AoGR_positive': AoGR.item(), # Attention on Gorilla Ratio (Positive Relevance)
-                'background_attention': 1 - AoGR.item(),
-                'rank_orig': baseline_metrics['rank'],
-                'rank_masked': masked_metrics['rank'],
-                'gt_sim_orig': baseline_metrics['gt_similarity'],
-                'gt_sim_masked': masked_metrics['gt_similarity'],
-                'proxy_score_orig': baseline_proxy_score,
-                'proxy_score_masked': masked_proxy_score,
-                'delta_rank': baseline_metrics['rank'] - masked_metrics['rank'], # Positive means improvement
-                'delta_gt_sim': masked_metrics['gt_similarity'] - baseline_metrics['gt_similarity'], # Positive means improvement
-                'delta_proxy_score': masked_proxy_score - baseline_proxy_score # Positive means improvement
-            })
+                masked_metrics = get_query_performance_metrics(
+                    query_embedding=embedding_masked, query_label=label, query_filename=filename,
+                    db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                    distance_metric=cfg["knn"]["distance_metric"]
+                )
+
+                masked_proxy_score = compute_knn_proxy_score(
+                    query_embedding=embedding_masked, query_label=label, query_filename=filename,
+                    db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                    k=cfg["knn"]["k"], distance_metric=cfg["knn"]["distance_metric"]
+                ).item()
+
+                # --- 3. Aggregate Results ---
+                AoGR_total = mask_scores[filename][0] 
+                AoGR_positive = mask_scores[filename][1]
+                AoGR_negative = mask_scores[filename][2]
+                
+                results_list.append({
+                    'filename': filename, 'label': label,
+                    'AoGR_total': AoGR_total,
+                    'AoGR_positive': AoGR_positive,
+                    'AoGR_negative': AoGR_negative,
+                    'background_attention_total': 1 - AoGR_total,
+                    'background_attention_positive': 1 - AoGR_positive,
+                    'background_attention_negative': 1 - AoGR_negative,
+                    'rank_orig': baseline_metrics['rank'], 'rank_masked': masked_metrics['rank'],
+                    'gt_sim_orig': baseline_metrics['gt_similarity'], 'gt_sim_masked': masked_metrics['gt_similarity'],
+                    'proxy_score_orig': baseline_proxy_score, 'proxy_score_masked': masked_proxy_score,
+                    'delta_rank': baseline_metrics['rank'] - masked_metrics['rank'],
+                    'delta_gt_sim': masked_metrics['gt_similarity'] - baseline_metrics['gt_similarity'],
+                    'delta_proxy_score': masked_proxy_score - baseline_proxy_score
+                })
 
     print("--- Masking Experiment Complete ---")
     return pd.DataFrame(results_list)
@@ -196,19 +203,9 @@ def compute_relevances(
                         k_neighbors=k_neighbors,
                         verbose=verbose, 
                     )
-
                 mask_tensor_single = mask_batch[j]
-            
-                # Check if this mask is the default "all ones" mask created by the collate_fn.
-                # If the sum of the mask is equal to the number of elements, it's all ones.
-                # This is a robust way to detect our default mask.
-                is_default_mask = (mask_tensor_single.sum() == mask_tensor_single.numel())
-
-                mask_np_copy = None
-                if not is_default_mask:
-                    # Only create a numpy copy if it's a real segmentation mask.
-                    mask_np_copy = mask_tensor_single.cpu().numpy()
-                # If it IS the default mask, mask_np_copy remains None, preserving the original logic.
+                assert mask_tensor_single is not None, f"Mask for {filename} is None. Cannot compute relevance."
+                mask_np_copy = mask_tensor_single.cpu().numpy()
 
                 # Store the final, safe data
                 # relevance_single is detached from graph and moved to CPU
@@ -230,7 +227,7 @@ def analyze_masking_exp(masking_results_df, cfg: Dict) -> None:
     # --- Correlation Plot ---
     plt.figure(figsize=(10, 6))
     plt.scatter(
-        masking_results_df['background_attention'],
+        masking_results_df['background_attention_total'],
         masking_results_df['delta_proxy_score'],
         alpha=0.6
     )
@@ -240,6 +237,26 @@ def analyze_masking_exp(masking_results_df, cfg: Dict) -> None:
     plt.grid(True)
     correlation_plot_path = os.path.join(cfg["data"]["visualization_dir"], "correlation_plot.png")
     plt.savefig(correlation_plot_path)
+
+    # do another plot for positive and negative AoGR
+    plt.figure(figsize=(10, 6))
+    plt.scatter(
+        masking_results_df['background_attention_positive'],
+        masking_results_df['delta_proxy_score'],
+        alpha=0.6, label='Positive AoGR'
+    )
+    plt.scatter(
+        masking_results_df['background_attention_negative'],
+        masking_results_df['delta_proxy_score'],
+        alpha=0.6, label='Negative AoGR', color='orange'
+    )
+    plt.title('Performance Change vs. Positive/Negative Background Attention')
+    plt.xlabel('Background Attention (1 - AoGR)')
+    plt.ylabel('Change in k-NN Proxy Score (Masked - Original)')
+    plt.legend()
+    plt.grid(True)
+    correlation_plot_path_pos_neg = os.path.join(cfg["data"]["visualization_dir"], "correlation_plot_pos_neg.png")
+    plt.savefig(correlation_plot_path_pos_neg)
     print(f"Saved correlation plot to: {correlation_plot_path}")
 
 if __name__ == "__main__":
@@ -327,7 +344,8 @@ if __name__ == "__main__":
         db_embeddings=val_db_embeddings_finetuned,
         db_labels=val_db_labels_finetuned,
         db_filenames=val_db_filenames_finetuned,
-        relevance_scores=scores_finetuned, # Pass the AoGR scores
+        mask_scores=scores_finetuned, # Pass the AoGR scores
+        batch_size=cfg["data"]["batch_size"],
         device=DEVICE,
         cfg=cfg
     )
@@ -351,7 +369,7 @@ if __name__ == "__main__":
         model_wrapper=model_wrapper_base, model_checkpoint_path="/workspaces/bachelor_thesis_code/base", batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
 
-    relevance_mask_dict_base, _ = compute_relevances(
+    relevance_mask_dict_base = compute_relevances(
         model_wrapper=model_wrapper_base,
         conv_gamma=conv_gamma,
         lin_gamma=lin_gamma,

@@ -1,3 +1,4 @@
+.vscode-cli-data-*/
 configs/*
 wandb_plots/*
 src/bachelor_thesis/wandb_plots/*
