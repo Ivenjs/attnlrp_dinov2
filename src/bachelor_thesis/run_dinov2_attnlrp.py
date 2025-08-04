@@ -31,18 +31,21 @@ import torch
 # 3a) compare basemodel vs finetuned model on val (maybe try train to see of results are better?)
 # 3b) compare finetuned model on train vs val (overfitting?)
 # 4) save worst performing images and mask their background. How does the knn score change? can I also recompute accuracy with only these few images?
-
+# mean faithfullness curves for finetuned model vs base model
 
 #faithfullnes score durchschnittskurve berechnen
 #knn score weird?
 #implement relevance chcker correctly to validate relevance maps, like in github issue
 def get_denormalization_transform(mean: tuple, std: tuple) -> transforms.Compose:
-    """Creates a transform to de-normalize image tensors."""
-    denorm_mean = [-m/s for m, s in zip(mean, std)]
-    denorm_std = [1/s for s in std]
+    """Creates a transform to de-normalize image tensors using a lambda function."""
+    # Convert to tensors for broadcasting
+    mean_tensor = torch.tensor(mean)
+    std_tensor = torch.tensor(std)
+
     return transforms.Compose([
-        transforms.Normalize(mean=[0., 0., 0.], std=denorm_std),
-        transforms.Normalize(mean=denorm_mean, std=[1., 1., 1.])
+        # Reshape to (C, 1, 1) to work with image tensors (C, H, W)
+        transforms.Lambda(lambda x: x * std_tensor.view(3, 1, 1)),
+        transforms.Lambda(lambda x: x + mean_tensor.view(3, 1, 1)),
     ])
 
 def run_masking_experiment(
@@ -446,8 +449,8 @@ if __name__ == "__main__":
 
         relevance_ft, mask = relevance_mask_dict_finetuned[filename]
         relevance_base, _ = relevance_mask_dict_base[filename]
-        #TODO: # Normalize relevance between [-1, 1] for plotting, heatmap = heatmap / abs(heatmap).max()
-        #imgify(relevance_ft.detach().cpu().numpy(), vmin=-1, vmax=1, grid=(1,1)).save(os.path.join(cfg["data"]["visualization_dir"], f"{filename}.png"))
+        relevance_ft = relevance_ft/ torch.abs(relevance_ft).max() if torch.abs(relevance_ft).max() != 0 else relevance_ft
+        relevance_base = relevance_base / torch.abs(relevance_base).max() if torch.abs(relevance_base).max() != 0 else relevance_base
         
         visualizer.plot_comparison(
             filename=f"{reason}_{filename}",
