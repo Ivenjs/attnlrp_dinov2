@@ -156,8 +156,20 @@ def compute_knn_attnlrp_pass(
             print(f"Explaining k-NN proxy score: {knn_score.item():.4f} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
 
         knn_score.backward()
-        relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
-
+        
+        if input_tensor.grad is None:
+            # This happens if the score was a constant (e.g., no friends found in top-k).
+            # In this case, we return a zero relevance map as there's nothing to explain.
+            # This avoids the TypeError and is conceptually correct for this scenario.
+            if verbose:
+                print(f"WARNING: No gradient for LRP on '{query_filename}'. "
+                      f"This likely means no friends were found in its top-{k_neighbors} neighbors. "
+                      "Producing a zero relevance map.")
+            relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+        else:
+            # Standard LRP relevance calculation when gradients are present
+            relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
+        
     finally:
         zennit_comp.remove()
 
