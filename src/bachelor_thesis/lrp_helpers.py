@@ -10,7 +10,7 @@ import datetime
 import os
 from zennit.image import imgify
 
-from knn_helpers import compute_knn_proxy_score, compute_knn_proxy_score_batched
+from knn_helpers import compute_knn_proxy_score
             
 def compute_simple_attnlrp_pass(
     conv_gamma: float, 

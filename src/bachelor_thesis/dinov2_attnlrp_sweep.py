@@ -180,7 +180,6 @@ def evaluate_gamma_sweep(
                 "lin_gamma": lin_gamma,
                 "distance_metric": distance_metric,
                 "faithfulness_score": srg_results["faithfulness_score"],
-                "normalized_faithfulness_score": srg_results["normalized_faithfulness_score"],
                 "auc_morf": srg_results["auc_morf"],
                 "auc_lerf": srg_results["auc_lerf"],
             })
@@ -188,8 +187,7 @@ def evaluate_gamma_sweep(
             all_curve_sets = [
                 ("morf_raw", srg_results["morf_curve"]),
                 ("lerf_raw", srg_results["lerf_curve"]),
-                ("morf_norm", srg_results["morf_curve_norm"]),
-                ("lerf_norm", srg_results["lerf_curve_norm"])
+                ("random_raw", srg_results["random_curve"])
             ]
 
             for curve_label, curve in all_curve_sets:
@@ -199,7 +197,7 @@ def evaluate_gamma_sweep(
                         conv_gamma,
                         lin_gamma,
                         distance_metric,
-                        curve_label,  # This now contains "morf_raw", "lerf_norm", etc.
+                        curve_label,
                         step, 
                         score 
                     ])
@@ -254,27 +252,6 @@ def find_robust_hyperparameters(
             0.1 * raw_robustness_ratio     # High success rate
         )
         
-        # Normalized score analysis
-        norm_scores = group['normalized_faithfulness_score'].values
-        norm_mean = np.mean(norm_scores)
-        norm_std = np.std(norm_scores)
-        norm_min = np.min(norm_scores)
-        norm_percentile = np.percentile(norm_scores, robustness_percentile * 100)
-        norm_good_scores = np.sum(norm_scores >= min_score_threshold)
-        norm_robustness_ratio = norm_good_scores / len(norm_scores)
-        norm_stability = 1 / (1 + norm_std)
-        
-        # Normalized robustness score
-        norm_robustness_score = (
-            0.3 * norm_min +               # Worst case shouldn't be terrible
-            0.3 * norm_stability +         # Low variance is good
-            0.3 * norm_mean +              # Good average performance
-            0.1 * norm_robustness_ratio    # High success rate
-        )
-        
-        # Score consistency (correlation between raw and normalized)
-        score_correlation = np.corrcoef(raw_scores, norm_scores)[0, 1] if len(raw_scores) > 1 else 1.0
-        
         analysis_data.append({
             'conv_gamma': conv_gamma,
             'lin_gamma': lin_gamma,
@@ -289,17 +266,7 @@ def find_robust_hyperparameters(
             'raw_stability': raw_stability,
             'raw_robustness_score': raw_robustness_score,
             
-            # Normalized score metrics
-            'norm_mean': norm_mean,
-            'norm_std': norm_std,
-            'norm_min': norm_min,
-            'norm_percentile': norm_percentile,
-            'norm_robustness_ratio': norm_robustness_ratio,
-            'norm_stability': norm_stability,
-            'norm_robustness_score': norm_robustness_score,
-            
             # Meta metrics
-            'score_correlation': score_correlation,
             'num_images': len(raw_scores)
         })
     
@@ -319,21 +286,7 @@ def find_robust_hyperparameters(
         'robustness_ratio': analysis_df.loc[best_raw_idx, 'raw_robustness_ratio']
     }
     
-    # Find best parameters for normalized scores
-    best_norm_idx = analysis_df['norm_robustness_score'].idxmax()
-    best_params_normalized = {
-        'conv_gamma': analysis_df.loc[best_norm_idx, 'conv_gamma'],
-        'lin_gamma': analysis_df.loc[best_norm_idx, 'lin_gamma'],
-        'distance_metric': analysis_df.loc[best_norm_idx, 'distance_metric'],
-        'robustness_score': analysis_df.loc[best_norm_idx, 'norm_robustness_score'],
-        'mean_score': analysis_df.loc[best_norm_idx, 'norm_mean'],
-        'min_score': analysis_df.loc[best_norm_idx, 'norm_min'],
-        'std_score': analysis_df.loc[best_norm_idx, 'norm_std'],
-        'stability': analysis_df.loc[best_norm_idx, 'norm_stability'],
-        'robustness_ratio': analysis_df.loc[best_norm_idx, 'norm_robustness_ratio']
-    }
-    
-    return best_params_raw, best_params_normalized, analysis_df
+    return best_params_raw, analysis_df
 
 
 def visualize_robustness_analysis(
@@ -347,7 +300,7 @@ def visualize_robustness_analysis(
     Args:
         analysis_df (pd.DataFrame): DataFrame containing the analysis results. 
                                     Must include 'conv_gamma', 'lin_gamma', 'distance_metric',
-                                    and the score columns ('raw_mean', 'norm_mean', etc.).
+                                    and the score columns ('raw_mean', etc.).
         save_path (str): The base path for saving the plots. The distance metric name 
                          will be appended to this path.
     """
@@ -382,31 +335,16 @@ def visualize_robustness_analysis(
         sns.heatmap(pivot_raw_mean, annot=True, fmt='.3f', cmap='viridis', ax=axes[0,0])
         axes[0,0].set_title('Raw Mean Faithfulness Scores')
         
-        # 2. Normalized mean scores
-        pivot_norm_mean = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='norm_mean')
-        sns.heatmap(pivot_norm_mean, annot=True, fmt='.3f', cmap='viridis', ax=axes[0,1])
-        axes[0,1].set_title('Normalized Mean Faithfulness Scores')
-        
-        # 3. Raw robustness scores
+        # 2. Raw robustness scores
         pivot_raw_robust = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_robustness_score')
         sns.heatmap(pivot_raw_robust, annot=True, fmt='.3f', cmap='viridis', ax=axes[1,0])
         axes[1,0].set_title('Raw Robustness Scores')
         
-        # 4. Normalized robustness scores
-        pivot_norm_robust = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='norm_robustness_score')
-        sns.heatmap(pivot_norm_robust, annot=True, fmt='.3f', cmap='viridis', ax=axes[1,1])
-        axes[1,1].set_title('Normalized Robustness Scores')
-        
-        # 5. Raw minimum scores (worst-case robustness)
+        # 3. Raw minimum scores (worst-case robustness)
         pivot_raw_min = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_min')
         sns.heatmap(pivot_raw_min, annot=True, fmt='.3f', cmap='viridis', ax=axes[2,0])
         axes[2,0].set_title('Raw Minimum Scores (Worst-Case)')
-        
-        # 6. Normalized minimum scores (worst-case robustness)
-        pivot_norm_min = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='norm_min')
-        sns.heatmap(pivot_norm_min, annot=True, fmt='.3f', cmap='viridis', ax=axes[2,1])
-        axes[2,1].set_title('Normalized Minimum Scores (Worst-Case)')
-        
+    
         # Adjust layout to prevent titles from overlapping
         plt.tight_layout(rect=[0, 0, 1, 0.98]) # Adjust rect to make space for suptitle
         
@@ -426,7 +364,6 @@ def visualize_robustness_analysis(
 
 def print_robustness_summary(
     best_params_raw: Dict, 
-    best_params_normalized: Dict, 
     analysis_df: pd.DataFrame, 
     results: List[Dict] = None
 ):
@@ -451,34 +388,6 @@ def print_robustness_summary(
     print(f"  Stability:        {best_params_raw['stability']:.4f}")
     print(f"  Robustness Ratio: {best_params_raw['robustness_ratio']:.4f}")
     
-    print(f"\n{'='*22} NORMALIZED SCORES {'='*22}")
-    print(f"Best Hyperparameters (Normalized Score Robustness):")
-    print(f"  Conv Gamma: {best_params_normalized['conv_gamma']}")
-    print(f"  Lin Gamma:  {best_params_normalized['lin_gamma']}")
-    print(f"  Distance Metric: {best_params_normalized['distance_metric']}")
-    print(f"  Robustness Score: {best_params_normalized['robustness_score']:.4f}")
-    
-    print(f"\nNormalized Score Performance Metrics:")
-    print(f"  Mean Score:       {best_params_normalized['mean_score']:.4f}")
-    print(f"  Min Score:        {best_params_normalized['min_score']:.4f}")
-    print(f"  Std Score:        {best_params_normalized['std_score']:.4f}")
-    print(f"  Stability:        {best_params_normalized['stability']:.4f}")
-    print(f"  Robustness Ratio: {best_params_normalized['robustness_ratio']:.4f}")
-    
-    # Compare if they suggest the same hyperparameters
-    same_params = (best_params_raw['conv_gamma'] == best_params_normalized['conv_gamma'] and 
-                   best_params_raw['lin_gamma'] == best_params_normalized['lin_gamma'] and
-                     best_params_raw['distance_metric'] == best_params_normalized['distance_metric'])
-    
-    print(f"\n{'='*25} COMPARISON {'='*25}")
-    print(f"Same optimal hyperparameters: {'Yes' if same_params else 'No'}")
-    
-    if not same_params:
-        print(f"Raw optimal: γ_conv={best_params_raw['conv_gamma']}, γ_lin={best_params_raw['lin_gamma']}, "
-              f"distance_metric={best_params_raw['distance_metric']}")
-        print(f"Normalized optimal: γ_conv={best_params_normalized['conv_gamma']}, γ_lin={best_params_normalized['lin_gamma']}, "
-              f"distance_metric={best_params_normalized['distance_metric']}")
-    
     # Show top 3 combinations for each score type
     print(f"\nTop 3 Raw Score Combinations:")
     top_3_raw = analysis_df.nlargest(3, 'raw_robustness_score')
@@ -488,14 +397,6 @@ def print_robustness_summary(
               f"mean={row['raw_mean']:.4f}, "
               f"min={row['raw_min']:.4f}")
     
-    print(f"\nTop 3 Normalized Score Combinations:")
-    top_3_norm = analysis_df.nlargest(3, 'norm_robustness_score')
-    for i, (_, row) in enumerate(top_3_norm.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
-              f"robust={row['norm_robustness_score']:.4f}, "
-              f"mean={row['norm_mean']:.4f}, "
-              f"min={row['norm_min']:.4f}")
-    
     # Show most stable combinations for each score type
     print(f"\nMost Stable Raw Score Combinations:")
     stable_3_raw = analysis_df.nlargest(3, 'raw_stability')
@@ -503,13 +404,6 @@ def print_robustness_summary(
         print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
               f"stability={row['raw_stability']:.4f}, "
               f"std={row['raw_std']:.4f}")
-    
-    print(f"\nMost Stable Normalized Score Combinations:")
-    stable_3_norm = analysis_df.nlargest(3, 'norm_stability')
-    for i, (_, row) in enumerate(stable_3_norm.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
-              f"stability={row['norm_stability']:.4f}, "
-              f"std={row['norm_std']:.4f}")
     
     # Add aggregate statistics if results are provided
     if results is not None:
@@ -526,17 +420,6 @@ def print_robustness_summary(
         print(f"  Std Dev:  {overall['raw_std']:.4f}")
         print(f"  Min:      {overall['raw_min']:.4f}")
         print(f"  Max:      {overall['raw_max']:.4f}")
-        
-        print(f"\nOverall Normalized Score Performance:")
-        print(f"  Mean:     {overall['norm_mean']:.4f}")
-        print(f"  Median:   {overall['norm_median']:.4f}")
-        print(f"  Std Dev:  {overall['norm_std']:.4f}")
-        print(f"  Min:      {overall['norm_min']:.4f}")
-        print(f"  Max:      {overall['norm_max']:.4f}")
-        
-        print(f"\nScore Correlation Analysis:")
-        print(f"  Raw-Normalized Correlation: {overall['score_correlation']:.4f}")
-        print(f"  Mean Absolute Difference:   {overall['mean_abs_diff']:.4f}")
         
         return stats
 
@@ -563,26 +446,8 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
         'raw_q75': df['faithfulness_score'].quantile(0.75)
     }
     
-    # Overall statistics for normalized scores
-    norm_stats = {
-        'norm_mean': df['normalized_faithfulness_score'].mean(),
-        'norm_median': df['normalized_faithfulness_score'].median(),
-        'norm_std': df['normalized_faithfulness_score'].std(),
-        'norm_min': df['normalized_faithfulness_score'].min(),
-        'norm_max': df['normalized_faithfulness_score'].max(),
-        'norm_q25': df['normalized_faithfulness_score'].quantile(0.25),
-        'norm_q75': df['normalized_faithfulness_score'].quantile(0.75)
-    }
-    
-    # Correlation and consistency metrics
-    correlation_stats = {
-        'score_correlation': df['faithfulness_score'].corr(df['normalized_faithfulness_score']),
-        'mean_abs_diff': (df['faithfulness_score'] - df['normalized_faithfulness_score']).abs().mean(),
-        'median_abs_diff': (df['faithfulness_score'] - df['normalized_faithfulness_score']).abs().median()
-    }
-    
     # Combine all overall stats
-    overall_stats = {**raw_stats, **norm_stats, **correlation_stats}
+    overall_stats = {**raw_stats, **norm_stats}
     
     # Statistics by gamma combination for both score types
     parameter_stats_raw = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric'])['faithfulness_score'].agg([
@@ -590,35 +455,15 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
     ]).reset_index()
     parameter_stats_raw.columns = [f'raw_{col}' if col not in ['conv_gamma', 'lin_gamma', 'distance_metric'] else col
                               for col in parameter_stats_raw.columns]
-
-    parameter_stats_norm = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric'])['normalized_faithfulness_score'].agg([
-        'mean', 'median', 'std', 'min', 'max', 'count'
-    ]).reset_index()
-    parameter_stats_norm.columns = [f'norm_{col}' if col not in ['conv_gamma', 'lin_gamma', 'distance_metric'] else col
-                               for col in parameter_stats_norm.columns]
     
     # Merge gamma statistics
-    parameter_stats = pd.merge(parameter_stats_raw, parameter_stats_norm, on=['conv_gamma', 'lin_gamma', 'distance_metric'])
+    parameter_stats = pd.merge(parameter_stats_raw, on=['conv_gamma', 'lin_gamma', 'distance_metric'])
 
-    # Add correlation by gamma combination
-    parameter_correlations = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric']).apply(
-        lambda x: x['faithfulness_score'].corr(x['normalized_faithfulness_score'])
-    ).reset_index(name='score_correlation')
-
-    parameter_stats = pd.merge(parameter_stats, parameter_correlations, on=['conv_gamma', 'lin_gamma', 'distance_metric'])
+    parameter_stats = pd.merge(parameter_stats, on=['conv_gamma', 'lin_gamma', 'distance_metric'])
 
     # Find best gamma combinations by different metrics
     best_by_raw_mean = parameter_stats.loc[parameter_stats['raw_mean'].idxmax()]
-    best_by_norm_mean = parameter_stats.loc[parameter_stats['norm_mean'].idxmax()]
     best_by_raw_min = parameter_stats.loc[parameter_stats['raw_min'].idxmax()]
-    best_by_norm_min = parameter_stats.loc[parameter_stats['norm_min'].idxmax()]
-
-    valid_corrs = parameter_stats['score_correlation'].dropna()
-    if not valid_corrs.empty:
-        best_by_correlation = parameter_stats.loc[valid_corrs.idxmax()]
-    else:
-        best_by_correlation = None  # oder irgendein Default
-        print("No valid correlation scores found – every group had ≤1 sample.")
     
     # Statistics by image (aggregated across gamma combinations)
     image_stats_raw = df.groupby(['image'])['faithfulness_score'].agg([
@@ -626,24 +471,15 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
     ]).reset_index()
     image_stats_raw.columns = [f'raw_{col}' if col != 'image' else col 
                               for col in image_stats_raw.columns]
-    
-    image_stats_norm = df.groupby(['image'])['normalized_faithfulness_score'].agg([
-        'mean', 'median', 'std', 'min', 'max', 'count'
-    ]).reset_index()
-    image_stats_norm.columns = [f'norm_{col}' if col != 'image' else col 
-                               for col in image_stats_norm.columns]
 
-    image_stats = pd.merge(image_stats_raw, image_stats_norm, on=['image'])
+    image_stats = pd.merge(image_stats_raw, on=['image'])
 
     return {
         'overall': overall_stats,
         'by_parameter': parameter_stats,
         'by_image': image_stats,
         'best_by_raw_mean': best_by_raw_mean,
-        'best_by_norm_mean': best_by_norm_mean,
-        'best_by_raw_min': best_by_raw_min,
-        'best_by_norm_min': best_by_norm_min,
-        'best_by_correlation': best_by_correlation
+        'best_by_raw_min': best_by_raw_min
     }
 
 def log_nested_validation_to_wandb(
@@ -755,13 +591,8 @@ def log_nested_validation_to_wandb(
         if split not in combined_curves_df['split'].unique(): continue
             
         split_df = combined_curves_df[combined_curves_df['split'] == split]
-
-        if not plot_normalized_curves:
-            plot_data_df = split_df[~split_df['curve_label'].str.endswith('_norm')]
-            title_suffix = "(Raw Scores)"
-        else:
-            plot_data_df = split_df
-            title_suffix = "(All Scores)"
+        plot_data_df = split_df
+        title_suffix = "(All Scores)"
 
         if plot_data_df.empty:
             print(f"Skipping plot for '{split}' split as no data is available.")
@@ -879,12 +710,10 @@ def plot_and_log_mean_curve(
 
     colors = {
         'morf_raw': 'red', 'lerf_raw': 'blue',
-        'morf_norm': 'orangered', 'lerf_norm': 'deepskyblue',
+        'random_raw': 'gray',
     }
     
     for label, group in df.groupby('curve_label'):
-        # --- CHANGE HERE ---
-        # Group by the 'step' column now
         agg_data = group.groupby('step')['score'].agg(['mean', 'std']).reset_index()
         agg_data = agg_data.sort_values('step')
 

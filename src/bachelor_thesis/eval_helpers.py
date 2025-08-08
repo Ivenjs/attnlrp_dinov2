@@ -117,12 +117,30 @@ def _run_knn_perturbation(
     # Convert the list of scores to a tensor for calculations
     return torch.tensor(output_scores, device=input_tensor.device)
 
-def normalize_curve(curve: torch.Tensor) -> torch.Tensor:
-    """Normalize the curve by its starting value to ensure comparability."""
-    start_val = curve[0].item()
-    if abs(start_val) < 1e-6:  # avoid div-by-zero
-        return curve
-    return curve / start_val
+def run_random_baseline_perturbation(
+    model: torch.nn.Module,
+    input_tensor: torch.Tensor,
+    num_patches: int,
+    # Pass all the other args needed by _run_knn_perturbation
+    **kwargs 
+) -> torch.Tensor:
+    """
+    Runs a perturbation experiment using a random patch order.
+    """
+    print("Running Random Baseline Perturbation...")
+    # Create a random permutation of patch indices
+    random_order = torch.randperm(num_patches, device=input_tensor.device)
+    
+    # We can run a "deletion" experiment with this random order.
+    # The result represents the expected performance drop from random occlusions.
+    random_curve = _run_knn_perturbation(
+        model=model,
+        input_tensor=input_tensor,
+        patch_order=random_order,
+        perturbation_type='deletion',
+        **kwargs
+    )
+    return random_curve
 
 def srg_knn(
     relevance_map: torch.Tensor,
@@ -151,6 +169,18 @@ def srg_knn(
     lerf_order = torch.argsort(patch_relevance_flat, descending=False)
     morf_order = torch.argsort(patch_relevance_flat, descending=True)
 
+    perturb_args = {
+        "patch_size": patch_size,
+        "query_label": query_label,
+        "query_filename": query_filename,
+        "db_embeddings": db_embeddings,
+        "db_labels": db_labels,
+        "db_filenames": db_filenames,
+        "distance_metric": distance_metric,
+        "k_neighbors": k_neighbors,
+        "patches_per_step": patches_per_step,
+    }
+
     morf_curve = _run_knn_perturbation(
         model, input_tensor, morf_order, 'deletion', patch_size, 
         query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors, patches_per_step=patches_per_step
@@ -160,68 +190,56 @@ def srg_knn(
         query_label, query_filename, db_embeddings, db_labels, db_filenames, distance_metric, k_neighbors, patches_per_step=patches_per_step
     )
 
-    morf_curve_norm = normalize_curve(morf_curve)
-    lerf_curve_norm = normalize_curve(lerf_curve)
-
-    auc_morf_norm = calculate_auc(morf_curve_norm)
-    auc_lerf_norm = calculate_auc(lerf_curve_norm)
-    
-    delta_a_f_norm = auc_lerf_norm - auc_morf_norm
+    random_curve = run_random_baseline_perturbation(model, input_tensor, len(lerf_order), **perturb_args)
 
     auc_morf = calculate_auc(morf_curve)
     auc_lerf = calculate_auc(lerf_curve)
-    
+    auc_random = calculate_auc(random_curve)
+
     delta_a_f = auc_lerf - auc_morf
     
-    print(f"\n--- Faithfulness Score (∆A_F) ---")
+    # A positive score means your attribution is better at finding important patches than chance.
+    morf_vs_random = auc_random - auc_morf
+    
+    # A positive score means attribution is better at finding UNimportant patches than chance.
+    lerf_vs_random = auc_lerf - auc_random
+
+    print(f"\n--- Faithfulness Scores ---")
     print(f"Area under LeRF curve: {auc_lerf:.4f}")
     print(f"Area under MoRF curve: {auc_morf:.4f}")
+    print(f"Area under Random curve: {auc_random:.4f}")
+    print(f"-------------------------------------------")
     print(f"Final Score (A_LeRF - A_MoRF): {delta_a_f:.4f}")
-
-    print(f"Normalized Final Score (A_LeRF - A_MoRF): {delta_a_f_norm:.4f}")
+    print(f"MoRF Improvement vs. Random (A_Rand - A_MoRF): {morf_vs_random:.4f} (Higher is better)")
+    print(f"LeRF Improvement vs. Random (A_LeRF - A_Rand): {lerf_vs_random:.4f} (Higher is better)")
 
     if plot_curves:
         num_eval_steps = len(morf_curve)
-        x_axis = range(num_eval_steps)
+        x_axis = np.linspace(0, 100, num_eval_steps) # Percentage of patches removed
 
-        fig, axs = plt.subplots(2, 2, figsize=(12, 10))
-        axs[0, 0].plot(x_axis, morf_curve.cpu().numpy(), label='MoRF Deletion', color='red')
-        axs[0, 0].set_title(f'MoRF Curve (Raw) – AUC={auc_morf:.3f}')
-        axs[0, 0].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
-        axs[0, 0].set_ylabel('Model Score')
-        axs[0, 0].legend()
-
-        axs[0, 1].plot(x_axis, lerf_curve.cpu().numpy(), label='LeRF Deletion', color='blue')
-        axs[0, 1].set_title(f'LeRF Curve (Raw) – AUC={auc_lerf:.3f}')
-        axs[0, 1].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
-        axs[0, 1].set_ylabel('Model Score')
-        axs[0, 1].legend()
-
-        axs[1, 0].plot(x_axis, morf_curve_norm.cpu().numpy(), label='MoRF Deletion (Norm.)', color='orange')
-        axs[1, 0].set_title(f'MoRF Curve (Noramlized) – AUC={auc_morf_norm:.3f}')
-        axs[1, 0].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
-        axs[1, 0].set_ylabel('Normalized Score')
-        axs[1, 0].legend()
-
-        axs[1, 1].plot(x_axis, lerf_curve_norm.cpu().numpy(), label='LeRF Deletion (Norm.)', color='green')
-        axs[1, 1].set_title(f'LeRF Curve (Noramlized) – AUC={auc_lerf_norm:.3f}')
-        axs[1, 1].set_xlabel(f'Evaluation Step (Stepsize: {patches_per_step} patches)')
-        axs[1, 1].set_ylabel('Normalized Score')
-        axs[1, 1].legend()
-
+        plt.figure(figsize=(8, 6))
+        plt.plot(x_axis, morf_curve.cpu().numpy(), label=f'MoRF (AUC={auc_morf:.3f})', color='red')
+        plt.plot(x_axis, lerf_curve.cpu().numpy(), label=f'LeRF (AUC={auc_lerf:.3f})', color='blue')
+        plt.plot(x_axis, random_curve.cpu().numpy(), label=f'Random (AUC={auc_random:.3f})', color='gray', linestyle='--')
+        
+        plt.title('Perturbation Curves vs. Random Baseline')
+        plt.xlabel('% of Patches Removed')
+        plt.ylabel('k-NN Similarity Score')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
-        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/deletion_metric_curves_split.png")
-
+        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/comparison_curves.png")
 
     return {
         "faithfulness_score": delta_a_f,
-        "normalized_faithfulness_score": delta_a_f_norm,
-        "morf_curve": morf_curve.cpu().numpy(),
-        "lerf_curve": lerf_curve.cpu().numpy(),
-        "morf_curve_norm": morf_curve_norm.cpu().numpy(),
-        "lerf_curve_norm": lerf_curve_norm.cpu().numpy(),
+        "morf_vs_random": morf_vs_random,
+        "lerf_vs_random": lerf_vs_random,
         "auc_morf": auc_morf,
         "auc_lerf": auc_lerf,
+        "auc_random": auc_random,
+        "morf_curve": morf_curve.cpu().numpy(),
+        "lerf_curve": lerf_curve.cpu().numpy(),
+        "random_curve": random_curve.cpu().numpy(),
     }
 
 def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[float, float, float]:

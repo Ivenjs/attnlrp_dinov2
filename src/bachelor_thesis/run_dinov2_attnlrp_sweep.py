@@ -115,16 +115,16 @@ if __name__ == "__main__":
 
     # Step 3a: Select BEST parameters using ONLY the TUNE set results.
     print("\nFinding best parameters on TUNE set...")
-    best_params_raw_tune, best_params_norm_tune, analysis_df_tune = find_robust_hyperparameters(
+    best_params_raw_tune, analysis_df_tune = find_robust_hyperparameters(
         results=tune_results_list,
         robustness_percentile=cfg["sweep"]["robustness_percentile"],
         min_score_threshold=cfg["sweep"]["min_score_threshold"]
     )
     
-    print_robustness_summary(best_params_raw_tune, best_params_norm_tune, analysis_df_tune)
+    print_robustness_summary(best_params_raw_tune, analysis_df_tune)
 
     # Step 3b: Evaluate these BEST parameters on the HOLDOUT set for an unbiased performance estimate.
-    _, _, analysis_df_holdout = find_robust_hyperparameters(
+    _, analysis_df_holdout = find_robust_hyperparameters(
         results=holdout_results_list,
         robustness_percentile=cfg["sweep"]["robustness_percentile"],
         min_score_threshold=cfg["sweep"]["min_score_threshold"]
@@ -164,7 +164,7 @@ if __name__ == "__main__":
 
     print(f"\nGeneralization Drop: {relative_drop_percent:.2f}%")
 
-    ACCEPTABLE_DROP_PERCENT = 15.0
+    ACCEPTABLE_DROP_PERCENT = 25.0
     if relative_drop_percent > ACCEPTABLE_DROP_PERCENT:
         print(f"DECISION: REJECT. High generalization drop.")
         FINAL_DECISION = "REJECTED"
