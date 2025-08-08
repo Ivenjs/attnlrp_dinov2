@@ -14,16 +14,6 @@ import yaml
 from utils import get_class_label
 from dataset import GorillaReIDDataset, custom_collate_fn
 
-
-#TODO: rather use the transforms from the model wrapper
-TRANSFORM = transforms.Compose(
-        [
-            transforms.Resize((518, 518)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ]
-    )
-
 def fill_knn_db(
     dataset: GorillaReIDDataset, 
     model_wrapper: TimmWrapper, 
@@ -161,55 +151,6 @@ def compute_distances(
     else:
         raise ValueError(f"Unknown metric: {metric}. Choose 'cosine' or 'euclidean'.")
 
-def compute_distances_batched(
-    query_embeddings_batch: torch.Tensor,
-    db_embeddings: torch.Tensor,
-    metric: str = "cosine"
-) -> torch.Tensor:
-    """
-    Computes a matrix of distances between a BATCH of query embeddings and a 
-    database of embeddings in a fully vectorized way.
-
-    This function follows best practices by L2-normalizing features for both
-    cosine and euclidean distances to ensure a fair comparison and robustness.
-
-    Args:
-        query_embeddings_batch (torch.Tensor): A batch of query embeddings of shape (B, D).
-        db_embeddings (torch.Tensor): Database embeddings of shape (N, D).
-        metric (str): The distance metric, 'cosine' or 'euclidean'.
-
-    Returns:
-        torch.Tensor: A tensor of distances of shape (B, N). smaller is better.
-                      dist_matrix[i, j] is the distance between the i-th query
-                      and the j-th database item.
-    """
-    # The input check for a 1D tensor is removed, as we now expect a (B, D) batch.
-    
-    if metric == "cosine":
-        # L2-normalize both batches of features along the feature dimension (dim=1).
-        # This operation is naturally batched.
-        norm_query_batch = F.normalize(query_embeddings_batch, p=2, dim=1) # Shape: (B, D)
-        norm_db = F.normalize(db_embeddings, p=2, dim=1)                   # Shape: (N, D)
-        
-        # Calculate cosine similarity for the whole batch via matrix multiplication.
-        # (B, D) @ (D, N) -> (B, N)
-        cosine_sim = torch.matmul(norm_query_batch, norm_db.T)
-        
-        # Convert similarity to distance. The result is already the correct (B, N) shape.
-        # No .squeeze() is needed.
-        distances = 1 - cosine_sim
-        return distances
-    
-    elif metric == "euclidean":
-        # Also use normalized features for a fair comparison.
-        norm_query_batch = F.normalize(query_embeddings_batch, p=2, dim=1) # Shape: (B, D)
-        norm_db = F.normalize(db_embeddings, p=2, dim=1)                   # Shape: (N, D)
-        
-        distances = torch.cdist(norm_query_batch, norm_db, p=2.0)
-        return distances
-        
-    else:
-        raise ValueError(f"Unknown metric: {metric}. Choose 'cosine' or 'euclidean'.")
 
 def knn(
     embedding: torch.Tensor,
@@ -301,110 +242,6 @@ def compute_knn_proxy_score(
     else:
         return score
 
-def compute_knn_proxy_score_batched(
-    query_embedding_batch: torch.Tensor, # Shape: [B, D]
-    query_labels_batch: list[str],       # List of B strings
-    query_filenames_batch: list[str],    # List of B strings
-    db_embeddings: torch.Tensor,         # Shape: [N, D]
-    db_labels: list[str],                # List of N strings
-    db_filenames: list[str],             # List of N strings
-    distance_metric: str = "cosine",
-    k: int = 5,
-) -> torch.Tensor:                       # Returns Tensor of B scores
-    """
-    Computes a differentiable proxy score for k-NN decisions for a BATCH of queries.
-    
-    The score is defined as: S = mean(dist_foes) - mean(dist_friends).
-    This function is fully vectorized and avoids Python loops over the batch dimension.
-    """
-    device = query_embedding_batch.device
-    batch_size = query_embedding_batch.shape[0]
-    num_db_samples = len(db_filenames)
-
-    # --- Step 1: Pre-computation and Label Conversion ---
-    # Convert string labels to integer IDs for efficient tensor comparisons.
-    all_labels = sorted(list(set(db_labels + query_labels_batch)))
-    label_to_id = {label: i for i, label in enumerate(all_labels)}
-    
-    db_labels_ids = torch.tensor([label_to_id[lbl] for lbl in db_labels], device=device)       # Shape: [N]
-    query_labels_ids = torch.tensor([label_to_id[lbl] for lbl in query_labels_batch], device=device) # Shape: [B]
-
-    # Create a mapping from DB filename to its index for self-exclusion.
-    db_filename_to_idx = {fname: i for i, fname in enumerate(db_filenames)}
-
-    # --- Step 2: Find Neighbor Indices (Non-differentiable part) ---
-    with torch.no_grad():
-        # Compute distances for the entire batch to the entire DB.
-        distances = compute_distances_batched(
-            query_embedding_batch.detach(), db_embeddings, distance_metric
-        ) # Shape: [B, N]
-
-        # Exclude self-matches. For each query, if its filename is in the DB,
-        # set its distance to itself to infinity so it's not picked as a neighbor.
-        for i, fname in enumerate(query_filenames_batch):
-            if fname in db_filename_to_idx:
-                db_idx = db_filename_to_idx[fname]
-                distances[i, db_idx] = torch.inf
-
-        # Ensure k is not larger than the number of available neighbors.
-        # This check is now simpler; it assumes at least one non-self neighbor exists.
-        effective_k = min(k, num_db_samples - 1)
-        if effective_k <= 0:
-            logging.warning("No available neighbors in the database to compare against.")
-            return torch.zeros(batch_size, device=device)
-
-        # Get the indices of the top k nearest neighbors for EACH query in the batch.
-        # topk on dim=1 works row-wise, which is exactly what we need.
-        top_k_indices = torch.topk(distances, effective_k, largest=False, dim=1).indices # Shape: [B, k]
-
-    # --- Step 3: Categorize Neighbors (Vectorized) ---
-    # Use the integer IDs to find friends and foes for the whole batch at once.
-    # 1. Get the labels of the top k neighbors for each query.
-    neighbor_labels_ids = db_labels_ids[top_k_indices] # Shape: [B, k]
-    # 2. Compare with the query labels. `unsqueeze(1)` enables broadcasting.
-    # query_labels_ids shape [B] -> [B, 1]
-    # neighbor_labels_ids shape [B, k]
-    # Resulting shape is [B, k]
-    is_friend_mask = (neighbor_labels_ids == query_labels_ids.unsqueeze(1))
-    is_foe_mask = ~is_friend_mask
-    
-    # --- Step 4: Compute Differentiable Distances and Scores (Vectorized) ---
-    # Re-compute distances with the original, gradient-enabled query embeddings.
-    differentiable_distances = compute_distances_batched(
-        query_embedding_batch, db_embeddings, distance_metric
-    ) # Shape: [B, N]
-
-    # Use `torch.gather` to select the differentiable distances of the top k neighbors.
-    # This is a key step to connect the non-differentiable indices to differentiable values.
-    top_k_dists = torch.gather(differentiable_distances, 1, top_k_indices) # Shape: [B, k]
-    
-    # --- Step 5: Calculate Mean Friend/Foe Distances Safely ---
-    MAX_DISTANCE = 2.0 # A fallback value for distance.
-    
-    # Calculate sum of distances for friends and foes by zeroing out the non-relevant ones.
-    dist_friends_sum = (top_k_dists * is_friend_mask).sum(dim=1) # Shape: [B]
-    dist_foes_sum = (top_k_dists * is_foe_mask).sum(dim=1)     # Shape: [B]
-    
-    # Count the number of friends and foes for each query to compute the mean safely.
-    num_friends = is_friend_mask.sum(dim=1) # Shape: [B]
-    num_foes = is_foe_mask.sum(dim=1)       # Shape: [B]
-
-    # Initialize mean distances with the max fallback value.
-    mean_dist_friends = torch.full((batch_size,), MAX_DISTANCE, device=device, dtype=torch.float32)
-    mean_dist_foes = torch.full((batch_size,), MAX_DISTANCE, device=device, dtype=torch.float32)
-
-    # Create masks for queries that have at least one friend or foe.
-    has_friends = num_friends > 0
-    has_foes = num_foes > 0
-
-    # Compute the mean only for those queries, avoiding division by zero.
-    mean_dist_friends[has_friends] = dist_friends_sum[has_friends] / num_friends[has_friends]
-    mean_dist_foes[has_foes] = dist_foes_sum[has_foes] / num_foes[has_foes]
-    
-    # The final score for the entire batch.
-    scores = mean_dist_foes - mean_dist_friends # Shape: [B]
-
-    return scores
 
 def compute_evaluation_score(
     current_embedding: torch.Tensor,
