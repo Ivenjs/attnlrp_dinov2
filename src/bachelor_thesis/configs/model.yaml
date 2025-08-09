@@ -1,6 +1,7 @@
 checkpoint_path: "/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth"
 img_size: 518
 backbone: "vit_giant_patch14_dinov2.lvd142m"
+finetuned: False
 embedding_dim: 256
 patch_size: 14
 model_dtype: "float16"  # could be "bfloat16" if supported

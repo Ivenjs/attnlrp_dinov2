@@ -243,52 +243,6 @@ def compute_knn_proxy_score(
         return score
 
 
-def compute_evaluation_score(
-    current_embedding: torch.Tensor,
-    db_embeddings: torch.Tensor,
-    friends_indices: list,
-    distance_metric: str,
-) -> torch.Tensor:
-    """
-    Computes an intuitive, similarity-like score for evaluation purposes.
-    This score is designed to be high when the query is close to its friends.
-
-    - For cosine distance, it converts the [0, 2] distance back to a [-1, 1] similarity.
-    - For Euclidean distance, it maps the [0, 2] distance to a [1, 0] similarity.
-
-    Args:
-        current_embedding (torch.Tensor): The embedding of the (perturbed) query image.
-        db_embeddings (torch.Tensor): The database embeddings.
-        friends_indices (list): The list of indices for the *fixed* set of friends.
-        distance_metric (str): The metric used, 'cosine' or 'euclidean'.
-
-    Returns:
-        torch.Tensor: A single scalar score. Larger is better.
-    """
-    if not friends_indices:
-        # If there are no friends, the score is undefined. Return 0.
-        return torch.tensor(0.0, device=current_embedding.device)
-
-    # We don't need gradients here, but using the main distance function is fine.
-    all_distances = compute_distances(current_embedding, db_embeddings, distance_metric)
-    dist_to_friends = all_distances[friends_indices]
-
-    if distance_metric == "cosine":
-        # Cosine distance = 1 - similarity.
-        # So, similarity = 1 - distance.
-        # This will be in the range [-1, 1].
-        similarity_score = 1 - dist_to_friends.mean()
-    elif distance_metric == "euclidean":
-        # Euclidean distance on the unit hypersphere is in [0, 2].
-        # We can map this to a [1, 0] similarity range to make it intuitive.
-        # score = 1 - (dist / 2).
-        # When dist=0, score=1. When dist=2, score=0.
-        similarity_score = 1 - (dist_to_friends.mean() / 2.0)
-    else:
-        raise ValueError(f"Unknown metric for evaluation: {distance_metric}")
-
-    return similarity_score
-
 def get_query_performance_metrics(
     query_embedding: torch.Tensor,
     query_label: str,
@@ -296,58 +250,55 @@ def get_query_performance_metrics(
     db_embeddings: torch.Tensor,
     db_labels: list[str],
     db_filenames: list[str],
-    distance_metric: str = "cosine"
+    distance_metric: str = "cosine",
+    k_for_recall: int = 5 
 ) -> dict:
     """
     Computes multiple performance metrics for a single query against a database.
-
-    Args:
-        query_embedding (torch.Tensor): The (1, D) embedding of the query image.
-        query_label (str): The ground-truth label of the query.
-        ... and other db parameters
-
-    Returns:
-        dict: A dictionary containing 'rank', 'gt_similarity', and 'proxy_score'.
     """
     device = query_embedding.device
     db_labels_np = np.array(db_labels)
     db_filenames_np = np.array(db_filenames)
 
-    # --- 1. Compute Distances (non-differentiable) ---
     with torch.no_grad():
         distances = compute_distances(query_embedding, db_embeddings, distance_metric)
-        # Exclude self-match from the ranking if the query is in the DB
         try:
             query_idx = db_filenames.index(query_filename)
             distances[query_idx] = torch.inf
         except ValueError:
-            pass # Query is not in the DB, no need to exclude anything
+            pass
 
         sorted_indices = torch.argsort(distances)
         sorted_labels = db_labels_np[sorted_indices.cpu().numpy()]
 
-    # --- 2. Calculate Rank ---
-    # Find the first occurrence of the correct label in the sorted list
     match_indices = np.where(sorted_labels == query_label)[0]
-    rank = match_indices[0] + 1 if len(match_indices) > 0 else -1 # Use -1 or float('inf') for no match
+    rank = match_indices[0] + 1 if len(match_indices) > 0 else -1
 
-    # --- 3. Calculate Ground-Truth Similarity ---
-    # Find all embeddings in the DB that are from the same individual (ground-truth positives)
     gt_positive_mask = (db_labels_np == query_label) & (db_filenames_np != query_filename)
     gt_positive_indices = np.where(gt_positive_mask)[0]
-
-    gt_similarity = -1.0 # Default if no other images of the same individual exist
+    
+    gt_similarity = -1.0
     if gt_positive_indices.size > 0:
-        # Get distances to all ground-truth positives
-        gt_distances = distances[gt_positive_indices]
-        # Find the minimum distance (i.e., most similar)
-        min_gt_distance = torch.min(gt_distances)
-        # Convert distance back to similarity (1 - distance)
+        min_gt_distance = torch.min(distances[gt_positive_indices])
         gt_similarity = 1.0 - min_gt_distance.item()
 
+    recall_at_k = 0.0
+    num_gt_positives = gt_positive_indices.size
+    if num_gt_positives > 0:
+        # Get the indices of the top-k results
+        top_k_indices = sorted_indices[:k_for_recall].cpu().numpy()
+        
+        # Count how many of the top-k results are ground-truth positives
+        # Using sets is efficient for this intersection
+        top_k_set = set(top_k_indices)
+        gt_positives_set = set(gt_positive_indices)
+        
+        num_correct_in_top_k = len(top_k_set.intersection(gt_positives_set))
+        
+        recall_at_k = num_correct_in_top_k / num_gt_positives
 
     return {
         'rank': rank,
-        'gt_similarity': gt_similarity
+        'gt_similarity': gt_similarity,
+        'recall_at_k': recall_at_k
     }
-

@@ -103,7 +103,7 @@ def run_masking_experiment(
                 baseline_metrics = get_query_performance_metrics(
                     query_embedding=embedding_orig, query_label=label, query_filename=filename,
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
-                    distance_metric=cfg["knn"]["distance_metric"]
+                    distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
                 
                 baseline_proxy_score = compute_knn_proxy_score(
@@ -119,7 +119,7 @@ def run_masking_experiment(
                 masked_metrics = get_query_performance_metrics(
                     query_embedding=embedding_masked, query_label=label, query_filename=filename,
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
-                    distance_metric=cfg["knn"]["distance_metric"]
+                    distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
 
                 masked_proxy_score = compute_knn_proxy_score(
@@ -143,9 +143,11 @@ def run_masking_experiment(
                     'background_attention_negative': 1 - AoGR_negative,
                     'rank_orig': baseline_metrics['rank'], 'rank_masked': masked_metrics['rank'],
                     'gt_sim_orig': baseline_metrics['gt_similarity'], 'gt_sim_masked': masked_metrics['gt_similarity'],
+                    'recall_at_k_orig': baseline_metrics['recall_at_k'], 'recall_at_k_masked': masked_metrics['recall_at_k'],
                     'proxy_score_orig': baseline_proxy_score, 'proxy_score_masked': masked_proxy_score,
                     'delta_rank': baseline_metrics['rank'] - masked_metrics['rank'],
-                    'delta_gt_sim': masked_metrics['gt_similarity'] - baseline_metrics['gt_similarity'],
+                    'delta_gt_sim': baseline_metrics['gt_similarity'] - masked_metrics['gt_similarity'],
+                    'delta_recall': baseline_metrics['recall_at_k'] - masked_metrics['recall_at_k'],
                     'delta_proxy_score': masked_proxy_score - baseline_proxy_score
                 })
 

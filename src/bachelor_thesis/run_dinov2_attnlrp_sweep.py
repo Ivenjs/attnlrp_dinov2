@@ -35,11 +35,14 @@ if __name__ == "__main__":
     random.seed(27)  
     torch.manual_seed(27)  
 
-    model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, finetuned=True)
 
     config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
     cfg = load_all_configs(config_dir)
     MODE = cfg["lrp"]["mode"]
+    DECISION_METRIC = cfg["sweep"]["decision_metric"]
+    FINETUNED = cfg["model"]["finetuned"]
+
+    model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, finetuned=FINETUNED)
 
 
     root_dir = cfg["data"]["dataset_dir"]
@@ -85,7 +88,7 @@ if __name__ == "__main__":
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
         tune_relevances, tune_eval_dataloader, model_wrapper,
         tune_db_embeddings, tune_db_labels, tune_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["knn"]["k"], cfg["eval"]["patches_per_step"], VERBOSE
+        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["k"], cfg["eval"]["patches_per_step"], VERBOSE
     )
 
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
@@ -105,7 +108,7 @@ if __name__ == "__main__":
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
         holdout_relevances, holdout_eval_dataloader, model_wrapper,
         holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["knn"]["k"], cfg["eval"]["patches_per_step"], VERBOSE
+        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["k"], cfg["eval"]["patches_per_step"], VERBOSE
     )
 
     # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---
@@ -117,26 +120,29 @@ if __name__ == "__main__":
     print("\nFinding best parameters on TUNE set...")
     best_params_raw_tune, analysis_df_tune = find_robust_hyperparameters(
         results=tune_results_list,
+        decision_metric=DECISION_METRIC,
         robustness_percentile=cfg["sweep"]["robustness_percentile"],
         min_score_threshold=cfg["sweep"]["min_score_threshold"]
     )
     
-    print_robustness_summary(best_params_raw_tune, analysis_df_tune)
+    print_robustness_summary(best_params_raw_tune, analysis_df_tune, DECISION_METRIC)
 
     # Step 3b: Evaluate these BEST parameters on the HOLDOUT set for an unbiased performance estimate.
     _, analysis_df_holdout = find_robust_hyperparameters(
         results=holdout_results_list,
+        decision_metric=DECISION_METRIC,
         robustness_percentile=cfg["sweep"]["robustness_percentile"],
         min_score_threshold=cfg["sweep"]["min_score_threshold"]
     )
 
     # Step 3c: Analyze the generalization gap.
-    print("\nLooking up performance of TUNE-selected parameters on the HOLDOUT set...")
+    print(f"\nLooking up performance of TUNE-selected parameters on the HOLDOUT set for metric '{DECISION_METRIC}'...")
     holdout_performance_row = analysis_df_holdout[
         (analysis_df_holdout['conv_gamma'] == best_params_raw_tune['conv_gamma']) &
         (analysis_df_holdout['lin_gamma'] == best_params_raw_tune['lin_gamma']) &
-        (analysis_df_holdout['distance_metric'] == best_params_raw_tune['distance_metric'])
-    ].iloc[0] # Get the first (and only) row as a Series
+        (analysis_df_holdout['distance_metric'] == best_params_raw_tune['distance_metric']) &
+        (analysis_df_holdout['metric_name'] == DECISION_METRIC) 
+    ].iloc[0]
 
     # Extract performance stats from this row
     tune_performance = {
@@ -176,21 +182,16 @@ if __name__ == "__main__":
         print("\n" + "="*80)
         print("--- PHASE 4: FINAL REPORTING ---")
         print("="*80)
-        
-        # The 'best_raw' for logging is the one selected from the TUNE set.
-        # The 'aggregate_stats' for logging should be the performance on the HOLDOUT set.
-        final_official_params = best_params_raw_tune
-        final_official_performance = holdout_performance
 
         print("\nOfficial Approved LRP Hyperparameters:")
-        print(final_official_params)
+        print(best_params_raw_tune)
         print("\nOfficial Unbiased Performance Metrics (from Holdout set):")
-        print(final_official_performance)
+        print(holdout_performance)
 
 
     if LOG_TO_WANDB:
         log_nested_validation_to_wandb (
-            cfg=cfg,
+            cfg=cfg, 
             final_decision=FINAL_DECISION,
             approved_params=best_params_raw_tune,
             tune_performance=tune_performance,

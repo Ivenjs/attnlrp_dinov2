@@ -115,6 +115,7 @@ def evaluate_gamma_sweep(
     db_filenames: List[str],
     patch_size: int,
     device: torch.device,
+    evaluation_metrics: List[str],
     k_neighbors: int = 5,
     patches_per_step: int = 20,
     plot_curves: bool = False
@@ -123,25 +124,15 @@ def evaluate_gamma_sweep(
     Evaluate faithfulness scores for each image and gamma combination.
     
     Returns:
-        List of dictionaries with structure:
-        [
-            {
-                "input_idx": 0,
-                "conv_gamma": 0.1,
-                "lin_gamma": 0.1,
-                "faithfulness_score": 0.85
-            },
-            ...
-        ]
+        - A list of flat dictionaries, each containing results for one metric.
+        - A list of curve data points.
     """
-    results = []
+    results_list = []
     all_curves_data = []
 
-    # Get a sample filename to determine the parameter combinations to test
     sample_filename = next(iter(relevances_by_parameters.keys()))
     parameters_combinations = list(relevances_by_parameters[sample_filename].keys())
     
-    # The dataloader will elegantly handle loading one image at a time
     for i, batch in enumerate(tqdm(evaluation_dataloader, desc="Evaluating Images")):
         input_filename = batch["filename"][0]
         query_label = batch["label"][0]
@@ -158,7 +149,7 @@ def evaluate_gamma_sweep(
 
             relevance_map = relevances_by_parameters[input_filename][parameters]
             print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}, dist={distance_metric}")
-            srg_results = srg_knn(
+            srg_results_by_metric = srg_knn(
                 relevance_map=relevance_map,
                 input_tensor=input_tensor, 
                 model=model_wrapper,
@@ -171,119 +162,104 @@ def evaluate_gamma_sweep(
                 distance_metric=distance_metric,
                 k_neighbors=k_neighbors,
                 patches_per_step=patches_per_step, 
-                plot_curves=plot_curves
+                plot_curves=plot_curves,
+                evaluation_metrics=evaluation_metrics
             )
             
-            results.append({
-                "image": input_filename,
-                "conv_gamma": conv_gamma,
-                "lin_gamma": lin_gamma,
-                "distance_metric": distance_metric,
-                "faithfulness_score": srg_results["faithfulness_score"],
-                "auc_morf": srg_results["auc_morf"],
-                "auc_lerf": srg_results["auc_lerf"],
-            })
+            for metric_name, srg_results in srg_results_by_metric.items():
+                results_list.append({
+                    "image": input_filename,
+                    "conv_gamma": conv_gamma,
+                    "lin_gamma": lin_gamma,
+                    "distance_metric": distance_metric,
+                    "metric_name": metric_name, 
+                    "faithfulness_score": srg_results["faithfulness_score"],
+                    "auc_morf": srg_results["auc_morf"],
+                    "auc_lerf": srg_results["auc_lerf"],
+                })
 
-            all_curve_sets = [
-                ("morf_raw", srg_results["morf_curve"]),
-                ("lerf_raw", srg_results["lerf_curve"]),
-                ("random_raw", srg_results["random_curve"])
-            ]
+                all_curve_sets = [
+                    ("morf_raw", srg_results["morf_curve"]),
+                    ("lerf_raw", srg_results["lerf_curve"]),
+                    ("random_raw", srg_results["random_curve"])
+                ]
 
-            for curve_label, curve in all_curve_sets:
-                for step, score in enumerate(curve):
-                    all_curves_data.append([
-                        input_filename,
-                        conv_gamma,
-                        lin_gamma,
-                        distance_metric,
-                        curve_label,
-                        step, 
-                        score 
-                    ])
+                for curve_label, curve in all_curve_sets:
+                    for step, score in enumerate(curve):
+                        all_curves_data.append([
+                            input_filename,
+                            conv_gamma, lin_gamma, distance_metric,
+                            metric_name, 
+                            curve_label,
+                            step, score 
+                        ])
     
-    return results, all_curves_data
+    return results_list, all_curves_data
 
 
 
 def find_robust_hyperparameters(
     results: List[Dict],
+    decision_metric: str,
     robustness_percentile: float = 0.9,
     min_score_threshold: float = 0.0
 ) -> Tuple[Dict, Dict, pd.DataFrame]:
     """
-    Find hyperparameters that are robust across images for both raw and normalized scores.
-    
-    Args:
-        results: List of evaluation results from evaluate_multi_image_gamma_sweep
-        robustness_percentile: What percentile of cases should be "good" (0.9 = 90%)
-        min_score_threshold: Minimum acceptable faithfulness score
-    
-    Returns:
-        best_params_raw: Dictionary with best hyperparameters for raw scores
-        best_params_normalized: Dictionary with best hyperparameters for normalized scores
-        analysis_df: DataFrame with detailed analysis for both score types
+    Finds robust hyperparameters based on a specific decision metric, but analyzes all metrics.
     """
-    
-    # Convert to DataFrame for easier analysis
     df = pd.DataFrame(results)
     
     # Group by gamma parameters
-    parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric'])
-    
+    parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'metric_name'])    
     analysis_data = []
 
-    for (conv_gamma, lin_gamma, distance_metric), group in parameter_groups:
-        # Raw score analysis
-        raw_scores = group['faithfulness_score'].values
-        raw_mean = np.mean(raw_scores)
-        raw_std = np.std(raw_scores)
-        raw_min = np.min(raw_scores)
-        raw_percentile = np.percentile(raw_scores, robustness_percentile * 100)
-        raw_good_scores = np.sum(raw_scores >= min_score_threshold)
-        raw_robustness_ratio = raw_good_scores / len(raw_scores)
-        raw_stability = 1 / (1 + raw_std)
-        
-        # Raw robustness score
-        raw_robustness_score = (
-            0.3 * raw_min +                # Worst case shouldn't be terrible
-            0.3 * raw_stability +          # Low variance is good
-            0.3 * raw_mean +               # Good average performance
-            0.1 * raw_robustness_ratio     # High success rate
+    for (conv_gamma, lin_gamma, distance_metric, metric_name), group in parameter_groups:
+        scores = group['faithfulness_score'].values
+        mean_score = np.mean(scores)
+        std_score = np.std(scores)
+        min_score = np.min(scores)
+        stability = 1 / (1 + std_score)
+
+        # RRobustness score
+        robustness_score = (
+            0.3 * min_score +                # Worst case shouldn't be terrible
+            0.3 * stability +          # Low variance is good
+            0.4 * mean_score                 # Good average performance
         )
         
         analysis_data.append({
             'conv_gamma': conv_gamma,
             'lin_gamma': lin_gamma,
             'distance_metric': distance_metric,
+            'metric_name': metric_name, 
             
-            # Raw score metrics
-            'raw_mean': raw_mean,
-            'raw_std': raw_std,
-            'raw_min': raw_min,
-            'raw_percentile': raw_percentile,
-            'raw_robustness_ratio': raw_robustness_ratio,
-            'raw_stability': raw_stability,
-            'raw_robustness_score': raw_robustness_score,
-            
-            # Meta metrics
-            'num_images': len(raw_scores)
+            'raw_mean': mean_score,
+            'raw_std': std_score,
+            'raw_min': min_score,
+            'stability': stability,
+            'robustness_score': robustness_score,
+            'num_images': len(scores)
         })
     
     analysis_df = pd.DataFrame(analysis_data)
     
-    # Find best parameters for raw scores
-    best_raw_idx = analysis_df['raw_robustness_score'].idxmax()
+    # Select the best parameters based on the specified decision_metric
+    decision_df = analysis_df[analysis_df['metric_name'] == decision_metric].copy()
+    if decision_df.empty:
+        raise ValueError(f"Decision metric '{decision_metric}' not found in the results.")
+
+    best_idx = decision_df['robustness_score'].idxmax()
+    best_row = decision_df.loc[best_idx]
+    
     best_params_raw = {
-        'conv_gamma': analysis_df.loc[best_raw_idx, 'conv_gamma'],
-        'lin_gamma': analysis_df.loc[best_raw_idx, 'lin_gamma'],
-        'distance_metric': analysis_df.loc[best_raw_idx, 'distance_metric'],
-        'robustness_score': analysis_df.loc[best_raw_idx, 'raw_robustness_score'],
-        'mean_score': analysis_df.loc[best_raw_idx, 'raw_mean'],
-        'min_score': analysis_df.loc[best_raw_idx, 'raw_min'],
-        'std_score': analysis_df.loc[best_raw_idx, 'raw_std'],
-        'stability': analysis_df.loc[best_raw_idx, 'raw_stability'],
-        'robustness_ratio': analysis_df.loc[best_raw_idx, 'raw_robustness_ratio']
+        'conv_gamma': best_row['conv_gamma'],
+        'lin_gamma': best_row['lin_gamma'],
+        'distance_metric': best_row['distance_metric'],
+        'metric_name': best_row['metric_name'], # The metric used for this decision
+        'robustness_score': best_row['robustness_score'],
+        'mean_score': best_row['raw_mean'],
+        'min_score': best_row['raw_min'],
+        'std_score': best_row['raw_std'],
     }
     
     return best_params_raw, analysis_df
@@ -293,20 +269,7 @@ def visualize_robustness_analysis(
     analysis_df: pd.DataFrame,
     save_path: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
 ) -> List[str]:
-    """
-    Create visualizations for the robustness analysis, generating a separate figure
-    for each distance metric found in the 'distance_metric' column.
-
-    Args:
-        analysis_df (pd.DataFrame): DataFrame containing the analysis results. 
-                                    Must include 'conv_gamma', 'lin_gamma', 'distance_metric',
-                                    and the score columns ('raw_mean', etc.).
-        save_path (str): The base path for saving the plots. The distance metric name 
-                         will be appended to this path.
-    """
-    # 1. Get the unique distance metrics from the DataFrame
-    distance_metrics = analysis_df['distance_metric'].unique()
-    
+    """Creates visualizations for each combination of distance and evaluation metric."""    
     # Get the base path and extension for saving files
     path_root, path_ext = os.path.splitext(save_path)
 
@@ -315,113 +278,70 @@ def visualize_robustness_analysis(
     
     saved_paths = []
 
-    # 2. Loop over each distance metric
-    for metric in distance_metrics:
-        print(f"--- Generating plots for distance metric: {metric} ---")
-        
-        # 3. Filter the DataFrame for the current metric
-        df_subset = analysis_df[analysis_df['distance_metric'] == metric].copy()
+    for eval_metric in analysis_df['metric_name'].unique():
+        for dist_metric in analysis_df['distance_metric'].unique():
+            print(f"--- Generating plot for Eval Metric: {eval_metric}, Dist Metric: {dist_metric} ---")
+            
+            df_subset = analysis_df[
+                (analysis_df['metric_name'] == eval_metric) & 
+                (analysis_df['distance_metric'] == dist_metric)
+            ].copy()
 
-        # Create a new figure for this metric's plots
-        fig, axes = plt.subplots(3, 2, figsize=(15, 18))
-        
-        # Add a clear, overarching title for the figure
-        fig.suptitle(f'Robustness Analysis (Distance Metric: {metric.title()})', fontsize=20, y=1.02)
-        
-        # --- Plotting logic (same as before, but uses df_subset) ---
-        
-        # 1. Raw mean scores
-        pivot_raw_mean = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_mean')
-        sns.heatmap(pivot_raw_mean, annot=True, fmt='.3f', cmap='viridis', ax=axes[0,0])
-        axes[0,0].set_title('Raw Mean Faithfulness Scores')
-        
-        # 2. Raw robustness scores
-        pivot_raw_robust = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_robustness_score')
-        sns.heatmap(pivot_raw_robust, annot=True, fmt='.3f', cmap='viridis', ax=axes[1,0])
-        axes[1,0].set_title('Raw Robustness Scores')
-        
-        # 3. Raw minimum scores (worst-case robustness)
-        pivot_raw_min = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values='raw_min')
-        sns.heatmap(pivot_raw_min, annot=True, fmt='.3f', cmap='viridis', ax=axes[2,0])
-        axes[2,0].set_title('Raw Minimum Scores (Worst-Case)')
+            if df_subset.empty:
+                continue
+
+            fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+            fig.suptitle(f"Robustness Analysis (Eval: {eval_metric.title()}, Distance: {dist_metric.title()})", fontsize=20, y=1.05)
+            
+            plots = [
+                ('Mean Faithfulness', 'raw_mean'),
+                ('Minimum Faithfulness (Worst-Case)', 'raw_min'),
+                ('Overall Robustness Score', 'robustness_score')
+            ]
+
+            for ax, (title, value_col) in zip(axes, plots):
+                pivot_df = df_subset.pivot(index='conv_gamma', columns='lin_gamma', values=value_col)
+                sns.heatmap(pivot_df, annot=True, fmt='.3f', cmap='viridis', ax=ax)
+                ax.set_title(title)
+            
+            plt.tight_layout(rect=[0, 0, 1, 0.98])
+            
+            metric_save_path = f"{path_root}_{eval_metric}_{dist_metric}{path_ext}"
+            plt.savefig(metric_save_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            saved_paths.append(metric_save_path)
     
-        # Adjust layout to prevent titles from overlapping
-        plt.tight_layout(rect=[0, 0, 1, 0.98]) # Adjust rect to make space for suptitle
-        
-        # 4. Create a unique save path for the current metric's plot
-        metric_save_path = f"{path_root}_{metric}{path_ext}"
-        
-        # Save and show the plot for the current metric
-        print(f"Saving plot to: {metric_save_path}")
-        plt.savefig(metric_save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-        
-        # Close the current figure to free up memory before the next loop iteration
-        plt.close(fig)
-        saved_paths.append(metric_save_path)
     return saved_paths
 
 
 def print_robustness_summary(
     best_params_raw: Dict, 
-    analysis_df: pd.DataFrame, 
-    results: List[Dict] = None
+    analysis_df: pd.DataFrame,
+    decision_metric: str
 ):
-    """
-    Print a summary of the robustness analysis for both raw and normalized scores.
-    """
+    """Prints a summary of the robustness analysis, focusing on the decision metric."""
     print("\n" + "="*60)
     print("ROBUSTNESS ANALYSIS SUMMARY")
     print("="*60)
     
-    print(f"\n{'='*25} RAW SCORES {'='*25}")
-    print(f"Best Hyperparameters (Raw Score Robustness):")
+    print(f"\nDecision made based on METRIC: '{decision_metric.upper()}'")
+    print(f"Best Hyperparameters (Robustness on '{decision_metric}'):")
     print(f"  Conv Gamma: {best_params_raw['conv_gamma']}")
     print(f"  Lin Gamma:  {best_params_raw['lin_gamma']}")
     print(f"  Distance Metric: {best_params_raw['distance_metric']}")
     print(f"  Robustness Score: {best_params_raw['robustness_score']:.4f}")
     
-    print(f"\nRaw Score Performance Metrics:")
+    print(f"\nPerformance Metrics for this combination ('{decision_metric}'):")
     print(f"  Mean Score:       {best_params_raw['mean_score']:.4f}")
     print(f"  Min Score:        {best_params_raw['min_score']:.4f}")
     print(f"  Std Score:        {best_params_raw['std_score']:.4f}")
-    print(f"  Stability:        {best_params_raw['stability']:.4f}")
-    print(f"  Robustness Ratio: {best_params_raw['robustness_ratio']:.4f}")
-    
-    # Show top 3 combinations for each score type
-    print(f"\nTop 3 Raw Score Combinations:")
-    top_3_raw = analysis_df.nlargest(3, 'raw_robustness_score')
-    for i, (_, row) in enumerate(top_3_raw.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
-              f"robust={row['raw_robustness_score']:.4f}, "
-              f"mean={row['raw_mean']:.4f}, "
-              f"min={row['raw_min']:.4f}")
-    
-    # Show most stable combinations for each score type
-    print(f"\nMost Stable Raw Score Combinations:")
-    stable_3_raw = analysis_df.nlargest(3, 'raw_stability')
-    for i, (_, row) in enumerate(stable_3_raw.iterrows(), 1):
-        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, distance_metric={row['distance_metric']}: "
-              f"stability={row['raw_stability']:.4f}, "
-              f"std={row['raw_std']:.4f}")
-    
-    # Add aggregate statistics if results are provided
-    if results is not None:
-        print(f"\n" + "="*60)
-        print("AGGREGATE STATISTICS")
-        print("="*60)
-        
-        stats = calculate_aggregate_statistics(results)
-        overall = stats['overall']
-        
-        print(f"\nOverall Raw Score Performance:")
-        print(f"  Mean:     {overall['raw_mean']:.4f}")
-        print(f"  Median:   {overall['raw_median']:.4f}")
-        print(f"  Std Dev:  {overall['raw_std']:.4f}")
-        print(f"  Min:      {overall['raw_min']:.4f}")
-        print(f"  Max:      {overall['raw_max']:.4f}")
-        
-        return stats
+
+    # Show top 3 combinations for the decision metric
+    print(f"\nTop 3 Combinations for '{decision_metric}':")
+    top_3 = analysis_df[analysis_df['metric_name'] == decision_metric].nlargest(3, 'robustness_score')
+    for i, (_, row) in enumerate(top_3.iterrows(), 1):
+        print(f"  {i}. γ_conv={row['conv_gamma']}, γ_lin={row['lin_gamma']}, dist={row['distance_metric']}: "
+              f"robust={row['robustness_score']:.4f}, mean={row['raw_mean']:.4f}, min={row['raw_min']:.4f}")
 
 def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
     """
@@ -495,196 +415,106 @@ def log_nested_validation_to_wandb(
     holdout_results_list: List[Dict],
     tune_curves_list: List,
     holdout_curves_list: List,
-    plot_normalized_curves: bool = False
 ):
-    """
-    Logs the complete story of a nested validation experiment to a single W&B run.
-    """
+    """Logs the complete story of a nested validation experiment to W&B, handling multiple metrics."""
     print("\n--- Logging Nested Validation Experiment to Weights & Biases ---")
-    
+    if cfg["model"]["finetuned"]:
+        wandb_name = "attnlrp_gamma_sweep_multimetric_finetuned"
+    else:
+        wandb_name = "attnlrp_gamma_sweep_multimetric"
+
     run = wandb.init(
-        project="Thesis-Iven", 
-        entity="gorillawatch", 
-        name="attnlrp_gamma_sweep_tune_holdout",  
-        config=cfg 
+        project="Thesis-Iven", entity="gorillawatch", 
+        name=wandb_name, config=cfg 
     )
 
-    # --- 1. Log Key Decision Metrics to wandb.summary ---
-    # This is the most important part for a quick overview.
+    decision_metric = cfg["sweep"]["decision_metric"]
+
     wandb.summary["final_decision"] = final_decision
+    wandb.summary["decision_metric"] = decision_metric
     wandb.summary["generalization_drop_percent"] = generalization_drop_percent
     
-    # Log the chosen parameters
     wandb.summary["approved_conv_gamma"] = approved_params['conv_gamma']
     wandb.summary["approved_lin_gamma"] = approved_params['lin_gamma']
     wandb.summary["approved_distance_metric"] = approved_params['distance_metric']
     
-    # Log the performance of the chosen parameters on both sets for comparison
-    wandb.summary["tune_set_mean_faithfulness"] = tune_performance['mean_faithfulness']
-    wandb.summary["tune_set_min_faithfulness"] = tune_performance['min_faithfulness']
-    wandb.summary["holdout_set_mean_faithfulness"] = holdout_performance['mean_faithfulness']
-    wandb.summary["holdout_set_min_faithfulness"] = holdout_performance['min_faithfulness']
+    wandb.summary[f"tune_set_mean_faithfulness ({decision_metric})"] = tune_performance['mean_faithfulness']
+    wandb.summary[f"holdout_set_mean_faithfulness ({decision_metric})"] = holdout_performance['mean_faithfulness']
     
     # --- 2. Log Detailed Data as Tables ---
-    # Log the full, per-image results for deep dives
-
-    tune_results_table = wandb.Table(dataframe=pd.DataFrame(tune_results_list))
-    holdout_results_table = wandb.Table(dataframe=pd.DataFrame(holdout_results_list))
-
-    # Log the analysis dataframes (grouped by parameter)
-    tune_analysis_table = wandb.Table(dataframe=analysis_df_tune)
-    holdout_analysis_table = wandb.Table(dataframe=analysis_df_holdout)
-
+    # The 'metric_name' column will now be present in these tables
     wandb.log({
-        "tune_set/raw_results_per_image": tune_results_table,
-        "holdout_set/raw_results_per_image": holdout_results_table,
-        "tune_set/parameter_analysis": tune_analysis_table,
-        "holdout_set/parameter_analysis": holdout_analysis_table
+        "tune_set/raw_results_per_image": wandb.Table(dataframe=pd.DataFrame(tune_results_list)),
+        "holdout_set/raw_results_per_image": wandb.Table(dataframe=pd.DataFrame(holdout_results_list)),
+        "tune_set/parameter_analysis": wandb.Table(dataframe=analysis_df_tune),
+        "holdout_set/parameter_analysis": wandb.Table(dataframe=analysis_df_holdout)
     })
 
     # --- 3. Log Visualizations ---
-    # You can generate and log the heatmap plots for both sets
-    # maybe not that clean to return the paths here, but it works
+    # visualize_robustness_analysis now creates plots for all metrics
     tune_paths = visualize_robustness_analysis(analysis_df_tune, save_path="wandb_plots/tune_analysis.png")
     holdout_paths = visualize_robustness_analysis(analysis_df_holdout, save_path="wandb_plots/holdout_analysis.png")
 
     wandb.log({
-        "plots/tune_set_analysis_heatmaps": [wandb.Image(p) for p in tune_paths],
-        "plots/holdout_set_analysis_heatmaps": [wandb.Image(p) for p in holdout_paths]
+        "plots/tune_set_analysis_heatmaps": [wandb.Image(p, caption=os.path.basename(p)) for p in tune_paths],
+        "plots/holdout_set_analysis_heatmaps": [wandb.Image(p, caption=os.path.basename(p)) for p in holdout_paths]
     })
 
-    # Curve logging
-    print("\n--- Logging Faithfulness Curves for Approved Parameters ---")
+    # --- 4. Log Curves ---
+    print("\n--- Logging Faithfulness Curves for Approved Parameters (All Metrics) ---")
+    
+    # *** CHANGE: The curve list now has more columns ***
+    curve_cols = ["image", "conv_gamma", "lin_gamma", "distance_metric", "metric_name", "curve_label", "step", "score"]
+    tune_curves_df = pd.DataFrame(tune_curves_list, columns=curve_cols)
+    holdout_curves_df = pd.DataFrame(holdout_curves_list, columns=curve_cols)
 
-    # Convert curve lists to DataFrames for easy filtering
-    tune_curves_df = pd.DataFrame(
-        tune_curves_list,
-        columns=["image", "conv_gamma", "lin_gamma", "distance_metric", "curve_label", "step", "score"]
-    )
-    holdout_curves_df = pd.DataFrame(
-        holdout_curves_list,
-        columns=["image", "conv_gamma", "lin_gamma", "distance_metric", "curve_label", "step", "score"]
-    )
-
-    # Filter both DataFrames to get curves ONLY for the approved parameter set
-    approved_tune_curves_df = tune_curves_df[
+    # Filter for approved hyperparameter combination
+    approved_params_filter = (
         (tune_curves_df['conv_gamma'] == approved_params['conv_gamma']) &
         (tune_curves_df['lin_gamma'] == approved_params['lin_gamma']) &
         (tune_curves_df['distance_metric'] == approved_params['distance_metric'])
-    ].copy() # .copy() to avoid SettingWithCopyWarning
-
-    approved_holdout_curves_df = holdout_curves_df[
+    )
+    approved_tune_curves_df = tune_curves_df[approved_params_filter].copy()
+    
+    approved_holdout_params_filter = (
         (holdout_curves_df['conv_gamma'] == approved_params['conv_gamma']) &
         (holdout_curves_df['lin_gamma'] == approved_params['lin_gamma']) &
         (holdout_curves_df['distance_metric'] == approved_params['distance_metric'])
-    ].copy()
+    )
+    approved_holdout_curves_df = holdout_curves_df[approved_holdout_params_filter].copy()
 
     approved_tune_curves_df['split'] = 'tune'
     approved_holdout_curves_df['split'] = 'holdout'
-
-    # Concatenate them into a single DataFrame for easy plotting
     combined_curves_df = pd.concat([approved_tune_curves_df, approved_holdout_curves_df])
 
-    mean_curve_plot_paths = []
-    # Iterate over each data split ('tune', 'holdout') to create separate plots
-    for split in ['tune', 'holdout']:
-        if split not in combined_curves_df['split'].unique(): continue
-            
-        split_df = combined_curves_df[combined_curves_df['split'] == split]
-        plot_data_df = split_df
-        title_suffix = "(All Scores)"
-
-        if plot_data_df.empty:
-            print(f"Skipping plot for '{split}' split as no data is available.")
-            continue
-            
-        # Define a unique key and title for the plot
-        log_key = f"plots/mean_faithfulness_curves_{split}"
-        title = f"Mean Faithfulness Curves on {split.capitalize()} Set {title_suffix}"
-
-        # Use the helper function to generate and log the plot
-        plot_path = plot_and_log_mean_curve(
-            df=plot_data_df,
-            title=title,
-            log_key=log_key
-        )
-        mean_curve_plot_paths.append(plot_path)
-
-
-    curve_series_dict = {}
-    combined_curves_df['series'] = combined_curves_df['split'] + '/' + combined_curves_df['curve_label']
-
-    # Group by (split, curve_label)
-    grouped = combined_curves_df.groupby(["split", "curve_label"])
-
-    for (split, label), group in grouped:
-        # Sort by step to make sure line is nice
-        group_sorted = group.sort_values("step")
+    # Plot mean curves for each metric separately
+    for eval_metric in combined_curves_df['metric_name'].unique():
+        metric_df = combined_curves_df[combined_curves_df['metric_name'] == eval_metric]
         
-        # Name like "tune/faithfulness" or "holdout/robustness"
-        key = f"{split}/{label}"
-        xs = group_sorted["step"].tolist()
-        ys = group_sorted["score"].tolist()
+        # We can reuse the plot_and_log_mean_curve helper
+        plot_and_log_mean_curve(
+            df=metric_df[metric_df['split'] == 'tune'],
+            title=f"Mean Curves on Tune Set ({eval_metric})",
+            log_key=f"plots/mean_curves_tune_{eval_metric}"
+        )
+        plot_and_log_mean_curve(
+            df=metric_df[metric_df['split'] == 'holdout'],
+            title=f"Mean Curves on Holdout Set ({eval_metric})",
+            log_key=f"plots/mean_curves_holdout_{eval_metric}"
+        )
 
-        curve_series_dict[key] = (xs, ys)
-    
-    # --- Plotting ---
-    table_data = []
-
-    for key, (xs, ys) in curve_series_dict.items():
-        for x, y in zip(xs, ys):
-            table_data.append([key, x, y])
-
-    # Make DataFrame
-    plot_df = pd.DataFrame(table_data, columns=["series", "step", "score"])
-    plot_table = wandb.Table(dataframe=plot_df)
-
-    # Create the plot
-    wandb_plot = wandb.plot.line(
-        plot_table,                     
-        x="step",                       
-        y="score",                      
-        stroke="series",                
-        title="Faithfulness Curves (Tune vs. Holdout)"
-    )
-
-    wandb.log({"plots/aggregate_faithfulness_curves": wandb_plot})
-
-    # 2. Per-Image Plots: Plot curves for each image, comparing Tune vs. Holdout if possible
-    # This is useful for debugging specific images. We group by the original image filename.
-    for image_name, group_df in combined_curves_df.groupby('image'):
-        # Create a unique label for each curve using split + label
-        group_df = group_df.copy()  # avoid SettingWithCopy
-        group_df["series_label"] = group_df["split"] + "/" + group_df["curve_label"]
-
-        table_for_plot = wandb.Table(dataframe=group_df)
-        plot_key = f"per_image_curves/{image_name.replace('.', '_')}"
-        title = f"Curves for {image_name} (Split(s): {group_df['split'].unique()})"
-
-        wandb.log({
-            plot_key: wandb.plot.line(
-                table_for_plot,
-                x="step",
-                y="score",
-                stroke="series_label",  # use new column
-                title=title
-            )
-        })
-
-    # --- 4. (Optional) Log Artifacts for versioning ---
-    artifact = wandb.Artifact('nested-validation-results', type='analysis-results')
-    for tune_path in tune_paths:
-        artifact.add_file(tune_path)
-    for holdout_path in holdout_paths:
-        artifact.add_file(holdout_path)
-
-    for mean_curve_path in mean_curve_plot_paths:
-        artifact.add_file(mean_curve_path)
-
-    # You could also save the dataframes as CSVs and add them
-    # analysis_df_tune.to_csv("tune_analysis.csv")
-    # artifact.add_file("tune_analysis.csv")
-    run.log_artifact(artifact)
+    # Create a single interactive plot with all curves
+    if not combined_curves_df.empty:
+        # Create a rich series label for the legend
+        combined_curves_df['series'] = combined_curves_df.apply(
+            lambda row: f"{row['split']}/{row['metric_name']}/{row['curve_label']}", axis=1
+        )
+        plot_table = wandb.Table(dataframe=combined_curves_df[['series', 'step', 'score']])
+        wandb_plot = wandb.plot.line(
+            plot_table, x="step", y="score", stroke="series",                
+            title="Faithfulness Curves (Tune vs. Holdout, All Metrics)"
+        )
+        wandb.log({"plots/aggregate_faithfulness_curves": wandb_plot})
 
     run.finish()
     print("--- Finished logging to W&B ---")
