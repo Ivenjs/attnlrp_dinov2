@@ -2,7 +2,7 @@
 configs/*
 wandb_plots/*
 src/bachelor_thesis/wandb_plots/*
-src/bachelor_thesis/configs/*
+#src/bachelor_thesis/configs/*
 data/*
 logs/
 # experiment output logs
