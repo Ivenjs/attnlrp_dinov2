@@ -80,9 +80,9 @@ def get_knn_db(
     Loads a pre-computed k-NN database or creates it if it doesn't exist.
     The database name is a combination of the model dataset_name and the data split.
     """
-
     checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint_path))[0]
     db_filename = f"{checkpoint_name}_{dataset.dataset_name}_{split_name}_db.pt"
+    
     db_path = os.path.join(db_dir, db_filename)
 
     db_embeddings = []
@@ -201,7 +201,7 @@ def compute_knn_proxy_score(
     # Return a neutral score (0) or handle as an error. NORMALLY, THIS SHOULD NOT HAPPEN.
     if effective_k <= 0:
         # Returning a neutral score is often a safe default.
-        logging.warning(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
+        print(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
         return torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
     # We must use a detached version of the query for the distance calculation
     # to find the neighbors. This is because topk is not nicely differentiable
@@ -215,7 +215,7 @@ def compute_knn_proxy_score(
             except ValueError:
                 pass
         top_k_indices = torch.topk(distances, effective_k, largest=False).indices
-    
+
     friends_indices = []
     foes_indices = []
     for idx_tensor in top_k_indices:
@@ -224,7 +224,7 @@ def compute_knn_proxy_score(
             friends_indices.append(idx)
         else:
             foes_indices.append(idx)
-
+    
     differentiable_distances = compute_distances(query_embedding, db_embeddings, distance_metric)
 
     if friends_indices:

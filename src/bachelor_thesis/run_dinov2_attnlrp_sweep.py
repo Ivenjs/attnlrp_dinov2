@@ -5,6 +5,7 @@ import yaml
 import os
 from PIL import Image
 from pathlib import Path
+import argparse
 import random
 from collections import defaultdict
 import wandb
@@ -22,11 +23,11 @@ from dinov2_attnlrp_sweep import (
     )
 from knn_helpers import get_knn_db
 from dataset import GorillaReIDDataset, custom_collate_fn
-from utils import get_balanced_individual_splits, load_all_configs
+from utils import get_balanced_individual_splits, load_config
 
 
 
-if __name__ == "__main__":
+def main(cfg: dict):
     monkey_patch_zennit(verbose=True)  # is this needed? seems to be
 
     LOG_TO_WANDB = True
@@ -36,14 +37,15 @@ if __name__ == "__main__":
     torch.manual_seed(27)  
 
 
-    config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
-    cfg = load_all_configs(config_dir)
     MODE = cfg["lrp"]["mode"]
     DECISION_METRIC = cfg["sweep"]["decision_metric"]
     FINETUNED = cfg["model"]["finetuned"]
 
-    model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, finetuned=FINETUNED)
-
+    is_finetuned = cfg["model"]["finetuned"]
+    model_type_str = "finetuned" if is_finetuned else "base"
+    print(f"\n--- Running SWEEP for: {model_type_str.upper()} MODEL ---")
+    
+    model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
 
     root_dir = cfg["data"]["dataset_dir"]
     train_dir = os.path.join(root_dir, "train")
@@ -74,10 +76,13 @@ if __name__ == "__main__":
 
     # This phase generates all necessary data for the 'tune' set.
     print("\n--- RUNNING FULL SWEEP ON TUNE SET ---")
+    tune_db_split_name = "explainer_tune" 
+
     tune_db_embeddings, tune_db_labels, tune_db_filenames = get_knn_db(
-        db_dir=cfg["knn"]["db_embeddings_dir"], split_name="explainer_tune", dataset=tune_db_dataset,
+        db_dir=cfg["knn"]["db_embeddings_dir"], split_name=tune_db_split_name, dataset=tune_db_dataset,
         model_wrapper=model_wrapper, model_checkpoint_path=cfg["model"]["checkpoint_path"], batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
+
     tune_dataloader = DataLoader(tune_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn,shuffle=False)
 
     tune_relevances = run_gamma_sweep(
@@ -94,8 +99,10 @@ if __name__ == "__main__":
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
     # This phase generates all necessary data for the 'holdout' set.
     print("\n--- RUNNING FULL SWEEP ON HOLDOUT SET ---")
+    holdout_db_split_name = "explainer_holdout"
+
     holdout_db_embeddings, holdout_db_labels, holdout_db_filenames = get_knn_db(
-        db_dir=cfg["knn"]["db_embeddings_dir"], split_name="explainer_holdout", dataset=holdout_db_dataset,
+        db_dir=cfg["knn"]["db_embeddings_dir"], split_name=holdout_db_split_name, dataset=holdout_db_dataset,
         model_wrapper=model_wrapper, model_checkpoint_path=cfg["model"]["checkpoint_path"], batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
 
@@ -204,3 +211,18 @@ if __name__ == "__main__":
             tune_curves_list=tune_curves_list,
             holdout_curves_list=holdout_curves_list
         )
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run DINOv2 AttnLRP sweep<.")
+    parser.add_argument(
+        "--config_name", 
+        type=str, 
+        required=True,
+        help="The name of the experiment config (e.g., 'finetuned', 'non_finetuned')."
+    )   
+    
+    args, unknown_args = parser.parse_known_args()
+
+    cfg = load_config(args.config_name, unknown_args)
+
+    main(cfg)

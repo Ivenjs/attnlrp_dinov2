@@ -258,14 +258,14 @@ def load_timm_wrapper(
     Returns:
     - tuple: (model, transforms_object, data_config)
     """
-    print("--- Loading Finetuned TimmWrapper Model ---")
+    print("--- Loading TimmWrapper Model ---")
 
-    checkpoint_best = torch.load(checkpoint_path, map_location=device)
 
     print(f"Building model architecture with backbone '{backbone_name}' and embedding size {embedding_size}...")
     model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, model_dtype=model_dtype,img_size=image_size)
 
     if finetuned:
+        checkpoint_best = torch.load(checkpoint_path, map_location=device)
         cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
         msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
         #print(f"State dict loading message: {msg}")
@@ -281,15 +281,7 @@ def load_timm_wrapper(
     print("--- Model loading complete ---")
     return model_wrapper, transforms, data_config
 
-def get_model_wrapper(device, finetuned=True, cfg=None, **overrides):
-    model_config_path = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/model.yaml"
-    if cfg is None:
-        with open(model_config_path, "r") as f:
-            cfg = yaml.safe_load(f)
-
-    # Allow overriding config values via kwargs
-    cfg = {**cfg, **overrides}
-
+def get_model_wrapper(device, cfg):
     model_dtype = getattr(torch, cfg["model_dtype"])
 
     if device.type == "cuda" and not torch.cuda.is_bf16_supported():
@@ -301,7 +293,7 @@ def get_model_wrapper(device, finetuned=True, cfg=None, **overrides):
         backbone_name=cfg["backbone"],
         embedding_size=cfg["embedding_dim"],
         image_size=cfg["img_size"],
-        finetuned=finetuned,
+        finetuned=cfg["finetuned"],
         device=device,
         model_dtype=model_dtype,
     )

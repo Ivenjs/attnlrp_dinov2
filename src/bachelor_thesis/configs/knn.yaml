@@ -1,3 +1,0 @@
-k: 5
-distance_metric: "cosine"
-db_embeddings_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/knn_db"

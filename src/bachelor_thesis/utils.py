@@ -5,6 +5,8 @@ from typing import List, Tuple, Dict
 from collections import defaultdict
 import random
 from PIL import Image
+from omegaconf import OmegaConf
+
 
 def get_class_label(filename: str) -> str:
     """
@@ -82,12 +84,27 @@ def get_balanced_individual_splits(
     return tune_query_files, tune_db_files, holdout_query_files, holdout_db_files
 
 
-def load_all_configs(config_dir: str):
-    config = {}
-    for file in Path(config_dir).glob("*.yaml"):
-        key = file.stem  
-        with open(file, "r") as f:
-            config[key] = yaml.safe_load(f)
+def load_config(config_name: str, cli_overrides: list):
+    """
+    Loads base config, merges the experiment-specific override,
+    and finally merges any command-line overrides.
+    """
+    config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
+
+    # Load base configuration
+    base_config = OmegaConf.load(os.path.join(config_dir, "base.yaml"))
+
+    # Load experiment-specific override
+    override_path = os.path.join(config_dir, "experiment", f"{config_name}.yaml")
+    if not os.path.exists(override_path):
+        raise FileNotFoundError(f"Experiment config file not found: {override_path}")
+    override_config = OmegaConf.load(override_path)
+
+    # Load command-line overrides passed from sbatch
+    cli_config = OmegaConf.from_cli(cli_overrides)
+
+    config = OmegaConf.merge(base_config, override_config, cli_config)
+    
     return config
 
 

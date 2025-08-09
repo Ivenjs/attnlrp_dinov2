@@ -1,5 +1,5 @@
 from mask_generator import MaskGenerator
-from utils import load_all_configs
+from utils import load_config
 from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
@@ -25,6 +25,8 @@ import subprocess
 import os
 import random
 import torch
+import argparse 
+import yaml 
 # 1) run sam to get segmentation masks of data split, if not already saved
 # 2) create dataset with masks
 # 3) run lrp with swept parameters on images in dataset and compute the mask score
@@ -34,8 +36,7 @@ import torch
 # mean faithfullness curves for finetuned model vs base model
 
 #faithfullnes score durchschnittskurve berechnen
-#knn score weird?
-#implement relevance chcker correctly to validate relevance maps, like in github issue
+
 def get_denormalization_transform(mean: tuple, std: tuple) -> transforms.Compose:
     """Creates a transform to de-normalize image tensors using a lambda function."""
     # Convert to tensors for broadcasting
@@ -264,204 +265,133 @@ def analyze_masking_exp(masking_results_df, cfg: Dict) -> None:
     plt.savefig(correlation_plot_path_pos_neg)
     print(f"Saved correlation plot to: {correlation_plot_path}")
 
-if __name__ == "__main__":
+def main(cfg: Dict):
+    """
+    Main function to run the LRP and masking experiment for a single model configuration.
+    """
+    monkey_patch_zennit(verbose=True)
 
-    result = subprocess.run(
-        ["python", "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py"],
-        check=True  
-    )
-
-    monkey_patch_zennit(verbose=True)  
-
-    LOG_TO_WANDB = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    VERBOSE = False  
-    random.seed(27)  
-    torch.manual_seed(27)  
+    VERBOSE = False
+    random.seed(27)
+    torch.manual_seed(27)
 
-    model_wrapper_finetuned, image_transforms, data_config = get_model_wrapper(device=DEVICE, finetuned=True)
+    # --- 1. Determine Model Type and Setup Dynamic Paths ---
+    is_finetuned = cfg["model"]["finetuned"]
+    model_type_str = "finetuned" if is_finetuned else "base"
+    print(f"--- Running experiment for: {model_type_str.upper()} MODEL ---")
 
-    config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
-    cfg = load_all_configs(config_dir)
-    MODE = cfg["lrp"]["mode"]
+    # Create a model-specific output directory
+    base_output_dir = cfg["data"]["output_base_dir"]
+    experiment_output_dir = os.path.join(base_output_dir, model_type_str)
+    visualization_dir = os.path.join(experiment_output_dir, "visualizations")
+    os.makedirs(visualization_dir, exist_ok=True)
+    print(f"All outputs will be saved in: {experiment_output_dir}")
 
+
+    # --- 2. Load Model and Data ---
+    model_wrapper, image_transforms, data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
 
     root_dir = cfg["data"]["dataset_dir"]
     val_dir = os.path.join(root_dir, "val")
-
     val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
-
 
     mask_transform = transforms.Compose([
         transforms.Resize(
-            size=cfg["model"]["img_size"], # e.g., (518, 518)
-            interpolation=transforms.InterpolationMode.NEAREST # Use NEAREST for masks!
+            size=cfg["model"]["img_size"],
+            interpolation=transforms.InterpolationMode.NEAREST
         ),
-        transforms.ToTensor(), # Converts mask to a [1, H, W] tensor of floats (0.0 or 1.0)
+        transforms.ToTensor(),
     ])
-    # IMPORTANT: The interpolation mode for the mask must be NEAREST.
-    # Using BILINEAR or BICUBIC would create intermediate values (like 0.5)
-    # along the edges, blurring the mask.
 
     val_dataset = GorillaReIDDataset(
         image_dir=val_dir,
         filenames=val_files,
-        transform=image_transforms,      # The full transform for the image
+        transform=image_transforms,
         base_mask_dir=cfg["data"]["base_mask_dir"],
-        mask_transform=mask_transform  # The spatial-only transform for the mask
+        mask_transform=mask_transform
     )
 
+    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
+    split_name = "val" 
 
-    val_db_embeddings_finetuned, val_db_labels_finetuned, val_db_filenames_finetuned = get_knn_db(
-        db_dir=cfg["knn"]["db_embeddings_dir"], split_name="val", dataset=val_dataset,
-        model_wrapper=model_wrapper_finetuned, model_checkpoint_path=cfg["model"]["checkpoint_path"], batch_size=cfg["data"]["batch_size"], device=DEVICE
+    # --- 3. Compute k-NN Database ---
+    db_embeddings, db_labels, db_filenames = get_knn_db(
+        db_dir=cfg["knn"]["db_embeddings_dir"],
+        split_name=split_name,
+        dataset=val_dataset,
+        model_wrapper=model_wrapper,
+        model_checkpoint_name=cfg["model"]["checkpoint_path"],
+        batch_size=cfg["data"]["batch_size"],
+        device=DEVICE
     )
-    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn,shuffle=False)
 
-    conv_gamma = cfg["lrp"]["conv_gamma"]
-    lin_gamma = cfg["lrp"]["lin_gamma"]
-    distance_metric = cfg["knn"]["distance_metric"]
-    k_neighbors = cfg["knn"]["k"]
-
-    relevance_mask_dict_finetuned = compute_relevances(
-        model_wrapper=model_wrapper_finetuned,
-        conv_gamma=conv_gamma,
-        lin_gamma=lin_gamma,
+    # --- 4. Compute Relevances ---
+    relevance_mask_dict = compute_relevances(
+        model_wrapper=model_wrapper,
+        conv_gamma=cfg["lrp"]["conv_gamma"],
+        lin_gamma=cfg["lrp"]["lin_gamma"],
         dataloader=val_dataloader,
         device=DEVICE,
-        db_embeddings=val_db_embeddings_finetuned,
-        db_labels=val_db_labels_finetuned,
-        db_filenames=val_db_filenames_finetuned,
-        k_neighbors=k_neighbors,
-        mode=MODE,
+        db_embeddings=db_embeddings,
+        db_labels=db_labels,
+        db_filenames=db_filenames,
+        k_neighbors=cfg["knn"]["k"],
+        mode=cfg["lrp"]["mode"],
         verbose=VERBOSE,
-        distance_metric=distance_metric
+        distance_metric=cfg["knn"]["distance_metric"]
     )
 
-    scores_finetuned = {}
-    for filename, (relevance, mask) in relevance_mask_dict_finetuned.items():
-        scores_finetuned[filename] = attention_inside_mask(relevance, mask)
+    scores = {filename: attention_inside_mask(relevance, mask)
+              for filename, (relevance, mask) in relevance_mask_dict.items()}
 
-
+    # --- 5. Run Masking Experiment ---
     masking_results_df = run_masking_experiment(
-        model_wrapper=model_wrapper_finetuned,
+        model_wrapper=model_wrapper,
         dataset=val_dataset,
-        db_embeddings=val_db_embeddings_finetuned,
-        db_labels=val_db_labels_finetuned,
-        db_filenames=val_db_filenames_finetuned,
-        mask_scores=scores_finetuned, # Pass the AoGR scores
+        db_embeddings=db_embeddings,
+        db_labels=db_labels,
+        db_filenames=db_filenames,
+        mask_scores=scores,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE,
         cfg=cfg
     )
 
-    analyze_masking_exp(masking_results_df, cfg)
-
-    results_path = os.path.join(cfg["data"]["visualization_dir"], "masking_experiment_results.csv")
+    # Use the dynamic experiment_output_dir for saving results
+    results_path = os.path.join(experiment_output_dir, "masking_experiment_results.csv")
     masking_results_df.to_csv(results_path, index=False)
     print(f"\nSaved systematic masking experiment results to: {results_path}")
 
+    # Pass the dynamic visualization_dir to analyze_masking_exp
+    # (Assuming analyze_masking_exp uses the path from the passed cfg, if not, update it)
+    cfg["data"]["visualization_dir"] = visualization_dir 
+    analyze_masking_exp(masking_results_df, cfg)
 
-    print(f"Clearing model finetuned from GPU memory...")
-    del model_wrapper_finetuned
-    gc.collect() # Trigger Python's garbage collection
-    torch.cuda.empty_cache() # Release cached memory back to the OS
+    #TODO
+    # --- 6. Visualization (Optional: for a few examples) ---
+    # This section is removed because the comparison requires both models.
+    # You can write a separate script to load the results from both `base` and `finetuned`
+    # directories to generate comparison plots.
 
-    #TODO: does the base model have the same transforms and data config?
-    model_wrapper_base, _, _ = get_model_wrapper(device=DEVICE, finetuned=False)
-    val_db_embeddings_base, val_db_labels_base, val_db_filenames_base = get_knn_db(
-        db_dir=cfg["knn"]["db_embeddings_dir"], split_name="val", dataset=val_dataset,
-        model_wrapper=model_wrapper_base, model_checkpoint_path="/workspaces/bachelor_thesis_code/base", batch_size=cfg["data"]["batch_size"], device=DEVICE
+    print(f"\n--- Experiment for {model_type_str.upper()} model complete. ---")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run DINOv2 AttnLRP experiment.")
+    parser.add_argument(
+        "--config_name", 
+        type=str, 
+        required=True,
+        help="The name of the experiment config (e.g., 'finetuned', 'non_finetuned')."
+    )
+    args, unknown_args = parser.parse_known_args()
+
+    cfg = load_config(args.config_name, unknown_args)
+
+    result = subprocess.run(
+        ["python", "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py"],
+        check=True
     )
 
-    relevance_mask_dict_base = compute_relevances(
-        model_wrapper=model_wrapper_base,
-        conv_gamma=conv_gamma,
-        lin_gamma=lin_gamma,
-        dataloader=val_dataloader,
-        device=DEVICE,
-        db_embeddings=val_db_embeddings_base,
-        db_labels=val_db_labels_base,
-        db_filenames=val_db_filenames_base,
-        k_neighbors=k_neighbors,
-        mode=MODE,
-        verbose=VERBOSE,
-        distance_metric=distance_metric
-    )
-
-    scores_base = {}
-    for filename, (relevance, mask) in relevance_mask_dict_base.items():
-        scores_base[filename] = attention_inside_mask(relevance, mask)
-
-    def print_stats(name, scores_dict):
-        totals = torch.tensor([v[0] for v in scores_dict.values()])
-        positives = torch.tensor([v[1] for v in scores_dict.values()])
-        negatives = torch.tensor([v[2] for v in scores_dict.values()])
-        print(f"\n--- {name} Stats ---")
-        print(f"  Total Frac   - Mean: {totals.mean():.4f}, Max: {totals.max():.4f}, Min: {totals.min():.4f}")
-        print(f"  Positive Frac - Mean: {positives.mean():.4f}, Max: {positives.max():.4f}, Min: {positives.min():.4f}")
-        print(f"  Negative Frac - Mean: {negatives.mean():.4f}, Max: {negatives.max():.4f}, Min: {negatives.min():.4f}")
-
-    print_stats("Finetuned Model", scores_finetuned)
-    print_stats("Base Model", scores_base)
-
-    # ====================================================================
-    # UPDATED VISUALIZATION SECTION
-    # ====================================================================
-    print("\n--- Starting Visualization ---")
-    
-    # 1. Instantiate the Visualizer with the correct denorm transform
-    denorm_transform = get_denormalization_transform(mean=data_config['mean'], std=data_config['std'])
-    visualizer = Visualizer(
-        save_dir=cfg["data"]["visualization_dir"],
-        denorm_transform=denorm_transform
-    )
-
-    # 2. Find interesting samples to plot (using POSITIVE relevance as the key metric)
-    all_scores = []
-    for fname in scores_finetuned.keys():
-        ft_pos_score = scores_finetuned[fname][1]
-        base_pos_score = scores_base[fname][1]
-        diff = base_pos_score - ft_pos_score # Positive if base has higher positive fraction
-        all_scores.append((fname, ft_pos_score, base_pos_score, diff))
-
-    by_finetuned_pos_asc = sorted(all_scores, key=lambda x: x[1])
-    by_base_advantage_desc = sorted(all_scores, key=lambda x: x[3], reverse=True)
-
-    samples_to_plot = {
-        "finetuned_worst_pos_relevance": by_finetuned_pos_asc[0][0],
-        "finetuned_best_pos_relevance": by_finetuned_pos_asc[-1][0],
-        "base_model_biggest_advantage": by_base_advantage_desc[0][0],
-        "finetuned_biggest_advantage": by_base_advantage_desc[-1][0],
-    }
-
-    print(f"\nSelected samples for plotting: {list(samples_to_plot.values())}")
-
-    # 3. Generate and save plots for the selected samples
-    fname_to_idx = {
-        os.path.splitext(fname)[0]: i
-        for i, fname in enumerate(val_dataset.filenames)
-    }
-
-    for reason, filename in samples_to_plot.items():
-        print(f"Plotting '{reason}': {filename}")
-        
-        sample_data = val_dataset[fname_to_idx[filename]]
-        image_tensor = sample_data["image"]
-
-        relevance_ft, mask = relevance_mask_dict_finetuned[filename]
-        relevance_base, _ = relevance_mask_dict_base[filename]
-        relevance_ft = relevance_ft/ torch.abs(relevance_ft).max() if torch.abs(relevance_ft).max() != 0 else relevance_ft
-        relevance_base = relevance_base / torch.abs(relevance_base).max() if torch.abs(relevance_base).max() != 0 else relevance_base
-        
-        visualizer.plot_comparison(
-            filename=f"{reason}_{filename}",
-            image_tensor=image_tensor,
-            mask=mask,
-            base_relevance=relevance_base,
-            finetuned_relevance=relevance_ft,
-            base_scores=scores_base[filename],
-            finetuned_scores=scores_finetuned[filename]
-        )
-
-    print("\n--- Visualization complete ---")
+    main(cfg)

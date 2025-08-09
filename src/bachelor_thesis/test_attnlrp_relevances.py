@@ -54,7 +54,7 @@ class TestLRPConservation(unittest.TestCase):
         VERBOSE = True  
         torch.manual_seed(27)  
 
-        model_wrapper, _, _ = get_model_wrapper(device=DEVICE, finetuned=True)
+        model_wrapper, _, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
         
         # Use a random tensor with the dinov2 giant input size
         dummy_input = torch.randn(1, 3, 518, 518, device=DEVICE)

@@ -1,0 +1,8 @@
+model:
+  finetuned: False
+  checkpoint_path: "base" # not really a path but still works
+
+
+lrp:
+  conv_gamma: 0.3
+  lin_gamma: 0.2

@@ -14,6 +14,7 @@ import wandb
 from collections import defaultdict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from omegaconf import OmegaConf
 
 
 from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass
@@ -423,9 +424,10 @@ def log_nested_validation_to_wandb(
     else:
         wandb_name = "attnlrp_gamma_sweep_multimetric"
 
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     run = wandb.init(
         project="Thesis-Iven", entity="gorillawatch", 
-        name=wandb_name, config=cfg 
+        name=wandb_name, config=cfg_dict
     )
 
     decision_metric = cfg["sweep"]["decision_metric"]

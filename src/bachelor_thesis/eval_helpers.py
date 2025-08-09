@@ -58,7 +58,7 @@ def _run_knn_perturbation(
 
         # If there are no friends in the initial k-NN, the evaluation is meaningless.
         if not friends_indices:
-            logging.warning(f"No friends found for {query_filename} in its initial k-NN set. "
+            print(f"No friends found for {query_filename} in its initial k-NN set. "
                             "Perturbation curve will be flat at 0.")
             num_steps = (len(patch_order) // patches_per_step) + 1
             return torch.zeros(num_steps, device=input_tensor.device)
@@ -395,7 +395,7 @@ def compute_evaluation_score_recall_at_k(
     # Return a neutral score (0) or handle as an error. NORMALLY, THIS SHOULD NOT HAPPEN.
     if effective_k <= 0:
         # Returning a neutral score is often a safe default.
-        logging.warning(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
+        print(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
         return torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
 
     num_original_friends = len(original_friends_indices)
