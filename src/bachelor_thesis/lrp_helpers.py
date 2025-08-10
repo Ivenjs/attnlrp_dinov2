@@ -116,7 +116,7 @@ def compute_knn_attnlrp_pass(
         else:
             # Standard LRP relevance calculation when gradients are present
             relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
-        
+
     finally:
         zennit_comp.remove()
 

@@ -5,7 +5,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from torchvision import transforms
-from typing import Tuple, Union
+from typing import Tuple, Union, Dict, Any
 
 # Import imgify from zennit
 from zennit.image import imgify
@@ -45,71 +45,78 @@ class AttentionVisualizer:
         image_tensor: torch.Tensor,
         mask: Union[torch.Tensor, np.ndarray],
         relevance: torch.Tensor,
-        scores: Tuple[float, float, float]
-    ):
+        stats: Dict[str, Any]  
+    )-> str:
         """
         Generates and saves a comprehensive relevance plot for a single model and image.
 
         Args:
-            filename (str): The original filename, used for titles and saving.
+            filename (str): A descriptive filename, e.g., "reason_originalfilename".
             image_tensor (torch.Tensor): The input image tensor.
             mask (Union[torch.Tensor, np.ndarray]): The ground truth segmentation mask.
             relevance (torch.Tensor): The relevance map from the model.
-            scores (Tuple[float, float, float]): A tuple containing (total, positive, negative)
-                                                 relevance scores.
+            stats (Dict[str, Any]): A dictionary containing all stats for the image
+                                    from the masking experiment DataFrame.
         """
         img_np = self._preprocess_image(image_tensor)
         mask_np = self._preprocess_mask(mask)
 
-        # Create a 1x4 plot grid. Adjust figsize for the new layout.
-        fig, axs = plt.subplots(1, 4, figsize=(24, 7))
-        fig.suptitle(f"Relevance for: {filename}", fontsize=20)
+        parts = os.path.splitext(filename)[0].split('_', 1)
+        reason = parts[0].replace('-', ' ').title()
+        clean_filename = parts[1] if len(parts) > 1 else filename
+
+        fig, axs = plt.subplots(1, 4, figsize=(24, 8))
+        fig.suptitle(f"Analysis for: {clean_filename}\n(Category: {reason})", fontsize=20, y=1.02)
+
+        rank_orig = stats.get('rank_orig', 'N/A')
+        rank_masked = stats.get('rank_masked', 'N/A')
+        delta_proxy = stats.get('delta_proxy_score', 0.0)
+        aogr_total = stats.get('AoGR_total', 0.0)
+
+        stats_text = (
+            f"--- Performance ---\n"
+            f"Original Rank: {rank_orig}\n"
+            f"Masked Rank:   {rank_masked}\n"
+            f"Δ Proxy Score: {delta_proxy:+.3f}\n\n"
+            f"--- Attention ---\n"
+            f"Gorilla Attention (AoGR): {aogr_total:.2%}"
+        )
         
-        # Create a single title string for the scores
-        scores_title = (f"Scores | "
-                        f"Total: {scores[0]:.3f}, "
-                        f"Positive: {scores[1]:.3f}, "
-                        f"Negative: {scores[2]:.3f}")
-        
-        # --- Create a shared color mapping for the heatmap ---
+        fig.text(
+            0.01, 0.99, stats_text,
+            fontsize=10, family='monospace',
+            va='top', ha='left',
+            bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8)
+        )
+
         norm = plt.Normalize(vmin=-1.0, vmax=1.0)
         mappable = plt.cm.ScalarMappable(norm=norm, cmap='coolwarm')
 
-        # Use the scores title as a Y-axis label for the first plot for a clean look
-        axs[0].set_ylabel(scores_title, fontsize=14, labelpad=20)
-
-        # --- Column 1: Original Image ---
         axs[0].imshow(img_np)
         axs[0].set_title("Original Image")
         axs[0].axis('off')
 
-        # --- Column 2: Image with Mask Outline ---
         axs[1].imshow(img_np)
         axs[1].contour(mask_np, colors='lime', linewidths=1.5)
-        axs[1].set_title("Image with Mask Outline")
+        axs[1].set_title("Mask Outline")
         axs[1].axis('off')
 
-        # --- Column 3: Relevance Heatmap ---
-        relevance = relevance.squeeze()
-        relevance = relevance / abs(relevance).max()
-        heatmap_img = imgify(relevance, vmin=-1.0, vmax=1.0)
+        relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
+        heatmap_img = imgify(relevance_norm, vmin=-1.0, vmax=1.0)
         axs[2].imshow(heatmap_img)
         axs[2].set_title("Relevance Heatmap")
         axs[2].axis('off')
-        # Add a colorbar to the heatmap plot
         fig.colorbar(mappable, ax=axs[2], orientation='vertical', fraction=0.046, pad=0.04)
 
-        # --- Column 4: Relevance Overlay ---
-        axs[3].imshow(img_np)  # Plot base image first
-        axs[3].imshow(heatmap_img, alpha=0.6)  # Plot heatmap on top with transparency
+        axs[3].imshow(img_np)
+        axs[3].imshow(heatmap_img, alpha=0.6)
         axs[3].set_title("Relevance Overlay")
         axs[3].axis('off')
+        
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.92]) # Adjust rect to fit suptitle
-        
-        # Modify save path to include model name and avoid overwrites
-        save_filename = f"relevance_{filename.replace('.jpg', '.png')}"
-        save_path = os.path.join(self.save_dir, save_filename)
-        
+
+        save_path = os.path.join(self.save_dir, f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight')
         plt.close(fig)
+        return save_path

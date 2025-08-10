@@ -1,10 +1,11 @@
 data:
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split/spac23+24-body_face-squared-deduplicated"
-  #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
+  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split/spac23+24-body_face-squared-deduplicated"
+  dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
   batch_size: 32
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
-  visualization_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/visualizations"
+  output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
+
 
 db:
   db_schema: "public"
@@ -33,6 +34,9 @@ wandb:
 # LRP and sweep settings that are shared or are defaults
 lrp:
   mode: "knn"
+
+mask_exp:
+  decision_metric: "recall_at_k"
 
 sweep:
   evaluation_metrics: ["similarity", "recall_at_k"]

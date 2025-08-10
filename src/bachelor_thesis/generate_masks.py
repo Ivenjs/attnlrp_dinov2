@@ -2,11 +2,12 @@ from mask_generator import MaskGenerator
 from tqdm import tqdm
 import os
 import torch
-from utils import load_all_configs
+from utils import load_config
 from typing import List, Dict
 from PIL import Image
 import pandas as pd
 import numpy as np
+import argparse 
 
 # Import the new utility functions
 import db_utils
@@ -174,19 +175,20 @@ def prepare_segmentation_masks(
     if verbose:
         print("Mask generation complete.")
 
+
 if __name__ == "__main__":
     print("--- Starting Mask Generation Subprocess ---")
-    config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
-    cfg = load_all_configs(config_dir)
+    parser = argparse.ArgumentParser(description="Run DINOv2 AttnLRP experiment.")
+    parser.add_argument(
+        "--config_name", 
+        type=str, 
+        required=True,
+        help="The name of the experiment config (e.g., 'finetuned', 'non_finetuned')."
+    )
+    args, unknown_args = parser.parse_known_args()
 
-    # --- Add new DB configurations to your config files ---
-    # Example for your config yaml:
-    # data:
-    #   db_schema: "public"
-    #   feature_type: "body"
-    #   ... other keys
-    #
-    # Ensure these keys exist in your `cfg` dictionary
+    cfg = load_config(args.config_name, unknown_args)
+
     if 'db_schema' not in cfg['db'] or 'feature_type' not in cfg['db']:
         raise KeyError("Config file must contain 'db_schema' and 'feature_type' under the 'db' key for 'db' mode.")
 
@@ -194,6 +196,7 @@ if __name__ == "__main__":
     dataset_name = os.path.basename(root_dir)
 
     sam_checkpoint_path = "/workspaces/vast-gorilla/gorillawatch/model_checkpoints/sam2.1_hiera_large.pt"
+    config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
     mask_generator = MaskGenerator(
         model_checkpoint_path=sam_checkpoint_path,
         model_config_dir=config_dir

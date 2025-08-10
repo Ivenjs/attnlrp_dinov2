@@ -179,21 +179,22 @@ def evaluate_gamma_sweep(
                     "auc_lerf": srg_results["auc_lerf"],
                 })
 
-                all_curve_sets = [
-                    ("morf_raw", srg_results["morf_curve"]),
-                    ("lerf_raw", srg_results["lerf_curve"]),
-                    ("random_raw", srg_results["random_curve"])
-                ]
+                if srg_results["morf_curve"] is not None:
+                    all_curve_sets = [
+                        ("morf_raw", srg_results["morf_curve"]),
+                        ("lerf_raw", srg_results["lerf_curve"]),
+                        ("random_raw", srg_results["random_curve"])
+                    ]
 
-                for curve_label, curve in all_curve_sets:
-                    for step, score in enumerate(curve):
-                        all_curves_data.append([
-                            input_filename,
-                            conv_gamma, lin_gamma, distance_metric,
-                            metric_name, 
-                            curve_label,
-                            step, score 
-                        ])
+                    for curve_label, curve in all_curve_sets:
+                        for step, score in enumerate(curve):
+                            all_curves_data.append([
+                                input_filename,
+                                conv_gamma, lin_gamma, distance_metric,
+                                metric_name, 
+                                curve_label,
+                                step, score 
+                            ])
     
     return results_list, all_curves_data
 
@@ -215,18 +216,27 @@ def find_robust_hyperparameters(
     analysis_data = []
 
     for (conv_gamma, lin_gamma, distance_metric, metric_name), group in parameter_groups:
-        scores = group['faithfulness_score'].values
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-        min_score = np.min(scores)
+        scores = group['faithfulness_score'].values #can potentially include NaN's
+
+        num_valid = np.sum(~np.isnan(scores))
+        num_invalid = np.sum(np.isnan(scores))
+
+        mean_score = np.nanmean(scores)
+        std_score = np.nanstd(scores)
+        min_score = np.nanmin(scores)
         stability = 1 / (1 + std_score)
 
-        # RRobustness score
-        robustness_score = (
-            0.3 * min_score +                # Worst case shouldn't be terrible
-            0.3 * stability +          # Low variance is good
-            0.4 * mean_score                 # Good average performance
-        )
+        # Robustness score
+        if num_valid == 0:
+            stability = 0
+            robustness_score = -1 
+        else:
+            stability = 1 / (1 + std_score)
+            robustness_score = (
+                0.3 * min_score +
+                0.3 * stability +
+                0.4 * mean_score
+            )
         
         analysis_data.append({
             'conv_gamma': conv_gamma,
@@ -422,7 +432,7 @@ def log_nested_validation_to_wandb(
     if cfg["model"]["finetuned"]:
         wandb_name = "attnlrp_gamma_sweep_multimetric_finetuned"
     else:
-        wandb_name = "attnlrp_gamma_sweep_multimetric"
+        wandb_name = "attnlrp_gamma_sweep_multimetric_non_finetuned"
 
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     run = wandb.init(
@@ -465,7 +475,6 @@ def log_nested_validation_to_wandb(
     # --- 4. Log Curves ---
     print("\n--- Logging Faithfulness Curves for Approved Parameters (All Metrics) ---")
     
-    # *** CHANGE: The curve list now has more columns ***
     curve_cols = ["image", "conv_gamma", "lin_gamma", "distance_metric", "metric_name", "curve_label", "step", "score"]
     tune_curves_df = pd.DataFrame(tune_curves_list, columns=curve_cols)
     holdout_curves_df = pd.DataFrame(holdout_curves_list, columns=curve_cols)
@@ -549,7 +558,6 @@ def plot_and_log_mean_curve(
         agg_data = group.groupby('step')['score'].agg(['mean', 'std']).reset_index()
         agg_data = agg_data.sort_values('step')
 
-        # --- AND HERE ---
         x = agg_data['step']
         mean_score = agg_data['mean']
         std_score = agg_data['std'].fillna(0)

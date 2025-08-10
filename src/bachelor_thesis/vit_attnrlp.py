@@ -8,7 +8,6 @@ from torchvision.models import vision_transformer
 from zennit.composites import LayerMapComposite
 from zennit.image import imgify
 
-from lrp_helpers import LRPConservationChecker
 
 
 monkey_patch(vision_transformer, verbose=True)
@@ -36,31 +35,13 @@ def get_vit_imagenet(device="cuda"):
 
     return model, weights
 
-def check_for_relevance_violations(checkers: dict[str, LRPConservationChecker]):
-    batch_violations = {}
-    for name, checker in checkers.items():
-        if checker.rin is None or checker.rout is None:
-            continue
-        
-        diff = checker.rin - checker.rout
-        print(f"Layer: {checker.module_name:<30} | R_in: {checker.rin:>12.6f}, R_out: {checker.rout:>12.6f}, Diff: {diff:>12.6f}")
-        if not torch.isclose(torch.tensor(checker.rin), torch.tensor(checker.rout)):
-            batch_violations[name] = diff
-            
-    if not batch_violations:
-        print("✅ All checked layers are conservative.")
-    else:
-        print("🔥 Found conservation violations in the following layers:")
-        for name, diff in batch_violations.items():
-            print(f"  - {name}: Difference = {diff}")
-
 
 # Load the pre-trained ViT model
 model, weights = get_vit_imagenet()
 
 
 # Load and preprocess the input image
-image = Image.open("/workspaces/bachelor_thesis_code/src/bachelor_thesis/image2.png").convert("RGB")
+image = Image.open("/workspaces/bachelor_thesis_code/sample_images/train/PL00_R018_20220317_027_5268_1109103.png").convert("RGB")
 input_tensor = weights.transforms()(image).unsqueeze(0).to("cuda")
 
 # Store the generated heatmaps
@@ -112,6 +93,7 @@ for conv_gamma, lin_gamma in itertools.product([0.1, 0.25, 100], [0, 0.01, 0.05,
     # Calculate the relevance by computing Gradient * Input
     # This is the final step of LRP to get the pixel-wise explanation
     heatmap = (input_tensor * input_tensor.grad).sum(1)
+    print(heatmap)
     print(f"Heatmap shape: {heatmap.shape}")
     # Normalize relevance between [-1, 1] for plotting
     heatmap = heatmap / abs(heatmap).max()

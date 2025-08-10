@@ -56,12 +56,13 @@ def _run_knn_perturbation(
             return_indices=True # Add this flag to your score function
         )
 
-        # If there are no friends in the initial k-NN, the evaluation is meaningless.
+        # If there are no friends, the evaluation is meaningless. Signal this with None.
         if not friends_indices:
-            print(f"No friends found for {query_filename} in its initial k-NN set. "
-                            "Perturbation curve will be flat at 0.")
-            num_steps = (len(patch_order) // patches_per_step) + 1
-            return torch.zeros(num_steps, device=input_tensor.device)
+            print(f"WARNING: No friends found for {query_filename} in its initial k-NN set. "
+                            "This data point will be marked as invalid (NaN) for faithfulness scoring.")
+            # num_steps = (len(patch_order) // patches_per_step) + 1
+            # return torch.zeros(num_steps, device=input_tensor.device)
+            return None
 
         if evaluation_metric == 'similarity':
             initial_score = compute_evaluation_score(
@@ -207,6 +208,21 @@ def srg_knn(
         perturb_args["evaluation_metric"] = metric_name
 
         morf_curve = _run_knn_perturbation(model, input_tensor, morf_order, 'deletion', **perturb_args)
+
+        if morf_curve is None or lerf_curve is None or random_curve is None:
+                    results[metric_name] = {
+                        'faithfulness_score': np.nan,
+                        'morf_vs_random': np.nan,
+                        'lerf_vs_random': np.nan,
+                        'auc_morf': np.nan,
+                        'auc_lerf': np.nan,
+                        'auc_random': np.nan,
+                        'morf_curve': None,
+                        'lerf_curve': None,
+                        'random_curve': None
+                    }
+                    continue
+
         lerf_curve = _run_knn_perturbation(model, input_tensor, lerf_order, 'deletion', **perturb_args)
         random_curve = _run_random_baseline_perturbation(model, input_tensor, len(morf_order), **perturb_args)
 
@@ -247,6 +263,8 @@ def srg_knn(
             axs = [axs] 
 
         for i, metric_name in enumerate(evaluation_metrics):
+            if metric_name not in results or results[metric_name]['morf_curve'] is None:
+                continue # Skip plotting for this metric if data is invalid
             metric_results = results[metric_name]
             num_eval_steps = len(metric_results['morf_curve'])
             x_axis = np.linspace(0, 100, num_eval_steps)

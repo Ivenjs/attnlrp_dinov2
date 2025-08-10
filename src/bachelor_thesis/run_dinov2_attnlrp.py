@@ -14,9 +14,10 @@ from dino_patcher import DINOPatcher
 from basemodel import TimmWrapper
 from torch.utils.data import DataLoader
 from dinov2_attnlrp_sweep import run_gamma_sweep
-from visualize import Visualizer 
+from visualize import AttentionVisualizer 
 import matplotlib.pyplot as plt
 from zennit.image import imgify
+from omegaconf import OmegaConf
 import pandas as pd
 from PIL import Image
 import gc
@@ -27,6 +28,7 @@ import random
 import torch
 import argparse 
 import yaml 
+import wandb
 # 1) run sam to get segmentation masks of data split, if not already saved
 # 2) create dataset with masks
 # 3) run lrp with swept parameters on images in dataset and compute the mask score
@@ -148,7 +150,7 @@ def run_masking_experiment(
                     'proxy_score_orig': baseline_proxy_score, 'proxy_score_masked': masked_proxy_score,
                     'delta_rank': baseline_metrics['rank'] - masked_metrics['rank'],
                     'delta_gt_sim': baseline_metrics['gt_similarity'] - masked_metrics['gt_similarity'],
-                    'delta_recall': baseline_metrics['recall_at_k'] - masked_metrics['recall_at_k'],
+                    'delta_recall_at_k': baseline_metrics['recall_at_k'] - masked_metrics['recall_at_k'],
                     'delta_proxy_score': masked_proxy_score - baseline_proxy_score
                 })
 
@@ -219,7 +221,7 @@ def compute_relevances(
                 relevance_mask_dict[filename] = (relevance_single.detach().cpu(), mask_np_copy)
     return relevance_mask_dict
 
-def analyze_masking_exp(masking_results_df, cfg: Dict) -> None:
+def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> List[str]:
     # --- Basic Analysis of the Results ---
     print("\n--- Masking Experiment Summary ---")
     print(masking_results_df.describe())
@@ -229,41 +231,180 @@ def analyze_masking_exp(masking_results_df, cfg: Dict) -> None:
     rank1_masked = (masking_results_df['rank_masked'] == 1).mean()
     print(f"\nOverall Rank-1 Accuracy (Orig):   {rank1_orig:.4f}")
     print(f"Overall Rank-1 Accuracy (Masked): {rank1_masked:.4f}")
-    
-    # --- Correlation Plot ---
-    plt.figure(figsize=(10, 6))
-    plt.scatter(
-        masking_results_df['background_attention_total'],
-        masking_results_df['delta_proxy_score'],
-        alpha=0.6
-    )
-    plt.title('Performance Change vs. Background Attention')
-    plt.xlabel('Background Attention (1 - AoGR)')
-    plt.ylabel('Change in k-NN Proxy Score (Masked - Original)')
-    plt.grid(True)
-    correlation_plot_path = os.path.join(cfg["data"]["visualization_dir"], "correlation_plot.png")
-    plt.savefig(correlation_plot_path)
 
-    # do another plot for positive and negative AoGR
-    plt.figure(figsize=(10, 6))
-    plt.scatter(
-        masking_results_df['background_attention_positive'],
-        masking_results_df['delta_proxy_score'],
-        alpha=0.6, label='Positive AoGR'
+    #decision_metric = cfg["mask_exp"]["decision_metric"]
+    saved_plot_paths = []
+    # --- Correlation Plots ---
+    for col in masking_results_df.columns:
+        if col.startswith("delta_"):
+            plt.figure(figsize=(10, 6))
+            plt.scatter(
+                masking_results_df['background_attention_total'],
+                masking_results_df[col],
+                alpha=0.6
+            )
+            plt.title('Performance Change vs. Background Attention')
+            plt.xlabel('Background Attention (1 - AoGR)')
+            plt.ylabel(f'Change in {col} (Masked - Original)')
+            plt.grid(True)
+            correlation_plot_path = os.path.join(output_dir, f"correlation_plot_{col}.png")
+            os.makedirs(os.path.dirname(correlation_plot_path), exist_ok=True)
+            plt.savefig(correlation_plot_path)
+            saved_plot_paths.append(correlation_plot_path)
+
+            # do another plot for positive and negative AoGR
+            plt.figure(figsize=(10, 6))
+            plt.scatter(
+                masking_results_df['background_attention_positive'],
+                masking_results_df[col],
+                alpha=0.6, label='Positive AoGR'
+            )
+            plt.scatter(
+                masking_results_df['background_attention_negative'],
+                masking_results_df[col],
+                alpha=0.6, label='Negative AoGR', color='orange'
+            )
+            plt.title('Performance Change vs. Positive/Negative Background Attention')
+            plt.xlabel('Background Attention (1 - AoGR)')
+            plt.ylabel(f'Change in {col} (Masked - Original)')
+            plt.legend()
+            plt.grid(True)
+            correlation_plot_path_pos_neg = os.path.join(output_dir, f"correlation_plot_pos_neg_{col}.png")
+            os.makedirs(os.path.dirname(correlation_plot_path_pos_neg), exist_ok=True)
+            plt.savefig(correlation_plot_path_pos_neg)
+            saved_plot_paths.append(correlation_plot_path_pos_neg)
+    return saved_plot_paths
+
+
+
+def generate_heatmaps(
+    samples_to_plot: Dict[str, str], 
+    masking_results_df: pd.DataFrame,
+    val_dataset: GorillaReIDDataset, 
+    relevance_mask_dict: Dict, 
+    model_data_config: Dict, 
+    output_dir: str
+) -> List[str]:
+    print("\n--- Starting heatmap visualization ---")
+    saved_heatmap_paths = []
+    denorm_transform = get_denormalization_transform(mean=model_data_config['mean'], std=model_data_config['std'])
+
+    visualizer = AttentionVisualizer(
+        save_dir=output_dir,
+        denorm_transform=denorm_transform
     )
-    plt.scatter(
-        masking_results_df['background_attention_negative'],
-        masking_results_df['delta_proxy_score'],
-        alpha=0.6, label='Negative AoGR', color='orange'
-    )
-    plt.title('Performance Change vs. Positive/Negative Background Attention')
-    plt.xlabel('Background Attention (1 - AoGR)')
-    plt.ylabel('Change in k-NN Proxy Score (Masked - Original)')
-    plt.legend()
-    plt.grid(True)
-    correlation_plot_path_pos_neg = os.path.join(cfg["data"]["visualization_dir"], "correlation_plot_pos_neg.png")
-    plt.savefig(correlation_plot_path_pos_neg)
-    print(f"Saved correlation plot to: {correlation_plot_path}")
+    
+    # Create a mapping from filename to its index in the dataset for quick lookup
+    fname_to_idx = {
+        os.path.splitext(f)[0]: i for i, f in enumerate(val_dataset.filenames)
+    }
+
+    for reason, filename in samples_to_plot.items():
+
+        # Get stats for this image from the dataframe
+        image_stats = masking_results_df[masking_results_df['filename'] == filename].iloc[0]
+
+
+        # Get the necessary data for plotting
+        if os.path.splitext(filename)[0] not in fname_to_idx:
+            print(f"Warning: Filename '{filename}' not found in dataset. Skipping.")
+            continue
+            
+        sample_data = val_dataset[fname_to_idx[os.path.splitext(filename)[0]]]
+        image_tensor = sample_data["image"]
+        
+        relevance, mask = relevance_mask_dict[filename]
+
+        # Normalize relevance map for consistent visualization
+        # This makes heatmaps comparable by scaling them to the [-1, 1] range
+        relevance = relevance / torch.abs(relevance).max()
+        
+        save_path = visualizer.plot_heatmap( # <--- MODIFICATION
+            filename=f"{reason}_{filename}",
+            image_tensor=image_tensor,
+            mask=mask,
+            relevance=relevance,
+            stats=image_stats.to_dict() 
+        )
+        saved_heatmap_paths.append(save_path)
+    return saved_heatmap_paths
+
+def select_samples_for_visualization(
+    df: pd.DataFrame, 
+    n_per_category: int = 2,
+    n_random: int = 5
+) -> Dict[str, str]:
+    """
+    Selects a variety of interesting image filenames from the masking results for visualization.
+
+    Args:
+        df: The DataFrame containing the results from the masking experiment.
+        n_per_category: The number of samples to select for each defined category.
+        n_random: The number of random samples to select.
+
+    Returns:
+        A dictionary mapping a descriptive reason (for the filename) to a filename.
+    """
+    print("\n--- Selecting Interesting Samples for Visualization ---")
+    
+    df = df.sort_values('filename').reset_index(drop=True)
+    
+    samples_to_plot = {}
+
+    # --- Category 1: "Good Students" (High AoGR, good rank, little change) ---
+    # Sort by highest attention on gorilla, then best rank
+    good_students = df.sort_values(by=['AoGR_total', 'rank_orig'], ascending=[False, True])
+    for i, row in good_students.head(n_per_category).iterrows():
+        fname = row['filename']
+        key = f"good_student_{i+1}"
+        if fname not in samples_to_plot.values():
+            samples_to_plot[key] = fname
+
+    # --- Category 2: "Saved by Masking" (Huge performance jump after masking) ---
+    # Sort by the largest improvement in proxy score
+    saved_by_masking = df.sort_values(by='delta_proxy_score', ascending=False)
+    for i, row in saved_by_masking.head(n_per_category).iterrows():
+        fname = row['filename']
+        key = f"saved_by_masking_{i+1}"
+        if fname not in samples_to_plot.values():
+            samples_to_plot[key] = fname
+
+    # --- Category 3: "Right for Wrong Reason" (Low AoGR but good rank) ---
+    # Filter for Rank 1, then find the ones with the lowest AoGR (most background attention)
+    right_wrong_reason = df[df['rank_orig'] == 1].sort_values(by='AoGR_total', ascending=True)
+    for i, row in right_wrong_reason.head(n_per_category).iterrows():
+        fname = row['filename']
+        key = f"right_for_wrong_reason_{i+1}"
+        if fname not in samples_to_plot.values():
+            samples_to_plot[key] = fname
+            
+    # --- Category 4: "Hurt by Masking" (Performance got worse) ---
+    # Sort by the most negative change in proxy score
+    hurt_by_masking = df.sort_values(by='delta_proxy_score', ascending=True)
+    for i, row in hurt_by_masking.head(n_per_category).iterrows():
+        fname = row['filename']
+        key = f"hurt_by_masking_{i+1}"
+        if fname not in samples_to_plot.values():
+            samples_to_plot[key] = fname
+
+    # --- Category 5: Highest Background Attention ---
+    highest_bg = df.sort_values(by='background_attention_total', ascending=False)
+    for i, row in highest_bg.head(n_per_category).iterrows():
+        fname = row['filename']
+        key = f"highest_bg_attn_{i+1}"
+        if fname not in samples_to_plot.values():
+            samples_to_plot[key] = fname
+            
+    # --- Category 6: Random Samples ---
+    random_samples = df.sample(n=n_random, random_state=27)
+    for i, row in random_samples.iterrows():
+        fname = row['filename']
+        key = f"random_sample_{i+1}"
+        if fname not in samples_to_plot.values():
+            samples_to_plot[key] = fname
+
+    print(f"Selected {len(samples_to_plot)} unique samples for plotting.")
+    return samples_to_plot
 
 def main(cfg: Dict):
     """
@@ -276,10 +417,18 @@ def main(cfg: Dict):
     random.seed(27)
     torch.manual_seed(27)
 
-    # --- 1. Determine Model Type and Setup Dynamic Paths ---
     is_finetuned = cfg["model"]["finetuned"]
     model_type_str = "finetuned" if is_finetuned else "base"
     print(f"--- Running experiment for: {model_type_str.upper()} MODEL ---")
+
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    wandb.init(
+        project="Thesis-Iven", 
+        entity="gorillawatch", # Or your entity
+        name=f"dinov2_attnlrp_analysis_{model_type_str}",
+        config=cfg_dict,
+        job_type="analysis"
+    )
 
     # Create a model-specific output directory
     base_output_dir = cfg["data"]["output_base_dir"]
@@ -290,7 +439,7 @@ def main(cfg: Dict):
 
 
     # --- 2. Load Model and Data ---
-    model_wrapper, image_transforms, data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
+    model_wrapper, image_transforms, model_data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
 
     root_dir = cfg["data"]["dataset_dir"]
     val_dir = os.path.join(root_dir, "val")
@@ -321,7 +470,7 @@ def main(cfg: Dict):
         split_name=split_name,
         dataset=val_dataset,
         model_wrapper=model_wrapper,
-        model_checkpoint_name=cfg["model"]["checkpoint_path"],
+        model_checkpoint_path=cfg["model"]["checkpoint_path"],
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE
     )
@@ -363,18 +512,47 @@ def main(cfg: Dict):
     masking_results_df.to_csv(results_path, index=False)
     print(f"\nSaved systematic masking experiment results to: {results_path}")
 
-    # Pass the dynamic visualization_dir to analyze_masking_exp
-    # (Assuming analyze_masking_exp uses the path from the passed cfg, if not, update it)
-    cfg["data"]["visualization_dir"] = visualization_dir 
-    analyze_masking_exp(masking_results_df, cfg)
+    wandb.log({
+        "masking_experiment_results": wandb.Table(dataframe=masking_results_df)
+    })
+    # Log key overall metrics to the summary for easy comparison
+    rank1_orig = (masking_results_df['rank_orig'] == 1).mean()
+    rank1_masked = (masking_results_df['rank_masked'] == 1).mean()
+    wandb.summary["rank1_orig"] = rank1_orig
+    wandb.summary["rank1_masked"] = rank1_masked
+    wandb.summary["mean_delta_proxy_score"] = masking_results_df['delta_proxy_score'].mean()
 
-    #TODO
-    # --- 6. Visualization (Optional: for a few examples) ---
-    # This section is removed because the comparison requires both models.
-    # You can write a separate script to load the results from both `base` and `finetuned`
-    # directories to generate comparison plots.
+    correlation_plot_paths = analyze_masking_exp(masking_results_df=masking_results_df, output_dir=os.path.join(visualization_dir, "plots"))
+
+    samples_to_plot = select_samples_for_visualization(
+        df=masking_results_df,
+        n_per_category=2, 
+        n_random=10        
+    )
+
+    heatmap_paths = generate_heatmaps(
+        samples_to_plot=samples_to_plot,
+        masking_results_df=masking_results_df,
+        val_dataset=val_dataset, 
+        relevance_mask_dict=relevance_mask_dict, 
+        model_data_config=model_data_config, 
+        output_dir=os.path.join(visualization_dir, "heatmaps")
+    )
+
+    wandb.log({
+        "analysis_plots/correlations": [
+            wandb.Image(p, caption=os.path.basename(p)) for p in correlation_plot_paths
+        ],
+        "visualizations/heatmaps": [
+            wandb.Image(p, caption=os.path.basename(p)) for p in heatmap_paths
+        ]
+    })
+
 
     print(f"\n--- Experiment for {model_type_str.upper()} model complete. ---")
+    wandb.finish()
+
+
 
 
 if __name__ == "__main__":
@@ -390,7 +568,7 @@ if __name__ == "__main__":
     cfg = load_config(args.config_name, unknown_args)
 
     result = subprocess.run(
-        ["python", "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py"],
+        ["python", "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py", "--config_name", args.config_name],
         check=True
     )
 

@@ -251,7 +251,7 @@ def get_query_performance_metrics(
     db_labels: list[str],
     db_filenames: list[str],
     distance_metric: str = "cosine",
-    k_for_recall: int = 5 
+    k: int = 5 
 ) -> dict:
     """
     Computes multiple performance metrics for a single query against a database.
@@ -286,7 +286,7 @@ def get_query_performance_metrics(
     num_gt_positives = gt_positive_indices.size
     if num_gt_positives > 0:
         # Get the indices of the top-k results
-        top_k_indices = sorted_indices[:k_for_recall].cpu().numpy()
+        top_k_indices = sorted_indices[:k].cpu().numpy()
         
         # Count how many of the top-k results are ground-truth positives
         # Using sets is efficient for this intersection
