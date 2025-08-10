@@ -10,7 +10,7 @@ from typing import Tuple, Union
 # Import imgify from zennit
 from zennit.image import imgify
 
-class Visualizer:
+class AttentionVisualizer:
     """
     A class to handle visualization of LRP relevance maps, masks, and images.
     Uses zennit.image.imgify for high-quality relevance map plotting and
@@ -39,75 +39,77 @@ class Visualizer:
             return mask.squeeze().cpu().numpy()
         return mask.squeeze()
 
-    def plot_comparison(
+    def plot_heatmap(
         self,
         filename: str,
         image_tensor: torch.Tensor,
         mask: Union[torch.Tensor, np.ndarray],
-        base_relevance: torch.Tensor,
-        finetuned_relevance: torch.Tensor,
-        base_scores: Tuple[float, float, float],
-        finetuned_scores: Tuple[float, float, float]
+        relevance: torch.Tensor,
+        scores: Tuple[float, float, float]
     ):
         """
-        Generates and saves a comprehensive comparison plot for a single image.
+        Generates and saves a comprehensive relevance plot for a single model and image.
+
+        Args:
+            filename (str): The original filename, used for titles and saving.
+            image_tensor (torch.Tensor): The input image tensor.
+            mask (Union[torch.Tensor, np.ndarray]): The ground truth segmentation mask.
+            relevance (torch.Tensor): The relevance map from the model.
+            scores (Tuple[float, float, float]): A tuple containing (total, positive, negative)
+                                                 relevance scores.
         """
         img_np = self._preprocess_image(image_tensor)
         mask_np = self._preprocess_mask(mask)
 
-        fig, axs = plt.subplots(2, 4, figsize=(24, 12))
-        fig.suptitle(f"Relevance Comparison for: {filename}", fontsize=20)
+        # Create a 1x4 plot grid. Adjust figsize for the new layout.
+        fig, axs = plt.subplots(1, 4, figsize=(24, 7))
+        fig.suptitle(f"Relevance for: {filename}", fontsize=20)
         
-        base_title = (f"Base Model Scores | "
-                      f"Total: {base_scores[0]:.3f}, "
-                      f"Positive: {base_scores[1]:.3f}, "
-                      f"Negative: {base_scores[2]:.3f}")
+        # Create a single title string for the scores
+        scores_title = (f"Scores | "
+                        f"Total: {scores[0]:.3f}, "
+                        f"Positive: {scores[1]:.3f}, "
+                        f"Negative: {scores[2]:.3f}")
         
-        finetuned_title = (f"Finetuned Model Scores | "
-                           f"Total: {finetuned_scores[0]:.3f}, "
-                           f"Positive: {finetuned_scores[1]:.3f}, "
-                           f"Negative: {finetuned_scores[2]:.3f}")
-
+        # --- Create a shared color mapping for the heatmap ---
         norm = plt.Normalize(vmin=-1.0, vmax=1.0)
         mappable = plt.cm.ScalarMappable(norm=norm, cmap='coolwarm')
 
-        # --- Row 1: Base Model ---
-        axs[0, 0].set_ylabel(base_title, fontsize=14, labelpad=20)
-        axs[0, 0].imshow(img_np); axs[0, 0].set_title("Original Image"); axs[0, 0].axis('off')
-        axs[0, 1].imshow(mask_np, cmap='gray'); axs[0, 1].set_title("Segmentation Mask"); axs[0, 1].axis('off')
+        # Use the scores title as a Y-axis label for the first plot for a clean look
+        axs[0].set_ylabel(scores_title, fontsize=14, labelpad=20)
 
-        # Heatmap Only (Column 3)
-        base_heatmap_img = imgify(base_relevance.squeeze(), vmin=-1.0, vmax=1.0)
-        axs[0, 2].imshow(base_heatmap_img)
-        axs[0, 2].set_title("Relevance Heatmap"); axs[0, 2].axis('off')
-        fig.colorbar(mappable, ax=axs[0, 2], orientation='vertical', fraction=0.046, pad=0.04)
+        # --- Column 1: Original Image ---
+        axs[0].imshow(img_np)
+        axs[0].set_title("Original Image")
+        axs[0].axis('off')
+
+        # --- Column 2: Image with Mask Outline ---
+        axs[1].imshow(img_np)
+        axs[1].contour(mask_np, colors='lime', linewidths=1.5)
+        axs[1].set_title("Image with Mask Outline")
+        axs[1].axis('off')
+
+        # --- Column 3: Relevance Heatmap ---
+        relevance = relevance.squeeze()
+        relevance = relevance / abs(relevance).max()
+        heatmap_img = imgify(relevance, vmin=-1.0, vmax=1.0)
+        axs[2].imshow(heatmap_img)
+        axs[2].set_title("Relevance Heatmap")
+        axs[2].axis('off')
+        # Add a colorbar to the heatmap plot
+        fig.colorbar(mappable, ax=axs[2], orientation='vertical', fraction=0.046, pad=0.04)
+
+        # --- Column 4: Relevance Overlay ---
+        axs[3].imshow(img_np)  # Plot base image first
+        axs[3].imshow(heatmap_img, alpha=0.6)  # Plot heatmap on top with transparency
+        axs[3].set_title("Relevance Overlay")
+        axs[3].axis('off')
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.92]) # Adjust rect to fit suptitle
         
-        # --- MODIFIED: Create overlay manually using Matplotlib's alpha ---
-        # Overlay (Column 4)
-        axs[0, 3].imshow(img_np) # Plot base image first
-        axs[0, 3].imshow(base_heatmap_img, alpha=0.6) # Plot heatmap on top with transparency
-        axs[0, 3].set_title("Relevance Overlay"); axs[0, 3].axis('off')
-
-
-        # --- Row 2: Finetuned Model ---
-        axs[1, 0].set_ylabel(finetuned_title, fontsize=14, labelpad=20)
-        axs[1, 0].imshow(img_np); axs[1, 0].set_title("Original Image"); axs[1, 0].axis('off')
-        axs[1, 1].imshow(img_np); axs[1, 1].contour(mask_np, colors='lime', linewidths=1.5)
-        axs[1, 1].set_title("Image with Mask Outline"); axs[1, 1].axis('off')
-
-        # Heatmap Only (Column 3)
-        ft_heatmap_img = imgify(finetuned_relevance.squeeze(), vmin=-1.0, vmax=1.0)
-        axs[1, 2].imshow(ft_heatmap_img)
-        axs[1, 2].set_title("Relevance Heatmap"); axs[1, 2].axis('off')
-        fig.colorbar(mappable, ax=axs[1, 2], orientation='vertical', fraction=0.046, pad=0.04)
-
-        # Overlay (Column 4)
-        axs[1, 3].imshow(img_np) # Plot base image first
-        axs[1, 3].imshow(ft_heatmap_img, alpha=0.6) # Plot heatmap on top with transparency
-        axs[1, 3].set_title("Relevance Overlay"); axs[1, 3].axis('off')
-
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        save_path = os.path.join(self.save_dir, f"comparison_{filename.replace('.jpg', '.png')}")
+        # Modify save path to include model name and avoid overwrites
+        save_filename = f"relevance_{filename.replace('.jpg', '.png')}"
+        save_path = os.path.join(self.save_dir, save_filename)
+        
         plt.savefig(save_path, bbox_inches='tight')
         plt.close(fig)
