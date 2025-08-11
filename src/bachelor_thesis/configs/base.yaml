@@ -1,7 +1,7 @@
 data:
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split/spac23+24-body_face-squared-deduplicated"
-  dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
+  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split/spac23+24-body_face-squared-deduplicated"
+  #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
   batch_size: 32
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
   output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
@@ -12,11 +12,11 @@ db:
   feature_type: "body"
 
 eval:
-  patches_per_step: 50
+  patches_per_step: 30
 
 knn:
-  k: 5
   distance_metric: "cosine"
+  k: 5
   db_embeddings_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/knn_db"
 
 model:
@@ -36,17 +36,19 @@ lrp:
   mode: "knn"
 
 mask_exp:
-  decision_metric: "recall_at_k"
+  decision_metric: "soft_knn_margin"
 
 sweep:
-  evaluation_metrics: ["similarity", "recall_at_k"]
-  decision_metric: "recall_at_k"
+  evaluation_metrics: ["soft_knn_margin"]
+  decision_metric: "soft_knn_margin"
   robustness_percentile: 0.7
   min_score_threshold: 0.1
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
-  conv_gammas: [0.1, 0.25, 0.4, 1.0]
+  conv_gammas: [0.1, 0.15,0.25, 0.4, 0.7, 1.0]
+  #0.1, 0.25, 0.4, 1.0
   #[0.1, 0.15,0.25, 0.4, 0.7, 1.0] 
-  lin_gammas: [0.001, 0.025, 0.05, 0.075, 0.1]
+  lin_gammas: [0.001, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25]
+  #0.001, 0.025, 0.05, 0.075, 0.1
   #[0.001, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25] 
 

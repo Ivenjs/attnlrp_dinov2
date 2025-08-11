@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=gamma_sweep
+#SBATCH --job-name=lrp_analysis
 #SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=100G
-#SBATCH --cpus-per-task=6
-#SBATCH --time=3-00:00:00
+#SBATCH --cpus-per-task=20
+#SBATCH --time=1-00:00:00
 #SBATCH --gres=gpu:h100:1
 #SBATCH -p aisc 
 #SBATCH --account=aisc 

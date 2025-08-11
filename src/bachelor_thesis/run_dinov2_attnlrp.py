@@ -70,9 +70,8 @@ def run_masking_experiment(
     """
     print("\n--- Starting Systematic Masking Experiment ---")
     results_list = []
-    
-    # Use the original dataloader without shuffling to iterate through the dataset
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=custom_collate_fn)
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
 
     
     with torch.no_grad():
@@ -166,7 +165,7 @@ def compute_relevances(
     db_embeddings: torch.Tensor = None, 
     db_labels: List[str] = None, 
     db_filenames: List[str] = None, 
-    k_neighbors: int = 5, 
+    proxy_temp: float = 0.1, 
     mode: str = "knn", 
     verbose: bool = False, 
     distance_metric: str = "cosine"
@@ -208,7 +207,7 @@ def compute_relevances(
                         db_labels=db_labels,
                         db_filenames=db_filenames,
                         distance_metric=distance_metric,
-                        k_neighbors=k_neighbors,
+                        proxy_temp=proxy_temp,
                         verbose=verbose, 
                     )
                 mask_tensor_single = mask_batch[j]
@@ -445,6 +444,7 @@ def main(cfg: Dict):
     val_dir = os.path.join(root_dir, "val")
     val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
 
+
     mask_transform = transforms.Compose([
         transforms.Resize(
             size=cfg["model"]["img_size"],
@@ -461,8 +461,8 @@ def main(cfg: Dict):
         mask_transform=mask_transform
     )
 
-    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
-    split_name = "val" 
+    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=1, collate_fn=custom_collate_fn, shuffle=False)
+    split_name = "val"
 
     # --- 3. Compute k-NN Database ---
     db_embeddings, db_labels, db_filenames = get_knn_db(
@@ -485,7 +485,7 @@ def main(cfg: Dict):
         db_embeddings=db_embeddings,
         db_labels=db_labels,
         db_filenames=db_filenames,
-        k_neighbors=cfg["knn"]["k"],
+        proxy_temp=cfg["knn"]["temp"],
         mode=cfg["lrp"]["mode"],
         verbose=VERBOSE,
         distance_metric=cfg["knn"]["distance_metric"]

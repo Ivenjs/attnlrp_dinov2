@@ -32,12 +32,12 @@ def run_gamma_sweep(
     model_wrapper: TimmWrapper, 
     dataloader: DataLoader,  
     device: torch.device,
-    mode: str = "simple",
+    mode: str = "knn",
     db_embeddings: torch.Tensor = None,  
     db_filenames: List[str] = None,  
     db_labels: List[str] = None,  
-    k_neighbors: int = 5,
-    distance_metrics: List[str] = ["euclidean"],
+    proxy_temp: float = 0.1,
+    distance_metrics: List[str] = ["cosine"],
     conv_gamma_values: List[float] = CONV_GAMMAS,
     lin_gamma_values: List[float] = LIN_GAMMAS,
     verbose: bool = False
@@ -94,7 +94,7 @@ def run_gamma_sweep(
                             db_labels=db_labels,
                             db_filenames=db_filenames,
                             distance_metric=distance_metric,
-                            k_neighbors=k_neighbors,
+                            proxy_temp=proxy_temp,
                             verbose=verbose, 
                         )
 
@@ -117,7 +117,7 @@ def evaluate_gamma_sweep(
     patch_size: int,
     device: torch.device,
     evaluation_metrics: List[str],
-    k_neighbors: int = 5,
+    proxy_temp: float = 0.1,
     patches_per_step: int = 20,
     plot_curves: bool = False
 ) -> List[Dict]:
@@ -150,6 +150,7 @@ def evaluate_gamma_sweep(
 
             relevance_map = relevances_by_parameters[input_filename][parameters]
             print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}, dist={distance_metric}")
+  
             srg_results_by_metric = srg_knn(
                 relevance_map=relevance_map,
                 input_tensor=input_tensor, 
@@ -161,7 +162,7 @@ def evaluate_gamma_sweep(
                 db_labels=db_labels,
                 db_filenames=db_filenames,
                 distance_metric=distance_metric,
-                k_neighbors=k_neighbors,
+                proxy_temp=proxy_temp,
                 patches_per_step=patches_per_step, 
                 plot_curves=plot_curves,
                 evaluation_metrics=evaluation_metrics
@@ -539,12 +540,6 @@ def plot_and_log_mean_curve(
     """
     Calculates and plots mean curves with std deviation bands from a dataframe.
     Logs the resulting plot to Weights & Biases as a static image.
-    
-    Args:
-        df (pd.DataFrame): DataFrame containing columns 'curve_label', 
-                           'step', and 'score'.
-        title (str): The title for the plot.
-        log_key (str): The key to use when logging to wandb.
     """
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -574,19 +569,22 @@ def plot_and_log_mean_curve(
         )
 
     ax.set_title(title, fontsize=16)
-    # The axis label can remain descriptive, even if the column name is 'step'
     ax.set_xlabel("Fraction of Patches Perturbed (Step)", fontsize=12)
     ax.set_ylabel("Mean Score", fontsize=12)
     
     handles, labels = ax.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     ax.legend(by_label.values(), by_label.keys())
-    
-    ax.set_ylim(bottom=0)
+
+    # Dynamische y-Achsen-Grenzen
+    y_min = df['score'].min()
+    y_max = df['score'].max()
+    padding = (y_max - y_min) * 0.05  # 5% Padding für nicer Look
+    ax.set_ylim(y_min - padding, y_max + padding)
+
     fig.tight_layout()
 
     os.makedirs(save_dir, exist_ok=True)
-
     filename = f"{log_key.replace('/', '_')}.png"
     save_path = os.path.join(save_dir, filename)
 

@@ -10,7 +10,7 @@ import datetime
 import os
 from zennit.image import imgify
 
-from knn_helpers import compute_knn_proxy_score
+from knn_helpers import compute_knn_proxy_soft
             
 def compute_simple_attnlrp_pass(
     conv_gamma: float, 
@@ -65,7 +65,7 @@ def compute_knn_attnlrp_pass(
     db_labels: list,
     db_filenames: list,
     distance_metric: str = "euclidean",
-    k_neighbors: int = 5,
+    proxy_temp: float = 0.1,
     verbose: bool = False
 ) -> torch.Tensor:
     """
@@ -89,7 +89,7 @@ def compute_knn_attnlrp_pass(
         zennit_comp.register(model_wrapper)
 
         query_embedding = model_wrapper(input_tensor.requires_grad_())
-        knn_score = compute_knn_proxy_score(
+        knn_score = compute_knn_proxy_soft(
             query_embedding=query_embedding,
             query_label=query_label,
             query_filename=query_filename,
@@ -97,7 +97,7 @@ def compute_knn_attnlrp_pass(
             db_labels=db_labels,
             db_filenames=db_filenames,
             distance_metric=distance_metric,
-            k=k_neighbors
+            temp=proxy_temp
         )
         if verbose:
             print(f"Explaining k-NN proxy score: {knn_score.item():.4f} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
@@ -105,12 +105,8 @@ def compute_knn_attnlrp_pass(
         knn_score.backward()
         
         if input_tensor.grad is None:
-            # This happens if the score was a constant (e.g., no friends found in top-k).
-            # In this case, we return a zero relevance map as there's nothing to explain.
-            # This avoids the TypeError and is conceptually correct for this scenario.
             if verbose:
                 print(f"WARNING: No gradient for LRP on '{query_filename}'. "
-                      f"This likely means no friends were found in its top-{k_neighbors} neighbors. "
                       "Producing a zero relevance map.")
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:

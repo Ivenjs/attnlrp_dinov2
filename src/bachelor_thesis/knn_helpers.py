@@ -242,6 +242,65 @@ def compute_knn_proxy_score(
     else:
         return score
 
+import torch
+import torch.nn.functional as F
+
+def compute_knn_proxy_soft(
+    query_embedding: torch.Tensor,
+    query_label: str,
+    query_filename: str,
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    db_filenames: list,
+    distance_metric: str = "cosine",
+    temp: float = 0.05,
+    exclude_self: bool = True
+) -> torch.Tensor:
+    """
+    Computes a differentiable, contrastive proxy score for k-NN based on
+    softmax-weighted similarities. This avoids the non-differentiable top-k
+    and creates a score that balances friends vs. foes.
+    """
+    if distance_metric != "cosine":
+        raise NotImplementedError("This soft proxy is optimized for cosine similarity.")
+
+    # Ensure embeddings are normalized (standard for cosine similarity)
+    q_emb = query_embedding.view(1, -1) if query_embedding.dim()==1 else query_embedding
+    q_norm = F.normalize(q_emb, p=2, dim=1)
+    db_norm = F.normalize(db_embeddings, p=2, dim=1)
+
+    # Calculate cosine similarity (higher is better)
+    # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
+    similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
+
+    # Exclude the query from its own neighbors if it exists in the database
+    if exclude_self and query_filename in db_filenames:
+        try:
+            query_idx = db_filenames.index(query_filename)
+            # Set similarity to a very low number to give it near-zero weight after softmax
+            similarities[query_idx] = -1e9
+        except ValueError:
+            pass # Query not found, nothing to do
+
+    # Differentiable soft neighbor weights via softmax. `temp` controls sharpness.
+    # Low temp -> focuses on the very nearest neighbors.
+    # High temp -> considers more neighbors.
+    weights = F.softmax(similarities / temp, dim=0)
+
+    # Create a mask to identify friends in the database
+    device = weights.device
+    friend_mask = torch.tensor([1.0 if label == query_label else 0.0 for label in db_labels], device=device)
+    
+    # Calculate the total "probability mass" assigned to friends vs. foes
+    prob_friends = (weights * friend_mask).sum()
+    prob_foes = (weights * (1.0 - friend_mask)).sum() # or 1.0 - prob_friends
+
+    # The margin score is the most faithful proxy for a contrastive decision.
+    # Maximizing this score means maximizing friend probability and minimizing foe probability.
+    score_prob = prob_friends #TODO try this
+    score_margin = prob_friends - prob_foes
+
+    return score_margin
 
 def get_query_performance_metrics(
     query_embedding: torch.Tensor,

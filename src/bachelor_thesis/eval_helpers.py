@@ -5,7 +5,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
 from typing import Tuple, List, Dict
-from knn_helpers import compute_knn_proxy_score, compute_distances
+from knn_helpers import compute_knn_proxy_score, compute_distances, compute_knn_proxy_soft
 
 
 PATCH_SIZE = 14  # Size of the patches to average over
@@ -30,10 +30,10 @@ def _run_knn_perturbation(
     db_labels: list,
     db_filenames: list,
     distance_metric: str,
-    k_neighbors: int,
+    proxy_temp: float,
     patches_per_step: int = 1,
+    evaluation_metric: str = "soft_knn_margin",
     baseline_value: float = 0.0,
-    evaluation_metric: str = "similarity" # "similarity" or "recall_at_k"
 ) -> torch.Tensor:
     """
     Runs a perturbation experiment, tracking the k-NN proxy score at each step.
@@ -44,42 +44,24 @@ def _run_knn_perturbation(
                                 evaluation. Set to 1 for maximum granularity.
                                 A larger value speeds up the process.
     """
+    if not evaluation_metric == "soft_knn_margin":
+        raise ValueError(f"Unsupported evaluation metric: {evaluation_metric}")
+
     model.eval()
     # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad():
         initial_embedding = model(input_tensor)
-        
-        # This function will now be responsible for finding the fixed neighbors
-        _, friends_indices, _ = compute_knn_proxy_score(
-            initial_embedding, query_label, query_filename, db_embeddings, 
-            db_labels, db_filenames, distance_metric, k_neighbors,
-            return_indices=True # Add this flag to your score function
+        initial_score = compute_knn_proxy_soft(
+            initial_embedding, query_label, query_filename, db_embeddings,
+            db_labels, db_filenames, distance_metric, temp=proxy_temp
         )
-
-        # If there are no friends, the evaluation is meaningless. Signal this with None.
-        if not friends_indices:
-            print(f"WARNING: No friends found for {query_filename} in its initial k-NN set. "
-                            "This data point will be marked as invalid (NaN) for faithfulness scoring.")
-            # num_steps = (len(patch_order) // patches_per_step) + 1
-            # return torch.zeros(num_steps, device=input_tensor.device)
-            return None
-
-        if evaluation_metric == 'similarity':
-            initial_score = compute_evaluation_score(
-                initial_embedding, db_embeddings, friends_indices, distance_metric
-            )
-        elif evaluation_metric == 'recall_at_k':
-            # The initial recall should be 1.0 by definition, because this is about the initial k from the query
-            initial_score = torch.tensor(1.0)
-        else:
-            raise ValueError(f"Unknown evaluation_metric: {evaluation_metric}")
 
     num_patches = len(patch_order)
     h, w = input_tensor.shape[-2:]
     num_patches_w = w // patch_size
 
 
-    output_scores = [initial_score]
+    output_scores = [initial_score.item()]
 
     if perturbation_type == 'deletion':
         perturbed_tensor = input_tensor.clone()
@@ -109,24 +91,11 @@ def _run_knn_perturbation(
         # After perturbing the chunk, run the model and get the score
         with torch.no_grad():
             current_embedding = model(perturbed_tensor)
-            if evaluation_metric == 'similarity':
-                score = compute_evaluation_score(
-                    current_embedding, db_embeddings, friends_indices, distance_metric
-                )
-                output_scores.append(score.item())
-            elif evaluation_metric == 'recall_at_k':
-                score = compute_evaluation_score_recall_at_k(
-                    current_embedding=current_embedding,
-                    db_embeddings=db_embeddings,
-                    original_friends_indices=set(friends_indices),
-                    k=k_neighbors,
-                    distance_metric=distance_metric,
-                    query_filename=query_filename,
-                    db_filenames=db_filenames,
-                )
-                output_scores.append(score)
-            else:
-                raise ValueError(f"Unknown evaluation_metric: {evaluation_metric}")
+            score = compute_knn_proxy_soft(
+                current_embedding, query_label, query_filename, db_embeddings,
+                db_labels, db_filenames, distance_metric, temp=proxy_temp
+            )
+            output_scores.append(score.item())
 
         # Update progress
         num_in_chunk = end_idx - start_idx
@@ -138,29 +107,6 @@ def _run_knn_perturbation(
     # Convert the list of scores to a tensor for calculations
     return torch.tensor(output_scores, device=input_tensor.device)
 
-def _run_random_baseline_perturbation(
-    model: torch.nn.Module,
-    input_tensor: torch.Tensor,
-    num_patches: int,
-    **kwargs
-) -> torch.Tensor:
-    """
-    Runs a perturbation experiment using a random patch order.
-    """
-    print("Running Random Baseline Perturbation...")
-    # Create a random permutation of patch indices
-    random_order = torch.randperm(num_patches, device=input_tensor.device)
-
-    # We can run a "deletion" experiment with this random order.
-    # The result represents the expected performance drop from random occlusions.
-    random_curve = _run_knn_perturbation(
-        model=model,
-        input_tensor=input_tensor,
-        patch_order=random_order,
-        perturbation_type='deletion',
-        **kwargs
-    )
-    return random_curve
 
 def srg_knn(
     relevance_map: torch.Tensor,
@@ -174,10 +120,10 @@ def srg_knn(
     db_labels: list,
     db_filenames: list,
     distance_metric: str,
-    k_neighbors: int,
+    proxy_temp: float,
     patches_per_step: int,
     plot_curves: bool = False,
-    evaluation_metrics = ["similarity", "recall_at_k"]
+    evaluation_metrics: List[str] = ["soft_knn_margin"]
 ) -> Dict:
     """
     Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
@@ -198,9 +144,11 @@ def srg_knn(
         "db_labels": db_labels,
         "db_filenames": db_filenames,
         "distance_metric": distance_metric,
-        "k_neighbors": k_neighbors,
-        "patches_per_step": patches_per_step,
+        "proxy_temp": proxy_temp,
+        "patches_per_step": patches_per_step
     }
+
+    
 
     results = {}
 
@@ -208,23 +156,11 @@ def srg_knn(
         perturb_args["evaluation_metric"] = metric_name
 
         morf_curve = _run_knn_perturbation(model, input_tensor, morf_order, 'deletion', **perturb_args)
-
-        if morf_curve is None or lerf_curve is None or random_curve is None:
-                    results[metric_name] = {
-                        'faithfulness_score': np.nan,
-                        'morf_vs_random': np.nan,
-                        'lerf_vs_random': np.nan,
-                        'auc_morf': np.nan,
-                        'auc_lerf': np.nan,
-                        'auc_random': np.nan,
-                        'morf_curve': None,
-                        'lerf_curve': None,
-                        'random_curve': None
-                    }
-                    continue
-
         lerf_curve = _run_knn_perturbation(model, input_tensor, lerf_order, 'deletion', **perturb_args)
-        random_curve = _run_random_baseline_perturbation(model, input_tensor, len(morf_order), **perturb_args)
+
+        random_curve = _run_knn_perturbation(
+            model, input_tensor, torch.randperm(len(morf_order)), 'deletion', **perturb_args
+        )
 
         auc_morf = calculate_auc(morf_curve)
         auc_lerf = calculate_auc(lerf_curve)
@@ -289,56 +225,34 @@ def srg_knn(
     return results
 
 
-def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[float, float, float]:
-    """
-    Args:
-        mask (np.ndarray): Boolean or binary array of shape (1 ,H, W).
-        relevance (torch.Tensor): Tensor of shape (1, 1, H, W) with relevance scores.
+    auc_morf = calculate_auc(morf_curve)
+    auc_lerf = calculate_auc(lerf_curve)
+    auc_random = calculate_auc(random_curve)
 
-    Returns:
-        Tuple[float, float, float]:
-            (total_fraction, positive_fraction, negative_fraction)
-    """
+    faithfulness_score = auc_lerf - auc_morf
+    morf_vs_random = auc_random - auc_morf
+    lerf_vs_random = auc_lerf - auc_random
 
-    target_size = relevance.shape[-2:]  # e.g., (518, 518)
-    mask_tensor = torch.from_numpy(mask).to(relevance.device)
+    print(f"Area under LeRF curve: {auc_lerf:.4f}")
+    print(f"Area under MoRF curve: {auc_morf:.4f}")
+    print(f"Area under Random curve: {auc_random:.4f}")
+    print(f"-------------------------------------------")
+    print(f"Faithfulness Score (A_LeRF - A_MoRF): {faithfulness_score:.4f}")
+    print(f"MoRF Improvement vs. Random (A_Rand - A_MoRF): {morf_vs_random:.4f}")
 
-    if mask_tensor.shape[-2:] != target_size:
-        # F.interpolate needs a 4D input (N, C, H, W), so we add a temporary batch dimension.
-        # We must also convert to float for the interpolation operation.
-        # 'nearest' mode is crucial for masks to avoid creating non-binary values.
-        mask_tensor = F.interpolate(
-            mask_tensor.unsqueeze(0).float(),
-            size=target_size,
-            mode='nearest'
-        ).squeeze(0) # Remove the temporary batch dimension.
+    results = {
+        'faithfulness_score': faithfulness_score,
+        'morf_vs_random': morf_vs_random,
+        'lerf_vs_random': lerf_vs_random,
+        'auc_morf': auc_morf,
+        'auc_lerf': auc_lerf,
+        'auc_random': auc_random,
+        'morf_curve': morf_curve.cpu().numpy(),
+        'lerf_curve': lerf_curve.cpu().numpy(),
+        'random_curve': random_curve.cpu().numpy()
+    }
 
-    # From this point on, mask_tensor is guaranteed to have the same H, W as relevance.
-
-    relevance_squeezed = relevance.squeeze(0).squeeze(0)  # from (1, 1, H, W) -> (H, W)
-    boolean_mask = mask_tensor.squeeze(0).bool() # from (1, H, W) -> (H, W)
-
-    relevance_inside = relevance_squeezed[boolean_mask]
-
-    total_abs_relevance = relevance_squeezed.abs().sum()
-    inside_abs_relevance = relevance_inside.abs().sum()
-
-    positive_relevance = relevance_squeezed.clamp(min=0)
-    negative_relevance = relevance_squeezed.clamp(max=0).abs()
-
-    pos_inside = positive_relevance[boolean_mask].sum()
-    pos_total = positive_relevance.sum()
-
-    neg_inside = negative_relevance[boolean_mask].sum()
-    neg_total = negative_relevance.sum()
-
-    # Calculate fractions, guarding against division by zero
-    total_frac = (inside_abs_relevance / total_abs_relevance).item() if total_abs_relevance > 0 else 0.0
-    pos_frac = (pos_inside / pos_total).item() if pos_total > 0 else 0.0
-    neg_frac = (neg_inside / neg_total).item() if neg_total > 0 else 0.0
-
-    return total_frac, pos_frac, neg_frac
-
+    return results
 
 def compute_evaluation_score(
     current_embedding: torch.Tensor,
@@ -440,3 +354,55 @@ def compute_evaluation_score_recall_at_k(
         recall = retained_friends_count / num_original_friends
         
     return recall
+
+def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[float, float, float]:
+    """
+    Args:
+        mask (np.ndarray): Boolean or binary array of shape (1 ,H, W).
+        relevance (torch.Tensor): Tensor of shape (1, 1, H, W) with relevance scores.
+
+    Returns:
+        Tuple[float, float, float]:
+            (total_fraction, positive_fraction, negative_fraction)
+    """
+
+    target_size = relevance.shape[-2:]  # e.g., (518, 518)
+    mask_tensor = torch.from_numpy(mask).to(relevance.device)
+
+    if mask_tensor.shape[-2:] != target_size:
+        # F.interpolate needs a 4D input (N, C, H, W), so we add a temporary batch dimension.
+        # We must also convert to float for the interpolation operation.
+        # 'nearest' mode is crucial for masks to avoid creating non-binary values.
+        mask_tensor = F.interpolate(
+            mask_tensor.unsqueeze(0).float(),
+            size=target_size,
+            mode='nearest'
+        ).squeeze(0) # Remove the temporary batch dimension.
+
+    # From this point on, mask_tensor is guaranteed to have the same H, W as relevance.
+
+    relevance_squeezed = relevance.squeeze(0).squeeze(0)  # from (1, 1, H, W) -> (H, W)
+    boolean_mask = mask_tensor.squeeze(0).bool() # from (1, H, W) -> (H, W)
+
+    relevance_inside = relevance_squeezed[boolean_mask]
+
+    total_abs_relevance = relevance_squeezed.abs().sum()
+    inside_abs_relevance = relevance_inside.abs().sum()
+
+    positive_relevance = relevance_squeezed.clamp(min=0)
+    negative_relevance = relevance_squeezed.clamp(max=0).abs()
+
+    pos_inside = positive_relevance[boolean_mask].sum()
+    pos_total = positive_relevance.sum()
+
+    neg_inside = negative_relevance[boolean_mask].sum()
+    neg_total = negative_relevance.sum()
+
+    # Calculate fractions, guarding against division by zero
+    total_frac = (inside_abs_relevance / total_abs_relevance).item() if total_abs_relevance > 0 else 0.0
+    pos_frac = (pos_inside / pos_total).item() if pos_total > 0 else 0.0
+    neg_frac = (neg_inside / neg_total).item() if neg_total > 0 else 0.0
+
+    return total_frac, pos_frac, neg_frac
+
+

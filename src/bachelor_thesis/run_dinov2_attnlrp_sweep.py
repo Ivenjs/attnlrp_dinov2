@@ -87,13 +87,13 @@ def main(cfg: dict):
 
     tune_relevances = run_gamma_sweep(
         model_wrapper, tune_dataloader, DEVICE, MODE, tune_db_embeddings, tune_db_filenames, tune_db_labels,
-        cfg["knn"]["k"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
+        cfg["knn"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
     )
     tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
         tune_relevances, tune_eval_dataloader, model_wrapper,
         tune_db_embeddings, tune_db_labels, tune_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["k"], cfg["eval"]["patches_per_step"], VERBOSE
+        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["temp"], cfg["eval"]["patches_per_step"], VERBOSE
     )
 
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
@@ -109,13 +109,13 @@ def main(cfg: dict):
     holdout_dataloader = DataLoader(holdout_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
     holdout_relevances = run_gamma_sweep(
         model_wrapper, holdout_dataloader, DEVICE, MODE, holdout_db_embeddings, holdout_db_filenames, holdout_db_labels,
-        cfg["knn"]["k"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
+        cfg["knn"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
     )
     holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
         holdout_relevances, holdout_eval_dataloader, model_wrapper,
         holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["k"], cfg["eval"]["patches_per_step"], VERBOSE
+        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["temp"], cfg["eval"]["patches_per_step"], VERBOSE
     )
 
     # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---

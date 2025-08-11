@@ -2,7 +2,9 @@ model:
   finetuned: True
   checkpoint_path: "/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth"
 
+knn:
+  temp: 0.1
 
 lrp:
-  conv_gamma: 0.7
-  lin_gamma: 0.1
+  conv_gamma: 0.1
+  lin_gamma: 0.001
