@@ -33,7 +33,7 @@ def _run_knn_perturbation(
     proxy_temp: float,
     patches_per_step: int = 1,
     evaluation_metric: str = "soft_knn_margin",
-    baseline_value: float = 0.0,
+    baseline_value: str = "black",
 ) -> torch.Tensor:
     """
     Runs a perturbation experiment, tracking the k-NN proxy score at each step.
@@ -48,6 +48,15 @@ def _run_knn_perturbation(
         raise ValueError(f"Unsupported evaluation metric: {evaluation_metric}")
 
     model.eval()
+
+    if baseline_value.lower() == "black":
+            baseline_fill = torch.zeros_like(input_tensor)
+    elif baseline_value.lower() == "mean":
+        mean_color = input_tensor.mean(dim=[2, 3], keepdim=True)
+        baseline_fill = mean_color.expand_as(input_tensor)
+    else:
+        raise ValueError(f"Unknown baseline type: {baseline_value}")
+
     # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad():
         initial_embedding = model(input_tensor)
@@ -66,7 +75,7 @@ def _run_knn_perturbation(
     if perturbation_type == 'deletion':
         perturbed_tensor = input_tensor.clone()
     else: # insertion
-        perturbed_tensor = torch.full_like(input_tensor, baseline_value)
+        perturbed_tensor = baseline_fill.clone()
 
 
     patches_processed_so_far = 0
@@ -83,7 +92,8 @@ def _run_knn_perturbation(
             col = (patch_idx % num_patches_w) * patch_size
 
             if perturbation_type == 'deletion':
-                perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = baseline_value
+                perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = \
+                    baseline_fill[..., row:row+patch_size, col:col+patch_size]
             else: # insertion
                 original_patch = input_tensor[..., row:row+patch_size, col:col+patch_size]
                 perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = original_patch
@@ -122,6 +132,7 @@ def srg_knn(
     distance_metric: str,
     proxy_temp: float,
     patches_per_step: int,
+    baseline_value: str = "black",
     plot_curves: bool = False,
     evaluation_metrics: List[str] = ["soft_knn_margin"]
 ) -> Dict:
@@ -145,7 +156,8 @@ def srg_knn(
         "db_filenames": db_filenames,
         "distance_metric": distance_metric,
         "proxy_temp": proxy_temp,
-        "patches_per_step": patches_per_step
+        "patches_per_step": patches_per_step,
+        "baseline_value": baseline_value
     }
 
     
@@ -223,137 +235,6 @@ def srg_knn(
         plt.close(fig)
 
     return results
-
-
-    auc_morf = calculate_auc(morf_curve)
-    auc_lerf = calculate_auc(lerf_curve)
-    auc_random = calculate_auc(random_curve)
-
-    faithfulness_score = auc_lerf - auc_morf
-    morf_vs_random = auc_random - auc_morf
-    lerf_vs_random = auc_lerf - auc_random
-
-    print(f"Area under LeRF curve: {auc_lerf:.4f}")
-    print(f"Area under MoRF curve: {auc_morf:.4f}")
-    print(f"Area under Random curve: {auc_random:.4f}")
-    print(f"-------------------------------------------")
-    print(f"Faithfulness Score (A_LeRF - A_MoRF): {faithfulness_score:.4f}")
-    print(f"MoRF Improvement vs. Random (A_Rand - A_MoRF): {morf_vs_random:.4f}")
-
-    results = {
-        'faithfulness_score': faithfulness_score,
-        'morf_vs_random': morf_vs_random,
-        'lerf_vs_random': lerf_vs_random,
-        'auc_morf': auc_morf,
-        'auc_lerf': auc_lerf,
-        'auc_random': auc_random,
-        'morf_curve': morf_curve.cpu().numpy(),
-        'lerf_curve': lerf_curve.cpu().numpy(),
-        'random_curve': random_curve.cpu().numpy()
-    }
-
-    return results
-
-def compute_evaluation_score(
-    current_embedding: torch.Tensor,
-    db_embeddings: torch.Tensor,
-    friends_indices: list,
-    distance_metric: str,
-) -> torch.Tensor:
-    """
-    Computes an intuitive, similarity-like score for evaluation purposes.
-    This score is designed to be high when the query is close to its friends.
-    The idea is the same as for the compute_proxy_score function
-    - For cosine distance, it converts the [0, 2] distance back to a [-1, 1] similarity.
-    - For Euclidean distance, it maps the [0, 2] distance to a [1, 0] similarity.
-
-    Args:
-        current_embedding (torch.Tensor): The embedding of the (perturbed) query image.
-        db_embeddings (torch.Tensor): The database embeddings.
-        friends_indices (list): The list of indices for the *fixed* set of friends.
-        distance_metric (str): The metric used, 'cosine' or 'euclidean'.
-
-    Returns:
-        torch.Tensor: A single scalar score. Larger is better.
-    """
-    if not friends_indices:
-        # If there are no friends, the score is undefined. Return 0.
-        return torch.tensor(0.0, device=current_embedding.device)
-
-    all_distances = compute_distances(current_embedding, db_embeddings, distance_metric)
-    dist_to_friends = all_distances[friends_indices]
-
-    if distance_metric == "cosine":
-        # Cosine distance = 1 - similarity.
-        # So, similarity = 1 - distance.
-        # This will be in the range [-1, 1].
-        similarity_score = 1 - dist_to_friends.mean()
-    elif distance_metric == "euclidean":
-        # Euclidean distance on the unit hypersphere is in [0, 2].
-        # We can map this to a [1, 0] similarity range to make it intuitive.
-        # score = 1 - (dist / 2).
-        # When dist=0, score=1. When dist=2, score=0.
-        similarity_score = 1 - (dist_to_friends.mean() / 2.0)
-    else:
-        raise ValueError(f"Unknown metric for evaluation: {distance_metric}")
-
-    return similarity_score
-
-def compute_evaluation_score_recall_at_k(
-    current_embedding: torch.Tensor,
-    db_embeddings: torch.Tensor,
-    original_friends_indices: set,
-    k: int,
-    distance_metric: str,
-    query_filename: str, 
-    db_filenames: list,
-) -> float:
-    """
-    Computes a Recall@k-based evaluation score.
-    This score measures what fraction of the original friends are still in the top-k.
-    """
-
-    num_db_samples = len(db_filenames)
-    
-    is_query_in_db = query_filename in db_filenames
-    
-    num_available_neighbors = num_db_samples - 1 if is_query_in_db else num_db_samples
-    
-    # Ensure k is not larger than the number of available neighbors.
-    # If there are no available neighbors, effective_k will be 0.
-    effective_k = min(k, num_available_neighbors)
-
-    # If there are no possible neighbors to find, we can't compute a score.
-    # Return a neutral score (0) or handle as an error. NORMALLY, THIS SHOULD NOT HAPPEN.
-    if effective_k <= 0:
-        # Returning a neutral score is often a safe default.
-        print(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
-        return torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
-
-    num_original_friends = len(original_friends_indices)
-    if num_original_friends == 0:
-        return 0.0
-
-    with torch.no_grad():
-        distances = compute_distances(current_embedding, db_embeddings, distance_metric)
-        
-        try:
-            query_idx = db_filenames.index(query_filename)
-            distances[query_idx] = torch.inf
-        except ValueError:
-            pass 
-
-        # Find the new top-k
-        new_top_k_indices = torch.topk(distances, effective_k, largest=False).indices
-        new_top_k_set = set(new_top_k_indices.cpu().numpy())
-
-        # Count how many of the original friends are in the new top-k set
-        retained_friends_count = len(original_friends_indices.intersection(new_top_k_set))
-        
-        # Calculate recall
-        recall = retained_friends_count / num_original_friends
-        
-    return recall
 
 def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[float, float, float]:
     """

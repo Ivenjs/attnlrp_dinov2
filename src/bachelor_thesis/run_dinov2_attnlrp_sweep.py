@@ -28,7 +28,7 @@ from utils import get_balanced_individual_splits, load_config
 
 
 def main(cfg: dict):
-    monkey_patch_zennit(verbose=True)  # is this needed? seems to be
+    monkey_patch_zennit(verbose=True)  
 
     LOG_TO_WANDB = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,7 +54,8 @@ def main(cfg: dict):
 
     tune_query_files, all_tune_files, holdout_query_files, all_holdout_files = get_balanced_individual_splits(
         train_files=train_files,
-        holdout_percentage=cfg["sweep"]["holdout_percentage"]
+        holdout_percentage=cfg["sweep"]["holdout_percentage"],
+        queries_per_class=cfg["sweep"]["queries_per_class"]
     )
     
     tune_query_dataset = GorillaReIDDataset(
@@ -87,13 +88,13 @@ def main(cfg: dict):
 
     tune_relevances = run_gamma_sweep(
         model_wrapper, tune_dataloader, DEVICE, MODE, tune_db_embeddings, tune_db_filenames, tune_db_labels,
-        cfg["knn"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
+        cfg["sweep"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
     )
     tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
         tune_relevances, tune_eval_dataloader, model_wrapper,
         tune_db_embeddings, tune_db_labels, tune_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["temp"], cfg["eval"]["patches_per_step"], VERBOSE
+        cfg["sweep"]["evaluation_metrics"], cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"],False
     )
 
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
@@ -109,13 +110,13 @@ def main(cfg: dict):
     holdout_dataloader = DataLoader(holdout_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
     holdout_relevances = run_gamma_sweep(
         model_wrapper, holdout_dataloader, DEVICE, MODE, holdout_db_embeddings, holdout_db_filenames, holdout_db_labels,
-        cfg["knn"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
+        cfg["sweep"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
     )
     holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
         holdout_relevances, holdout_eval_dataloader, model_wrapper,
         holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["sweep"]["evaluation_metrics"], cfg["knn"]["temp"], cfg["eval"]["patches_per_step"], VERBOSE
+        cfg["sweep"]["evaluation_metrics"], cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
     )
 
     # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---
@@ -125,7 +126,7 @@ def main(cfg: dict):
 
     # Step 3a: Select BEST parameters using ONLY the TUNE set results.
     print("\nFinding best parameters on TUNE set...")
-    best_params_raw_tune, analysis_df_tune = find_robust_hyperparameters(
+    best_params_raw_tune, analysis_df_tune, worst_params_raw_tune = find_robust_hyperparameters(
         results=tune_results_list,
         decision_metric=DECISION_METRIC,
         robustness_percentile=cfg["sweep"]["robustness_percentile"],
@@ -135,7 +136,7 @@ def main(cfg: dict):
     print_robustness_summary(best_params_raw_tune, analysis_df_tune, DECISION_METRIC)
 
     # Step 3b: Evaluate these BEST parameters on the HOLDOUT set for an unbiased performance estimate.
-    _, analysis_df_holdout = find_robust_hyperparameters(
+    _, analysis_df_holdout, _ = find_robust_hyperparameters(
         results=holdout_results_list,
         decision_metric=DECISION_METRIC,
         robustness_percentile=cfg["sweep"]["robustness_percentile"],
@@ -147,6 +148,7 @@ def main(cfg: dict):
     holdout_performance_row = analysis_df_holdout[
         (analysis_df_holdout['conv_gamma'] == best_params_raw_tune['conv_gamma']) &
         (analysis_df_holdout['lin_gamma'] == best_params_raw_tune['lin_gamma']) &
+        (analysis_df_holdout['proxy_temp'] == best_params_raw_tune['proxy_temp']) &
         (analysis_df_holdout['distance_metric'] == best_params_raw_tune['distance_metric']) &
         (analysis_df_holdout['metric_name'] == DECISION_METRIC) 
     ].iloc[0]
@@ -168,7 +170,7 @@ def main(cfg: dict):
     print("\n" + "="*80)
     print("--- FINAL VALIDATION & DECISION ---")
     print("="*80)
-    print(f"Chosen Parameters: conv_gamma={best_params_raw_tune['conv_gamma']}, lin_gamma={best_params_raw_tune['lin_gamma']}, dist={best_params_raw_tune['distance_metric']}")
+    print(f"Chosen Parameters: conv_gamma={best_params_raw_tune['conv_gamma']}, lin_gamma={best_params_raw_tune['lin_gamma']}, dist={best_params_raw_tune['distance_metric']}, proxy_temp={best_params_raw_tune['proxy_temp']}")
     print(f"Performance on TUNE set:    Mean Faithfulness = {tune_performance['mean_faithfulness']:.4f}")
     print(f"Performance on HOLDOUT set: Mean Faithfulness = {holdout_performance['mean_faithfulness']:.4f}")
 
@@ -201,6 +203,7 @@ def main(cfg: dict):
             cfg=cfg, 
             final_decision=FINAL_DECISION,
             approved_params=best_params_raw_tune,
+            worst_params=worst_params_raw_tune,
             tune_performance=tune_performance,
             holdout_performance=holdout_performance,
             generalization_drop_percent=relative_drop_percent,

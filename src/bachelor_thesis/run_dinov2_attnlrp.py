@@ -4,7 +4,7 @@ from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
 from basemodel import get_model_wrapper
-from knn_helpers import get_knn_db, get_query_performance_metrics, compute_knn_proxy_score
+from knn_helpers import get_knn_db, get_query_performance_metrics, compute_knn_proxy_soft
 from eval_helpers import attention_inside_mask
 from tqdm import tqdm
 from typing import Dict, Tuple, Any, List
@@ -17,6 +17,7 @@ from dinov2_attnlrp_sweep import run_gamma_sweep
 from visualize import AttentionVisualizer 
 import matplotlib.pyplot as plt
 from zennit.image import imgify
+from scipy.stats import spearmanr
 from omegaconf import OmegaConf
 import pandas as pd
 from PIL import Image
@@ -71,7 +72,7 @@ def run_masking_experiment(
     print("\n--- Starting Systematic Masking Experiment ---")
     results_list = []
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=1, collate_fn=custom_collate_fn)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=custom_collate_fn)
 
     
     with torch.no_grad():
@@ -108,14 +109,20 @@ def run_masking_experiment(
                     distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
                 
-                baseline_proxy_score = compute_knn_proxy_score(
+                baseline_proxy_score = compute_knn_proxy_soft(
                     query_embedding=embedding_orig, query_label=label, query_filename=filename,
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
-                    k=cfg["knn"]["k"], distance_metric=cfg["knn"]["distance_metric"]
+                    distance_metric=cfg["knn"]["distance_metric"], temp=cfg["knn"]["temp"]
                 ).item()
 
                 # --- 2. Masked Performance ---
-                image_masked = image_orig * mask
+                if cfg["eval"]["baseline"] == "black":
+                    image_masked = image_orig * mask
+                elif cfg["eval"]["baseline"] == "mean":
+                    mean_color = image_orig.mean(dim=[2, 3], keepdim=True) # Shape: [1, C, 1, 1]
+                    background_fill = mean_color.expand_as(image_orig)
+                    image_masked = image_orig * mask + background_fill * (1 - mask)
+
                 embedding_masked = model_wrapper(image_masked)
 
                 masked_metrics = get_query_performance_metrics(
@@ -124,10 +131,10 @@ def run_masking_experiment(
                     distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
 
-                masked_proxy_score = compute_knn_proxy_score(
+                masked_proxy_score = compute_knn_proxy_soft(
                     query_embedding=embedding_masked, query_label=label, query_filename=filename,
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
-                    k=cfg["knn"]["k"], distance_metric=cfg["knn"]["distance_metric"]
+                    distance_metric=cfg["knn"]["distance_metric"], temp=cfg["knn"]["temp"]
                 ).item()
 
                 # --- 3. Aggregate Results ---
@@ -272,9 +279,71 @@ def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> Li
             os.makedirs(os.path.dirname(correlation_plot_path_pos_neg), exist_ok=True)
             plt.savefig(correlation_plot_path_pos_neg)
             saved_plot_paths.append(correlation_plot_path_pos_neg)
+
+            # Create binned plots for better visibility
+            attention_types = {
+                'Total': 'background_attention_total',
+                'Positive': 'background_attention_positive',
+                'Negative': 'background_attention_negative'
+            }
+
+            for att_name, att_col in attention_types.items():
+                plot_path = os.path.join(output_dir, f"binned_plot_{col}_vs_{att_col}.png")
+                os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+                
+                create_binned_plot(
+                    df=masking_results_df,
+                    attention_col=att_col,
+                    metric_col=col,
+                    output_path=plot_path,
+                    attention_name=att_name
+                )
+                saved_plot_paths.append(plot_path)
     return saved_plot_paths
 
+def create_binned_plot(
+    df: pd.DataFrame, 
+    attention_col: str, 
+    metric_col: str, 
+    output_path: str,
+    attention_name: str = "Attention"
+):
+    """
+    Creates and saves a binned bar plot of a metric vs. an attention score.
+    """
+    try:
+        # Define bins for the attention score (0 to 1)
+        bins = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        bin_labels = pd.cut(df[attention_col], bins=bins, include_lowest=True)
 
+        # Group and aggregate
+        binned_stats = df.groupby(bin_labels, observed=False)[metric_col].agg(['mean', 'sem'])
+
+        if binned_stats.empty or binned_stats['mean'].isnull().all():
+            print(f"Skipping plot: No data for {metric_col} vs {attention_col}")
+            return
+
+        # Plotting
+        fig, ax = plt.subplots(figsize=(10, 6))
+        binned_stats.plot(
+            kind='bar', y='mean', yerr='sem', ax=ax, capsize=4, 
+            legend=False, color='skyblue', edgecolor='black'
+        )
+        
+        # Formatting
+        ax.set_title(f'Mean Performance Drop vs. Binned Background {attention_name}')
+        ax.set_xlabel(f'Bin of Background {attention_name}')
+        ax.set_ylabel(f'Mean Change in {metric_col.replace("delta_", "")}')
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+        plt.tight_layout()
+
+        # Save and close
+        plt.savefig(output_path)
+        plt.close(fig)
+
+    except Exception as e:
+        print(f"Could not generate binned plot for {metric_col} vs {attention_col}. Error: {e}")
 
 def generate_heatmaps(
     samples_to_plot: Dict[str, str], 
@@ -461,7 +530,7 @@ def main(cfg: Dict):
         mask_transform=mask_transform
     )
 
-    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=1, collate_fn=custom_collate_fn, shuffle=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, collate_fn=custom_collate_fn, shuffle=False)
     split_name = "val"
 
     # --- 3. Compute k-NN Database ---
@@ -523,12 +592,17 @@ def main(cfg: Dict):
     wandb.summary["mean_delta_proxy_score"] = masking_results_df['delta_proxy_score'].mean()
 
     correlation_plot_paths = analyze_masking_exp(masking_results_df=masking_results_df, output_dir=os.path.join(visualization_dir, "plots"))
+    corr, p_value = spearmanr(masking_results_df['background_attention_total'], masking_results_df['delta_rank'])
+    print(f"\nSpearman Correlation (Background Attention vs. Delta Rank): {corr:.3f} (p-value: {p_value:.3f})")
+    wandb.summary["spearman_corr"] = corr
+    wandb.summary["spearman_p_value"] = p_value
 
     samples_to_plot = select_samples_for_visualization(
         df=masking_results_df,
         n_per_category=2, 
-        n_random=10        
+        n_random=10
     )
+    
 
     heatmap_paths = generate_heatmaps(
         samples_to_plot=samples_to_plot,

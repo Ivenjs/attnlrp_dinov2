@@ -301,6 +301,7 @@ def compute_knn_proxy_soft(
     score_margin = prob_friends - prob_foes
 
     return score_margin
+    #return score_prob
 
 def get_query_performance_metrics(
     query_embedding: torch.Tensor,

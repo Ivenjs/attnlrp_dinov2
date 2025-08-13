@@ -2,16 +2,16 @@ import os
 import shutil
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
-import yaml
+import pandas as pd
 from decord import VideoReader, cpu
 from psycopg2.extras import execute_values
 from tqdm import tqdm
 
-# Your corrected db_connect file
+# Assuming these utilities are in your project
+from utils import load_config 
 from db_connect import get_db_connection
 
 # --- Configure Logging ---
@@ -19,109 +19,133 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Constants ---
 FEATURE_TYPE = "body"
-DB_SCHEMA = "public" # This can be passed to get_db_connection
+DB_SCHEMA = "public"
 VIDEO_PATH_REPLACE_TUPLE = ("gorillatracker/video_data", "vast-gorilla")
 
-# --- Dataclass for clear data structure ---
-@dataclass
-class ImageMetadata:
-    source_path: Path
-    output_name: str
-    frame_nr: int
-    tracking_id: int
+# --- Helper Functions ---
 
-# --- Helper Functions (mostly unchanged, but using Path and logging) ---
-
-def get_cropped_images_for_each_class(image_dir: Path, num_images_per_class: int = 1) -> dict[str, list[Path]]:
+def get_sampled_images_per_class(base_dir: Path, num_images_per_class: int = 1) -> dict[str, list[Path]]:
+    """
+    Scans specified subdirectories (train, val, test) and samples images for each class.
+    """
     class_images = defaultdict(list)
-    for filepath in image_dir.rglob("*.png"):
-        try:
-            class_label = filepath.name.split("_")[0]
-            if len(class_images[class_label]) < num_images_per_class:
-                class_images[class_label].append(filepath)
-        except IndexError:
-            logging.warning(f"Could not parse class from filename: {filepath.name}")
+    splits_to_scan = ["train", "val", "test"] # Explicitly define the subdirectories
+
+    for split in splits_to_scan:
+        split_dir = base_dir / split
+        if not split_dir.is_dir():
+            logging.warning(f"Split directory not found, skipping: {split_dir}")
+            continue
+        
+        logging.info(f"Scanning for images in {split_dir}...")
+        # Use rglob on the split_dir in case there are nested folders within it.
+        # If images are guaranteed to be at the top level, you can use .glob("*.png")
+        for filepath in split_dir.rglob("*.png"):
+            try:
+                class_label = filepath.name.split("_")[0]
+                if len(class_images[class_label]) < num_images_per_class:
+                    class_images[class_label].append(filepath)
+            except IndexError:
+                logging.warning(f"Could not parse class from filename: {filepath.name}")
+    
+    found_count = sum(len(paths) for paths in class_images.values())
+    logging.info(f"Sampled {found_count} images across {len(class_images)} classes from all splits.")
     return dict(class_images)
 
-def extract_frames_batch(video_path: str, frame_numbers: list[int]) -> dict[int, object]:
-    if not os.path.exists(video_path):
-        logging.warning(f"Video file not found: {video_path}. Skipping frames.")
-        return {}
+def parse_image_info_to_df(image_paths: list[Path]) -> pd.DataFrame:
+    """Parses frame_nr and tracking_id from a list of Path objects into a DataFrame."""
+    records = []
+    for img_path in image_paths:
+        try:
+            parts = img_path.stem.split("_")
+            records.append({
+                "source_path": img_path,
+                "frame_nr": int(parts[-2]),
+                "tracking_id": int(parts[-1]),
+            })
+        except (ValueError, IndexError):
+            logging.warning(f"Could not parse metadata from filename '{img_path.name}'. Skipping.")
+    return pd.DataFrame(records)
+
+def fetch_video_paths_for_df(file_df: pd.DataFrame, db_schema: str, feature_type: str) -> pd.DataFrame:
+    """Enriches a DataFrame with video paths from the database using a robust batch query."""
+    if file_df.empty:
+        return file_df
+
+    logging.info(f"Querying database for video paths of {len(file_df)} images...")
+    
+    data_to_query = [(row.frame_nr, row.tracking_id, feature_type) for row in file_df.itertuples()]
+
     try:
-        with VideoReader(video_path, ctx=cpu(0)) as vr:
-            frames = vr.get_batch(frame_numbers).asnumpy()
-            return {num: frame for num, frame in zip(frame_numbers, frames)}
+        with get_db_connection(schema=db_schema) as cursor:
+            query = """
+                WITH v(frame_nr, tracking_id, feature_type) AS (
+                    VALUES %s
+                )
+                SELECT
+                    v.frame_nr,
+                    v.tracking_id,
+                    t.absolute_path AS video_path
+                FROM tracking_frame_feature AS tff
+                JOIN video AS t ON tff.video_id = t.video_id
+                JOIN v ON tff.frame_nr = v.frame_nr
+                     AND tff.tracking_id = v.tracking_id
+                     AND tff.feature_type = v.feature_type
+            """
+            execute_values(cursor, query, data_to_query, page_size=500)
+            results = cursor.fetchall()
+
+            if not results:
+                logging.warning("No matching video paths found in the database.")
+                return pd.DataFrame(columns=file_df.columns.tolist() + ["video_path"])
+
+            db_df = pd.DataFrame(results, columns=["frame_nr", "tracking_id", "video_path"])
+            enriched_df = pd.merge(file_df, db_df, on=["frame_nr", "tracking_id"], how="left")
+
+            if VIDEO_PATH_REPLACE_TUPLE:
+                enriched_df["video_path"] = enriched_df["video_path"].str.replace(
+                    VIDEO_PATH_REPLACE_TUPLE[0], VIDEO_PATH_REPLACE_TUPLE[1], regex=False
+                )
+            return enriched_df
+
     except Exception as e:
-        logging.error(f"Error reading video {video_path}: {e}")
-        return {}
+        logging.critical(f"Database query failed: {e}")
+        return pd.DataFrame(columns=file_df.columns.tolist() + ["video_path"])
 
-def _parse_image_info(img_path: Path) -> ImageMetadata | None:
-    try:
-        parts = img_path.stem.split("_")
-        return ImageMetadata(
-            source_path=img_path,
-            output_name=img_path.name,
-            frame_nr=int(parts[-2]),
-            tracking_id=int(parts[-1]),
-        )
-    except (IndexError, ValueError) as e:
-        logging.warning(f"Could not parse metadata from filename '{img_path.name}': {e}")
-        return None
 
-# --- BATCH QUERY FUNCTION (MODIFIED FOR PSYCOPG2) ---
-
-def _fetch_video_paths_in_batch(cursor, all_metadata: list[ImageMetadata]) -> dict[tuple[int, int], str]:
-    """
-    Fetches video paths for a list of identifiers using psycopg2's execute_values.
-    """
-    if not all_metadata:
-        return {}
-
-    # Create a list of (frame_nr, tracking_id) tuples for the query
-    identifiers = [(meta.frame_nr, meta.tracking_id) for meta in all_metadata]
-    
-    # This query joins the main table against a temporary table of values
-    # created by execute_values. This is the standard, efficient pattern for psycopg2.
-    query = f"""
-        SELECT 
-            v.frame_nr,
-            v.tracking_id,
-            t.absolute_path
-        FROM tracking_frame_feature AS tff
-        JOIN video AS t ON tff.video_id = t.video_id
-        JOIN (VALUES %s) AS v(frame_nr, tracking_id) 
-            ON tff.frame_nr = v.frame_nr AND tff.tracking_id = v.tracking_id
-        WHERE tff.feature_type = %s
-    """
-    
-    logging.info(f"Executing batch query for {len(identifiers)} identifiers...")
-    # execute_values(cursor, sql_template, data_tuples, template_for_data)
-    execute_values(cursor, query, identifiers, template=None, page_size=100)
-    
-    results = {}
-    for frame_nr, tracking_id, video_path in cursor.fetchall():
-        if VIDEO_PATH_REPLACE_TUPLE:
-            video_path = video_path.replace(VIDEO_PATH_REPLACE_TUPLE[0], VIDEO_PATH_REPLACE_TUPLE[1])
-        results[(frame_nr, tracking_id)] = video_path
-        
-    logging.info(f"Found video paths for {len(results)} identifiers.")
-    return results
-
-def _extract_and_save_whole_frames(videos_to_process: dict[str, list[tuple[int, str]]], whole_images_dir: Path):
+def extract_and_save_whole_frames(df_with_paths: pd.DataFrame, output_dir: Path):
     """Iterates through videos, extracts frames in batches, and saves them."""
-    logging.info(f"Processing {len(videos_to_process)} unique videos...")
-    for video_path, frame_requests in tqdm(videos_to_process.items(), desc="Extracting frames"):
-        frame_numbers = [req[0] for req in frame_requests]
-        output_names = {req[0]: req[1] for req in frame_requests}
+    if 'video_path' not in df_with_paths.columns or df_with_paths['video_path'].isnull().all():
+        logging.error("No video paths found in the DataFrame. Cannot extract frames.")
+        return
+
+    # Group by video to process each video only once
+    for video_path, group in tqdm(df_with_paths.groupby("video_path"), desc="Extracting full frames"):
+        if pd.isna(video_path):
+            logging.warning(f"Skipping {len(group)} images with no associated video path.")
+            continue
+
+        frame_requests = group[["frame_nr", "source_path"]].to_dict('records')
+        frame_numbers = [req["frame_nr"] for req in frame_requests]
         
-        logging.info(f"Extracting {len(frame_numbers)} frames from {video_path}...")
-        extracted_frames = extract_frames_batch(video_path, frame_numbers)
+        logging.info(f"Extracting {len(frame_numbers)} frames from {video_path}")
         
-        for frame_num, frame_data in extracted_frames.items():
-            if frame_data is not None:
-                output_name = output_names[frame_num]
-                frame_save_path = whole_images_dir / f"{Path(output_name).stem}.png"
-                cv2.imwrite(str(frame_save_path), frame_data)
+        # Extract frames in one batch
+        try:
+            with VideoReader(video_path, ctx=cpu(0)) as vr:
+                extracted_frames = vr.get_batch(frame_numbers).asnumpy()
+                frame_map = {num: frame for num, frame in zip(frame_numbers, extracted_frames)}
+        except Exception as e:
+            logging.error(f"Error reading video {video_path}: {e}. Skipping this video.")
+            continue
+
+        # Save the extracted frames
+        for req in frame_requests:
+            frame_num = req["frame_nr"]
+            if frame_num in frame_map:
+                output_name = req["source_path"].name
+                save_path = output_dir / output_name
+                cv2.imwrite(str(save_path), frame_map[frame_num])
             else:
                 logging.warning(f"Failed to extract frame {frame_num} from {video_path}")
 
@@ -129,57 +153,49 @@ def _extract_and_save_whole_frames(videos_to_process: dict[str, list[tuple[int, 
 
 def main():
     """Main script execution."""
-    config_path = Path("/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs/data.yaml")
-    with config_path.open("r") as f:
-        cfg = yaml.safe_load(f)
+    # Use your config loader
+    cfg = load_config("finetuned", [])
     
-    dataset_dir = Path(cfg['dataset_dir'])
-    dataset_dir = Path("/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval")
+    # --- Configuration ---
+    # Use Path objects for modern, OS-agnostic path handling
+    dataset_dir = Path(cfg["data"]['dataset_dir'])
     save_dir = Path("/workspaces/vast-gorilla/gorillawatch/iven_thesis/frames_to_label")
-    num_images_per_class = 1
+    num_images_per_class = 3
 
-    cropped_images_dir = save_dir / "cropped_images"
-    whole_images_dir = save_dir / "whole_images"
+    cropped_images_dir = save_dir / "sampled_cropped_images"
+    whole_images_dir = save_dir / "corresponding_whole_images"
     cropped_images_dir.mkdir(parents=True, exist_ok=True)
     whole_images_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1. Sample N cropped images for each class from the dataset directory
     logging.info(f"Scanning for images in {dataset_dir}...")
-    class_images = get_cropped_images_for_each_class(dataset_dir, num_images_per_class)
+    class_images_map = get_sampled_images_per_class(dataset_dir, num_images_per_class)
     
-    all_metadata = []
-    for images in tqdm(class_images.values(), desc="Processing cropped images"):
-        for img_path in images:
-            shutil.copy(img_path, cropped_images_dir / img_path.name)
-            metadata = _parse_image_info(img_path)
-            if metadata:
-                all_metadata.append(metadata)
+    # Flatten the list of all sampled image paths
+    all_sampled_paths = [path for paths in class_images_map.values() for path in paths]
 
-    if not all_metadata:
-        logging.info("No valid images found to process.")
+    if not all_sampled_paths:
+        logging.info("No images were sampled. Exiting.")
         return
 
-    video_path_map = {}
-    try:
-        # The 'with' statement now correctly manages the connection and cursor!
-        with get_db_connection(schema=DB_SCHEMA) as cursor:
-            video_path_map = _fetch_video_paths_in_batch(cursor, all_metadata)
-    except Exception as e:
-        # The error from the DB will be caught here
-        logging.critical(f"Could not complete database operations. Aborting. Error: {e}")
-        return
+    # 2. Copy the sampled cropped images to the output directory
+    logging.info(f"Copying {len(all_sampled_paths)} sampled cropped images to {cropped_images_dir}...")
+    for img_path in tqdm(all_sampled_paths, desc="Copying cropped images"):
+        shutil.copy(img_path, cropped_images_dir / img_path.name)
+    
+    # 3. Parse filenames to get frame_nr and tracking_id
+    file_info_df = parse_image_info_to_df(all_sampled_paths)
 
-    videos_to_process = defaultdict(list)
-    for meta in all_metadata:
-        key = (meta.frame_nr, meta.tracking_id)
-        if key in video_path_map:
-            video_path = video_path_map[key]
-            videos_to_process[video_path].append((meta.frame_nr, meta.output_name))
-        else:
-            logging.warning(f"No DB entry found for {meta.output_name} (frame: {meta.frame_nr}, track: {meta.tracking_id})")
+    # 4. Fetch the corresponding video paths from the database
+    df_with_paths = fetch_video_paths_for_df(file_info_df, DB_SCHEMA, FEATURE_TYPE)
 
-    _extract_and_save_whole_frames(videos_to_process, whole_images_dir)
+    # 5. Extract and save the full frames
+    extract_and_save_whole_frames(df_with_paths, whole_images_dir)
 
     logging.info("Processing complete.")
+    logging.info(f"Sampled cropped images are in: {cropped_images_dir}")
+    logging.info(f"Corresponding full frames are in: {whole_images_dir}")
+
 
 if __name__ == "__main__":
     main()

@@ -17,69 +17,76 @@ def get_class_label(filename: str) -> str:
 
 def get_balanced_individual_splits(
     train_files: List[str],
-    holdout_percentage: float
+    holdout_percentage: float,
+    queries_per_class: int = 3
 ) -> Tuple[List[str], List[str], List[str], List[str]]:
     """
     Splits individuals into disjunct tune/holdout sets while balancing image counts.
+    Allows multiple query images per individual.
+    
+    Args:
+        train_files: list of all image file paths
+        holdout_percentage: fraction of individuals to put in holdout
+        queries_per_class: number of query images to select per individual (if available)
+    
     Returns:
-        - tune_query_files
-        - tune_db_files
-        - holdout_query_files
-        - holdout_db_files
+        tune_query_files, tune_db_files, holdout_query_files, holdout_db_files
     """
-
+    
     # Group files by individual
     gorillas_to_files = defaultdict(list)
     for f in train_files:
         label = get_class_label(f)
         gorillas_to_files[label].append(f)
 
+    # Shuffle file order within each individual to avoid bias
+    for files in gorillas_to_files.values():
+        random.shuffle(files)
+
     # Get a list of all unique individuals
     individuals = list(gorillas_to_files.keys())
-    random.shuffle(individuals) # Shuffle to ensure a random split
+    random.shuffle(individuals)  # Shuffle to ensure a random split
 
-    # Calculate the split index based on the percentage of INDIVIDUALS
+    # Calculate the split index
     num_individuals = len(individuals)
     split_idx = int(num_individuals * holdout_percentage)
 
-    # Ensure we have at least one individual in the holdout set if possible
     if num_individuals > 1 and split_idx == 0:
         split_idx = 1
-        
-    # Ensure we have at least one individual in the tune set if possible
     if num_individuals > 1 and split_idx == num_individuals:
         split_idx = num_individuals - 1
 
-    # Split the individuals into holdout and tune sets
     holdout_inds = individuals[:split_idx]
     tune_inds = individuals[split_idx:]
 
-    # Check sanity
     assert set(tune_inds).isdisjoint(holdout_inds), "Individuals must be disjunct"
 
-    # Construct query + DB files
-    tune_query_files = [
-        random.choice(gorillas_to_files[ind])
-        for ind in tune_inds
-        if len(gorillas_to_files[ind]) > 1
-    ]
-    holdout_query_files = [
-        random.choice(gorillas_to_files[ind])
-        for ind in holdout_inds
-        if len(gorillas_to_files[ind]) > 1
-    ]
+    # Select queries
+    tune_query_files = []
+    for ind in tune_inds:
+        files = gorillas_to_files[ind]
+        if len(files) > 1:
+            n_queries = min(queries_per_class, len(files) - 1)  # leave at least 1 for db
+            tune_query_files.extend(random.sample(files, n_queries))
 
+    holdout_query_files = []
+    for ind in holdout_inds:
+        files = gorillas_to_files[ind]
+        if len(files) > 1:
+            n_queries = min(queries_per_class, len(files) - 1)
+            holdout_query_files.extend(random.sample(files, n_queries))
+
+    # DB = all files for that individual
     tune_db_files = [f for ind in tune_inds for f in gorillas_to_files[ind]]
     holdout_db_files = [f for ind in holdout_inds for f in gorillas_to_files[ind]]
 
-    print(f"Tune: {len(tune_inds)} individuals, {len(tune_db_files)} images in db, {len(tune_query_files)} images in queries")
-    print(f"Holdout: {len(holdout_inds)} individuals, {len(holdout_db_files)} images in db, {len(holdout_query_files)} images in queries")
+    print(f"Tune: {len(tune_inds)} inds, {len(tune_db_files)} db imgs, {len(tune_query_files)} queries")
+    print(f"Holdout: {len(holdout_inds)} inds, {len(holdout_db_files)} db imgs, {len(holdout_query_files)} queries")
 
-    assert len(tune_query_files) <= len(tune_db_files), "Tune query files must be a subset of DB files"
-    assert len(holdout_query_files) <= len(holdout_db_files), "Holdout query files must be a subset of DB files"
-    assert len(tune_query_files) != 0, "Tune query files cannot be empty"
-    assert len(holdout_query_files) != 0, "Holdout query files cannot be empty"
-
+    assert set(tune_query_files).issubset(tune_db_files)
+    assert set(holdout_query_files).issubset(holdout_db_files)
+    assert tune_query_files, "Tune query files cannot be empty"
+    assert holdout_query_files, "Holdout query files cannot be empty"
 
     return tune_query_files, tune_db_files, holdout_query_files, holdout_db_files
 
