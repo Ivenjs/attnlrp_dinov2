@@ -154,20 +154,18 @@ def parse_image_info_to_df(image_paths: list[Path]) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 def fetch_video_paths_for_df(file_df: pd.DataFrame, db_schema: str, feature_type: str) -> pd.DataFrame:
-    """Enriches a DataFrame with video paths from the database using a robust batch query."""
     if file_df.empty:
         return file_df
 
     logging.info(f"Querying database for video paths of {len(file_df)} images...")
-    
-    data_to_query = [(row.frame_nr, row.tracking_id, feature_type) for row in file_df.itertuples()]
+
+    data_to_query = [(int(row.frame_nr), int(row.tracking_id), feature_type) for row in file_df.itertuples()]
+    all_results = []
 
     try:
         with get_db_connection(schema=db_schema) as cursor:
             query = """
-                WITH v(frame_nr, tracking_id, feature_type) AS (
-                    VALUES %s
-                )
+                WITH v(frame_nr, tracking_id, feature_type) AS (VALUES %s)
                 SELECT
                     v.frame_nr,
                     v.tracking_id,
@@ -178,21 +176,31 @@ def fetch_video_paths_for_df(file_df: pd.DataFrame, db_schema: str, feature_type
                      AND tff.tracking_id = v.tracking_id
                      AND tff.feature_type = v.feature_type
             """
-            execute_values(cursor, query, data_to_query, page_size=500)
-            results = cursor.fetchall()
 
-            if not results:
-                logging.warning("No matching video paths found in the database.")
-                return pd.DataFrame(columns=file_df.columns.tolist() + ["video_path"])
+            BATCH = 1000  # oder was bequem passt
+            for i in range(0, len(data_to_query), BATCH):
+                chunk = data_to_query[i:i+BATCH]
+                # EIN Query pro Chunk => EIN fetchall pro Chunk
+                from psycopg2.extras import execute_values
+                execute_values(cursor, query, chunk, page_size=len(chunk))
+                all_results.extend(cursor.fetchall())
 
-            db_df = pd.DataFrame(results, columns=["frame_nr", "tracking_id", "video_path"])
-            enriched_df = pd.merge(file_df, db_df, on=["frame_nr", "tracking_id"], how="left")
+        if not all_results:
+            logging.warning("No matching video paths found in the database.")
+            return pd.DataFrame(columns=file_df.columns.tolist() + ["video_path"])
 
-            if VIDEO_PATH_REPLACE_TUPLE:
-                enriched_df["video_path"] = enriched_df["video_path"].str.replace(
-                    VIDEO_PATH_REPLACE_TUPLE[0], VIDEO_PATH_REPLACE_TUPLE[1], regex=False
-                )
-            return enriched_df
+        db_df = pd.DataFrame(all_results, columns=["frame_nr", "tracking_id", "video_path"])
+        enriched_df = pd.merge(file_df, db_df, on=["frame_nr", "tracking_id"], how="left")
+
+        if VIDEO_PATH_REPLACE_TUPLE:
+            enriched_df["video_path"] = enriched_df["video_path"].str.replace(
+                VIDEO_PATH_REPLACE_TUPLE[0], VIDEO_PATH_REPLACE_TUPLE[1], regex=False
+            )
+
+        matched = enriched_df["video_path"].notna().sum()
+        logging.info(f"DB match rate: {matched}/{len(enriched_df)} ({matched/len(enriched_df):.1%})")
+
+        return enriched_df
 
     except Exception as e:
         logging.critical(f"Database query failed: {e}")

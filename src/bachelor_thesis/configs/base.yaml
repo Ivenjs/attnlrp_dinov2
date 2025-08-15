@@ -1,7 +1,7 @@
 data:
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated"
-  dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
+  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated"
+  #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
   batch_size: 8
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
   output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
