@@ -1,4 +1,4 @@
-from utils import get_db_path, load_config
+from utils import get_db_path, get_mask_transform, load_config
 from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
@@ -107,9 +107,9 @@ def run_masking_experiment(
                 ).item()
 
                 # --- 2. Masked Performance ---
-                if cfg["eval"]["baseline"] == "black":
+                if cfg["eval"]["baseline_value"] == "black":
                     image_masked = image_orig * mask
-                elif cfg["eval"]["baseline"] == "mean":
+                elif cfg["eval"]["baseline_value"] == "mean":
                     mean_color = image_orig.mean(dim=[2, 3], keepdim=True) # Shape: [1, C, 1, 1]
                     background_fill = mean_color.expand_as(image_orig)
                     image_masked = image_orig * mask + background_fill * (1 - mask)
@@ -408,7 +408,6 @@ def main(cfg: Dict):
     monkey_patch_zennit(verbose=True)
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    VERBOSE = False
     random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
 
@@ -441,13 +440,7 @@ def main(cfg: Dict):
     val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
 
 
-    mask_transform = transforms.Compose([
-        transforms.Resize(
-            size=cfg["model"]["img_size"],
-            interpolation=transforms.InterpolationMode.NEAREST
-        ),
-        transforms.ToTensor(),
-    ])
+    mask_transform = get_mask_transform(cfg["model"]["img_size"])
 
     val_dataset = GorillaReIDDataset(
         image_dir=val_dir,
@@ -500,13 +493,11 @@ def main(cfg: Dict):
         db_labels=db_labels
     )
 
-    relevance_mask_dict = {
-        item['filename']: (item['relevance'], item['mask']) for item in relevances_all
+
+    scores = {
+        item['filename']: attention_inside_mask(item['relevance'], item['mask'])
+        for item in relevances_all
     }
-
-
-    scores = {filename: attention_inside_mask(relevance, mask)
-              for filename, (relevance, mask) in relevance_mask_dict.items()}
 
     # --- 5. Run Masking Experiment ---
     masking_results_df = run_masking_experiment(
@@ -548,7 +539,9 @@ def main(cfg: Dict):
         n_random=10
     )
     
-
+    relevance_mask_dict = {
+        item['filename']: (item['relevance'], item['mask']) for item in relevances_all
+    }
     heatmap_paths = generate_heatmaps(
         samples_to_plot=samples_to_plot,
         masking_results_df=masking_results_df,

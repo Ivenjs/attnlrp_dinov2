@@ -87,7 +87,7 @@ def get_knn_db(
     """
     if os.path.exists(db_path):
         print(f"Loading existing k-NN database: {db_path}")
-        db_data = torch.load(db_path, map_location=device)
+        db_data = torch.load(db_path, map_location=device, weights_only=False)
         return db_data["embeddings"], db_data["labels"], db_data["filenames"], db_data["videos"]
     else:
         print(f"k-NN database not found. Creating new one at: {db_path}")

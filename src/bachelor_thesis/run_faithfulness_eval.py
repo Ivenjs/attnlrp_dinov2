@@ -1,9 +1,11 @@
 import os
+import random
+import subprocess
 import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-from utils import get_db_path, load_config
+from utils import get_db_path, get_mask_transform, load_config
 from basemodel import get_model_wrapper
 from dataset import GorillaReIDDataset, custom_collate_fn
 from model_evaluation import evaluate_model
@@ -11,23 +13,30 @@ from dataset import PerturbedGorillaReIDDataset
 from lrp_helpers import get_relevances
 from knn_helpers import get_knn_db 
 import argparse 
+from lxt.efficient import monkey_patch_zennit
 
 
 
 def run_experiment(cfg):
     # --- 1. Standard Setup ---
+    monkey_patch_zennit(verbose=True)
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
-    
+    random.seed(cfg["seed"])
+    torch.manual_seed(cfg["seed"])
     split_name = "validation"
     val_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
     val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
     
+    mask_transform = get_mask_transform(cfg["model"]["img_size"])
+
     # Create the base validation dataset
     base_val_dataset = GorillaReIDDataset(
         image_dir=val_dir,
         filenames=val_files,
         transform=image_transforms,
+        base_mask_dir=cfg["data"]["base_mask_dir"],
+        mask_transform=mask_transform,
         k=cfg["knn"]["k"], 
     )
 
@@ -46,7 +55,7 @@ def run_experiment(cfg):
         device=DEVICE
     )
     
-    val_dataloader = DataLoader(base_val_dataset, batch_size=cfg["data"]["batch_size"], shuffle=False, collate_fn=custom_collate_fn)
+    val_dataloader = DataLoader(base_val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0,shuffle=False, collate_fn=custom_collate_fn)
 
 
     db_path_relevances = get_db_path(
@@ -159,5 +168,11 @@ if __name__ == "__main__":
     args, unknown_args = parser.parse_known_args()
 
     cfg = load_config(args.config_name, unknown_args)
+
+    # Also has to be run because of the caching of the relevance and mask values
+    result = subprocess.run(
+        ["python", "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py", "--config_name", args.config_name],
+        check=True
+    )
 
     run_experiment(cfg)

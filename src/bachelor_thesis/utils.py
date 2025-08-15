@@ -6,9 +6,19 @@ from collections import defaultdict
 import random
 from PIL import Image
 from omegaconf import OmegaConf
+from torchvision import transforms
 
 from dataset import GorillaReIDDataset
 
+
+def get_mask_transform(img_size):
+    return transforms.Compose([
+        transforms.Resize(
+            size=img_size,
+            interpolation=transforms.InterpolationMode.NEAREST
+        ),
+        transforms.ToTensor(),
+    ])
 
 def get_class_label(filename: str) -> str:
     """

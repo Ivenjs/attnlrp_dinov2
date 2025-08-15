@@ -246,7 +246,6 @@ def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[fl
         Tuple[float, float, float]:
             (total_fraction, positive_fraction, negative_fraction)
     """
-
     target_size = relevance.shape[-2:]  # e.g., (518, 518)
     mask_tensor = torch.from_numpy(mask).to(relevance.device)
 

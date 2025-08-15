@@ -265,7 +265,7 @@ def load_timm_wrapper(
     model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, model_dtype=model_dtype,img_size=image_size)
 
     if finetuned:
-        checkpoint_best = torch.load(checkpoint_path, map_location=device)
+        checkpoint_best = torch.load(checkpoint_path, map_location=device, weights_only=False)
         cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
         msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
         #print(f"State dict loading message: {msg}")

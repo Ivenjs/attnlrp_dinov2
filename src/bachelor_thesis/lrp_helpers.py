@@ -167,7 +167,6 @@ def generate_relevances(
     all_results = []
 
     print("--- Starting Relevance Generation ---")
-
     # Validate inputs for KNN mode
     if mode == "knn":
         assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
@@ -231,7 +230,6 @@ def generate_relevances(
                     mask_tensor_single = mask_batch[j]
                     if mask_tensor_single is not None:
                             mask_single = mask_tensor_single.cpu().numpy()
-
                     result_item = {
                         "filename": filename,
                         "params": {
@@ -259,7 +257,7 @@ def get_relevances(
 ) -> Dict[str, Tuple[torch.Tensor, any]]:
     if os.path.exists(db_path) and not recompute:
         print(f"Loading cached relevance dictionary from: {db_path}")
-        return torch.load(db_path, map_location="cpu")
+        return torch.load(db_path, map_location="cpu", weights_only=False)
 
     # 2. If no cache, perform the computation
     print(f"Relevance db not found. Computing relevances...")
