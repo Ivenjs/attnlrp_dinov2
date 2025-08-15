@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=gamma_sweep
+#SBATCH --job-name=faithfulness_eval
 #SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=100G
-#SBATCH --cpus-per-task=6
-#SBATCH --time=05:00:00
+#SBATCH --cpus-per-task=10
+#SBATCH --time=10:00:00
 #SBATCH --gres=gpu:h100:1
 #SBATCH -p aisc 
 #SBATCH --account=aisc 
@@ -39,6 +39,6 @@ srun --container-image=/sc/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatc
      --container-mounts=/sc/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/sc/projects/sci-aisc/gorilla/:/workspaces/vast-gorilla \
      --container-writable \
      bash -c "cd /workspaces/bachelor_thesis_code && \
-              /opt/conda/envs/research/bin/python src/bachelor_thesis/run_dinov2_attnlrp_sweep.py \
+              /opt/conda/envs/research/bin/python src/bachelor_thesis/run_faithfulness_eval.py \
               --config_name ${EXPERIMENT_NAME} \
               ${CONFIG_OVERRIDES}"

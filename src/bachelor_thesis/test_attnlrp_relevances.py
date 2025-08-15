@@ -42,7 +42,7 @@ def compute_conservation_pass(
 
 class TestLRPConservation(unittest.TestCase):
 
-    def test_dinov2_patches_conserve_relevance(self):
+    def test_dinov2_patches_conserve_relevance(self, cfg):
         """
         Verifies that the DINOPatcher implementation correctly conserves relevance.
         This test is run in an idealized environment:
@@ -52,7 +52,7 @@ class TestLRPConservation(unittest.TestCase):
         """
         DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         VERBOSE = True  
-        torch.manual_seed(27)  
+        torch.manual_seed(cfg["seed"])  
 
         model_wrapper, _, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
         

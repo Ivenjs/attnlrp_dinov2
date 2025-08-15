@@ -3,8 +3,8 @@ model:
   checkpoint_path: "base" # not really a path but still works
 
 knn:
-  temp: 0.1
+  temp: 0.01
   
 lrp:
-  conv_gamma: 0.1
+  conv_gamma: 0.001
   lin_gamma: 0.001

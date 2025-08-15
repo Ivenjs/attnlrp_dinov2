@@ -1,29 +1,22 @@
 import torch
 from lxt.efficient import monkey_patch_zennit
-import pandas as pd
-import yaml
 import os
-from PIL import Image
-from pathlib import Path
 import argparse
 import random
 from collections import defaultdict
-import wandb
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from basemodel import get_model_wrapper
-from dinov2_attnlrp_sweep import (
-    run_gamma_sweep, 
+from sweep_helpers import (
     evaluate_gamma_sweep, 
     print_robustness_summary, 
-    visualize_robustness_analysis, 
     find_robust_hyperparameters,
     log_nested_validation_to_wandb
     )
 from knn_helpers import get_knn_db
 from dataset import GorillaReIDDataset, custom_collate_fn
-from utils import get_balanced_individual_splits, load_config
+from utils import get_balanced_individual_splits, get_db_path, load_config
+from lrp_helpers import generate_relevances
 
 
 
@@ -33,8 +26,8 @@ def main(cfg: dict):
     LOG_TO_WANDB = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     VERBOSE = False  
-    random.seed(27)  
-    torch.manual_seed(27)  
+    random.seed(cfg["seed"])  
+    torch.manual_seed(cfg["seed"])  
 
 
     MODE = cfg["lrp"]["mode"]
@@ -79,17 +72,42 @@ def main(cfg: dict):
     print("\n--- RUNNING FULL SWEEP ON TUNE SET ---")
     tune_db_split_name = "explainer_tune" 
 
-    tune_db_embeddings, tune_db_labels, tune_db_filenames = get_knn_db(
-        db_dir=cfg["knn"]["db_embeddings_dir"], split_name=tune_db_split_name, dataset=tune_db_dataset,
-        model_wrapper=model_wrapper, model_checkpoint_path=cfg["model"]["checkpoint_path"], batch_size=cfg["data"]["batch_size"], device=DEVICE
+    tune_db_path = get_db_path(
+        model_checkpoint_path=cfg["model"]["checkpoint_path"],
+        dataset=tune_db_dataset,
+        split_name=tune_db_split_name,
+        db_dir=cfg["knn"]["db_embeddings_dir"]
+    )
+    tune_db_embeddings, tune_db_labels, tune_db_filenames, _ = get_knn_db(
+        db_path=tune_db_path,
+        dataset=tune_db_dataset,
+        model_wrapper=model_wrapper,
+        batch_size=cfg["data"]["batch_size"],
+        device=DEVICE
     )
 
     tune_dataloader = DataLoader(tune_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn,shuffle=False)
-
-    tune_relevances = run_gamma_sweep(
-        model_wrapper, tune_dataloader, DEVICE, MODE, tune_db_embeddings, tune_db_filenames, tune_db_labels,
-        cfg["sweep"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
+    
+    tune_relevances_all = generate_relevances(
+        model_wrapper=model_wrapper,
+        dataloader=tune_dataloader,
+        device=DEVICE,
+        mode=MODE,
+        db_embeddings=tune_db_embeddings,
+        db_filenames=tune_db_filenames,
+        db_labels=tune_db_labels,
+        conv_gamma_values=cfg["sweep"]["conv_gammas"],
+        lin_gamma_values=cfg["sweep"]["lin_gammas"],
+        proxy_temp_values=cfg["sweep"]["temp"],  
+        distance_metrics=cfg["sweep"]["distance_metrics"]
     )
+
+    tune_relevances = defaultdict(dict)
+    for item in tune_relevances_all:
+        p = item['params']
+        key = (p['conv_gamma'], p['lin_gamma'], p['distance_metric'], p['proxy_temp'])
+        tune_relevances[item['filename']][key] = item['relevance']
+
     tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
         tune_relevances, tune_eval_dataloader, model_wrapper,
@@ -102,16 +120,41 @@ def main(cfg: dict):
     print("\n--- RUNNING FULL SWEEP ON HOLDOUT SET ---")
     holdout_db_split_name = "explainer_holdout"
 
-    holdout_db_embeddings, holdout_db_labels, holdout_db_filenames = get_knn_db(
-        db_dir=cfg["knn"]["db_embeddings_dir"], split_name=holdout_db_split_name, dataset=holdout_db_dataset,
-        model_wrapper=model_wrapper, model_checkpoint_path=cfg["model"]["checkpoint_path"], batch_size=cfg["data"]["batch_size"], device=DEVICE
+    holdout_db_path = get_db_path(
+        model_checkpoint_path=cfg["model"]["checkpoint_path"],
+        dataset=holdout_db_dataset,
+        split_name=holdout_db_split_name,
+        db_dir=cfg["knn"]["db_embeddings_dir"]
+    )
+    holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, _ = get_knn_db(
+        db_path=holdout_db_path,
+        dataset=holdout_db_dataset,
+        model_wrapper=model_wrapper,
+        batch_size=cfg["data"]["batch_size"],
+        device=DEVICE
     )
 
     holdout_dataloader = DataLoader(holdout_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
-    holdout_relevances = run_gamma_sweep(
-        model_wrapper, holdout_dataloader, DEVICE, MODE, holdout_db_embeddings, holdout_db_filenames, holdout_db_labels,
-        cfg["sweep"]["temp"], cfg["sweep"]["distance_metrics"], cfg["sweep"]["conv_gammas"], cfg["sweep"]["lin_gammas"], VERBOSE
+    holdout_relevances_all = generate_relevances(
+        model_wrapper=model_wrapper,
+        dataloader=holdout_dataloader,
+        device=DEVICE,
+        mode=MODE,
+        db_embeddings=holdout_db_embeddings,
+        db_filenames=holdout_db_filenames,
+        db_labels=holdout_db_labels,
+        conv_gamma_values=cfg["sweep"]["conv_gammas"],
+        lin_gamma_values=cfg["sweep"]["lin_gammas"],
+        proxy_temp_values=cfg["sweep"]["temp"],  
+        distance_metrics=cfg["sweep"]["distance_metrics"]
     )
+
+    holdout_relevances = defaultdict(dict)
+    for item in holdout_relevances_all:
+        p = item['params']
+        key = (p['conv_gamma'], p['lin_gamma'], p['distance_metric'], p['proxy_temp'])
+        holdout_relevances[item['filename']][key] = item['relevance']
+
     holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
         holdout_relevances, holdout_eval_dataloader, model_wrapper,

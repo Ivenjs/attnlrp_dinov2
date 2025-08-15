@@ -1,5 +1,4 @@
-from mask_generator import MaskGenerator
-from utils import load_config
+from utils import get_db_path, load_config
 from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
@@ -7,34 +6,26 @@ from basemodel import get_model_wrapper
 from knn_helpers import get_knn_db, get_query_performance_metrics, compute_knn_proxy_soft
 from eval_helpers import attention_inside_mask
 from tqdm import tqdm
-from typing import Dict, Tuple, Any, List
-from collections import defaultdict
-from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass
-from dino_patcher import DINOPatcher
+from typing import Dict, Tuple, List
+from lrp_helpers import get_relevances
 from basemodel import TimmWrapper
 from torch.utils.data import DataLoader
-from dinov2_attnlrp_sweep import run_gamma_sweep
 from visualize import AttentionVisualizer 
 import matplotlib.pyplot as plt
-from zennit.image import imgify
 from scipy.stats import spearmanr
 from omegaconf import OmegaConf
 import pandas as pd
-from PIL import Image
-import gc
-import numpy as np
 import subprocess
 import os
 import random
 import torch
 import argparse 
-import yaml 
 import wandb
 # 1) run sam to get segmentation masks of data split, if not already saved
 # 2) create dataset with masks
 # 3) run lrp with swept parameters on images in dataset and compute the mask score
-# 3a) compare basemodel vs finetuned model on val (maybe try train to see of results are better?)
-# 3b) compare finetuned model on train vs val (overfitting?)
+# 3a) compare basemodel vs finetuned model on validation (maybe try train to see of results are better?)
+# 3b) compare finetuned model on train vs validation (overfitting?)
 # 4) save worst performing images and mask their background. How does the knn score change? can I also recompute accuracy with only these few images?
 # mean faithfullness curves for finetuned model vs base model
 
@@ -163,70 +154,6 @@ def run_masking_experiment(
     print("--- Masking Experiment Complete ---")
     return pd.DataFrame(results_list)
 
-def compute_relevances(
-    model_wrapper: TimmWrapper, 
-    conv_gamma: float, 
-    lin_gamma: float, 
-    dataloader: DataLoader, 
-    device: torch.device,
-    db_embeddings: torch.Tensor = None, 
-    db_labels: List[str] = None, 
-    db_filenames: List[str] = None, 
-    proxy_temp: float = 0.1, 
-    mode: str = "knn", 
-    verbose: bool = False, 
-    distance_metric: str = "cosine"
-) -> Dict[float, Tuple[torch.Tensor, np.ndarray]]:
-    relevance_mask_dict = defaultdict(dict)
-    with DINOPatcher(model_wrapper):
-        for batch in tqdm(dataloader, desc="Processing batches"):
-            input_batch = batch["image"].to(device)
-            labels_batch = batch["label"]
-            filenames_batch = batch["filename"]
-            mask_batch = batch["mask"]
-            for j, filename in enumerate(filenames_batch):
-                # Slice the data for the j-th sample
-                input_tensor_single = input_batch[j].unsqueeze(0) 
-                label_single = labels_batch[j]
-
-                if mode == "simple":
-                    # Call the non-batched LRP function directly
-                    relevance_single = compute_simple_attnlrp_pass(
-                        conv_gamma=conv_gamma,
-                        lin_gamma=lin_gamma,
-                        model_wrapper=model_wrapper,
-                        input_tensor=input_tensor_single,  
-                        verbose=verbose  
-                    )
-
-                elif mode == "knn":
-                    assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
-                    assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
-                    # Call the non-batched LRP function directly
-                    relevance_single = compute_knn_attnlrp_pass(
-                        conv_gamma=conv_gamma,
-                        lin_gamma=lin_gamma,
-                        model_wrapper=model_wrapper,
-                        input_tensor=input_tensor_single,
-                        query_label=label_single,
-                        query_filename=filename,
-                        db_embeddings=db_embeddings,
-                        db_labels=db_labels,
-                        db_filenames=db_filenames,
-                        distance_metric=distance_metric,
-                        proxy_temp=proxy_temp,
-                        verbose=verbose, 
-                    )
-                mask_tensor_single = mask_batch[j]
-                assert mask_tensor_single is not None, f"Mask for {filename} is None. Cannot compute relevance."
-                mask_np_copy = mask_tensor_single.cpu().numpy()
-
-                # Store the final, safe data
-                # relevance_single is detached from graph and moved to CPU
-                # mask_np_copy is a plain NumPy array with no ties to the DataLoader
-                relevance_mask_dict[filename] = (relevance_single.detach().cpu(), mask_np_copy)
-    return relevance_mask_dict
-
 def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> List[str]:
     # --- Basic Analysis of the Results ---
     print("\n--- Masking Experiment Summary ---")
@@ -312,8 +239,8 @@ def create_binned_plot(
     Creates and saves a binned bar plot of a metric vs. an attention score.
     """
     try:
-        # Define bins for the attention score (0 to 1)
-        bins = [0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        # Define bins for the attention score (-1 to 1)
+        bins = [-1.0, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1.0]
         bin_labels = pd.cut(df[attention_col], bins=bins, include_lowest=True)
 
         # Group and aggregate
@@ -482,8 +409,8 @@ def main(cfg: Dict):
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     VERBOSE = False
-    random.seed(27)
-    torch.manual_seed(27)
+    random.seed(cfg["seed"])
+    torch.manual_seed(cfg["seed"])
 
     is_finetuned = cfg["model"]["finetuned"]
     model_type_str = "finetuned" if is_finetuned else "base"
@@ -510,7 +437,7 @@ def main(cfg: Dict):
     model_wrapper, image_transforms, model_data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
 
     root_dir = cfg["data"]["dataset_dir"]
-    val_dir = os.path.join(root_dir, "val")
+    val_dir = os.path.join(root_dir, "validation")
     val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
 
 
@@ -531,34 +458,52 @@ def main(cfg: Dict):
     )
 
     val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, collate_fn=custom_collate_fn, shuffle=False)
-    split_name = "val"
+    split_name = "validation"
 
     # --- 3. Compute k-NN Database ---
-    db_embeddings, db_labels, db_filenames = get_knn_db(
-        db_dir=cfg["knn"]["db_embeddings_dir"],
+    db_path_knn = get_db_path(
+        model_checkpoint_path=cfg["model"]["checkpoint_path"],
+        dataset=val_dataset,
         split_name=split_name,
+        db_dir=cfg["knn"]["db_embeddings_dir"]
+    )
+    db_embeddings, db_labels, db_filenames, _ = get_knn_db(
+        db_path=db_path_knn,
         dataset=val_dataset,
         model_wrapper=model_wrapper,
-        model_checkpoint_path=cfg["model"]["checkpoint_path"],
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE
     )
 
     # --- 4. Compute Relevances ---
-    relevance_mask_dict = compute_relevances(
+    db_path_relevances = get_db_path(
+        model_checkpoint_path=cfg["model"]["checkpoint_path"],
+        dataset=val_dataset,
+        split_name=split_name,
+        db_dir=cfg["lrp"]["db_relevances_dir"]
+    )
+
+    relevances_all = get_relevances(
+        db_path=db_path_relevances,
         model_wrapper=model_wrapper,
-        conv_gamma=cfg["lrp"]["conv_gamma"],
-        lin_gamma=cfg["lrp"]["lin_gamma"],
         dataloader=val_dataloader,
         device=DEVICE,
-        db_embeddings=db_embeddings,
-        db_labels=db_labels,
-        db_filenames=db_filenames,
-        proxy_temp=cfg["knn"]["temp"],
+        recompute=False,
+        # All of these will be caught by **kwargs and passed to generate_relevances
+        conv_gamma=cfg["lrp"]["conv_gamma"],           # Pass as single value (will be converted to list)
+        lin_gamma=cfg["lrp"]["lin_gamma"],             # Pass as single value
+        proxy_temp=cfg["knn"]["temp"],          # Pass as single value 
+        distance_metric=cfg["knn"]["distance_metric"], #pass as single value
         mode=cfg["lrp"]["mode"],
-        verbose=VERBOSE,
-        distance_metric=cfg["knn"]["distance_metric"]
+        db_embeddings=db_embeddings,
+        db_filenames=db_filenames,
+        db_labels=db_labels
     )
+
+    relevance_mask_dict = {
+        item['filename']: (item['relevance'], item['mask']) for item in relevances_all
+    }
+
 
     scores = {filename: attention_inside_mask(relevance, mask)
               for filename, (relevance, mask) in relevance_mask_dict.items()}

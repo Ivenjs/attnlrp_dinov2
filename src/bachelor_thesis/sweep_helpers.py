@@ -1,111 +1,20 @@
-import itertools
 import torch
-import torch.nn as nn
 from typing import List
-import yaml
 import os
-from PIL import Image
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import wandb
-from collections import defaultdict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from omegaconf import OmegaConf
 
-
-from lrp_helpers import compute_simple_attnlrp_pass, compute_knn_attnlrp_pass
 from basemodel import TimmWrapper
 from eval_helpers import srg_knn
 
 
-from dino_patcher import DINOPatcher
-
-CONV_GAMMAS = [0.1, 0.25, 1.0]
-LIN_GAMMAS = [0.0, 0.05, 0.1, 0.25]
-
-
-def run_gamma_sweep(
-    model_wrapper: TimmWrapper, 
-    dataloader: DataLoader,  
-    device: torch.device,
-    mode: str = "knn",
-    db_embeddings: torch.Tensor = None,  
-    db_filenames: List[str] = None,  
-    db_labels: List[str] = None,  
-    proxy_temp_values: List[float] = [0.1],
-    distance_metrics: List[str] = ["cosine"],
-    conv_gamma_values: List[float] = CONV_GAMMAS,
-    lin_gamma_values: List[float] = LIN_GAMMAS,
-    verbose: bool = False
-) -> Dict[str, Dict[Tuple[float, float, str], torch.Tensor]]:
-    """
-    Runs a sweep over gamma parameters for multiple inputs, managing patches efficiently.
-    """
-    all_relevances = defaultdict(dict)
-
-    print("--- Starting Gamma Sweep ---")
-    print("Patching model for LRP and Conservation Checking for the duration of the sweep...")
-
-    with DINOPatcher(model_wrapper):
-        
-        param_combinations = list(itertools.product(conv_gamma_values, lin_gamma_values, 
-                                                     distance_metrics, proxy_temp_values))
-        # Loop over gamma combinations for this input
-        for i, (conv_gamma, lin_gamma, distance_metric, proxy_temp) in enumerate(param_combinations):
-            print(f"\n=== Processing Param Combination {i+1}/{len(param_combinations)}: "
-                  f"conv_γ={conv_gamma}, lin_γ={lin_gamma}, dist={distance_metric}, proxy_temp={proxy_temp} ===")
-
-            for batch in tqdm(dataloader, desc="Processing batches"):
-                input_batch = batch["image"].to(device)
-                labels_batch = batch["label"]
-                filenames_batch = batch["filename"]
-
-                for j, filename in enumerate(filenames_batch):
-                    # Slice the data for the j-th sample
-                    input_tensor_single = input_batch[j].unsqueeze(0) # Keep batch dim of 1
-                    label_single = labels_batch[j]
-                    
-                    if mode == "simple":
-                        # Call the non-batched LRP function directly
-                        relevance_single = compute_simple_attnlrp_pass(
-                            conv_gamma=conv_gamma,
-                            lin_gamma=lin_gamma,
-                            model_wrapper=model_wrapper,
-                            input_tensor=input_tensor_single,  
-                            verbose=verbose  
-                        )
-
-                    elif mode == "knn":
-                        assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
-                        assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
-                        # Call the non-batched LRP function directly
-                        relevance_single = compute_knn_attnlrp_pass(
-                            conv_gamma=conv_gamma,
-                            lin_gamma=lin_gamma,
-                            model_wrapper=model_wrapper,
-                            input_tensor=input_tensor_single,
-                            query_label=label_single,
-                            query_filename=filename,
-                            db_embeddings=db_embeddings,
-                            db_labels=db_labels,
-                            db_filenames=db_filenames,
-                            distance_metric=distance_metric,
-                            proxy_temp=proxy_temp,
-                            verbose=verbose, 
-                        )
-
-                    # Store the result directly, no intermediate list/tensor needed.
-                    key = (conv_gamma, lin_gamma, distance_metric, proxy_temp)
-                    all_relevances[filename][key] = relevance_single.detach().cpu()
-
-    print("\n--- Gamma Sweep Complete ---")
-    print("Model has been restored to its original state.")
-
-    return dict(all_relevances)
 
 def evaluate_gamma_sweep(
     relevances_by_parameters: Dict[str, Dict[Tuple[float, float, str, float], torch.Tensor]], 

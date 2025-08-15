@@ -5,9 +5,9 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from typing import Tuple, List, Optional, Callable, Dict
 from torch.utils.data.dataloader import default_collate
-
-from mask_generator import MaskGenerator
-from tqdm import tqdm
+from collections import defaultdict
+import numpy as np
+import torch.nn.functional as F
 
 class GorillaReIDDataset(Dataset):
     """
@@ -21,7 +21,9 @@ class GorillaReIDDataset(Dataset):
                  base_mask_dir: Optional[str] = None,
                  mask_transform: Optional[transforms.Compose] = None,
                  label_extractor: Callable[[str], str] = lambda f: f.split('_')[0],
-                 dataset_name: Optional[str] = None):
+                 video_extractor: Callable[[str], str] = lambda f: f.split('_')[1] + "_" + f.split('_')[2],
+                 dataset_name: Optional[str] = None,
+                 k: int = 5):
         """
         Args:
             image_dir (str): Directory with all the images.
@@ -37,11 +39,13 @@ class GorillaReIDDataset(Dataset):
         self.transform = transform
         self.mask_transform = mask_transform
         self.label_extractor = label_extractor
+        self.video_extractor = video_extractor
         self.dataset_name = dataset_name or os.path.basename(os.path.dirname(image_dir))
         self.split_name = os.path.basename(image_dir)
 
         self.image_paths = [os.path.join(image_dir, f) for f in self.filenames]
         self.labels = [self.label_extractor(f) for f in self.filenames]
+        self.videos = [self.video_extractor(f) for f in self.filenames]
 
         # This logic is now lightweight and fast. It just checks for files.
         if base_mask_dir:
@@ -53,6 +57,53 @@ class GorillaReIDDataset(Dataset):
             self.mask_paths = [None] * len(self.filenames)
             self.has_mask = [False] * len(self.filenames)
 
+        self.k = k
+        self._filter_images_for_knn()
+
+    def _filter_images_for_knn(self):
+        """
+        Pre-computes lists of image indices that are suitable for
+        Cross-Video and Standard KNN evaluation based on label distribution.
+        """
+        print(f"Filtering images for KNN evaluation with k={self.k}...")
+        
+        # 1. Build a map of labels to their videos and image counts
+        data_by_label = defaultdict(lambda: {"videos": defaultdict(list)})
+        for i, (label, video) in enumerate(zip(self.labels, self.videos)):
+            data_by_label[label]["videos"][video].append(i)
+
+        self.images_for_cv_knn = []
+        self.images_for_standard_knn = []
+        
+        # 2. Iterate through each image and apply the filtering logic
+        for idx, (label, video) in enumerate(zip(self.labels, self.videos)):
+            
+            # --- Cross-Video KNN Filter ---
+            videos_with_label = data_by_label[label]["videos"]
+            # Count how many images with the same label exist in OTHER videos
+            other_videos_count = sum(
+                len(images) for vid, images in videos_with_label.items() if vid != video
+            )
+            # If count is sufficient, this is a valid query image
+            if other_videos_count >= self.k // 2 + 1:
+                self.images_for_cv_knn.append(idx)
+            
+            # --- Standard KNN Filter ---
+            total_images_with_label = sum(len(images) for images in videos_with_label.values())
+            # If total count (including self) is sufficient
+            if total_images_with_label >= self.k // 2 + 2:
+                self.images_for_standard_knn.append(idx)
+                
+        print(f"Found {len(self.images_for_cv_knn)} / {len(self)} images suitable for Cross-Video KNN.")
+        print(f"Found {len(self.images_for_standard_knn)} / {len(self)} images suitable for Standard KNN.")
+
+        if len(self.images_for_standard_knn) == 0:
+            print("Warning: No images were found suitable for Standard KNN evaluation. Using all images instead.")
+            self.images_for_standard_knn = list(range(len(self)))
+        if len(self.images_for_cv_knn) == 0:
+            print("Warning: No images were found suitable for Cross-Video KNN evaluation. Using all images instead.")
+            self.images_for_cv_knn = list(range(len(self)))
+
     def __len__(self) -> int:
         return len(self.filenames)
 
@@ -63,6 +114,7 @@ class GorillaReIDDataset(Dataset):
         image_tensor = self.transform(image)
         
         label = self.labels[idx]
+        video = self.videos[idx]
         filename_no_ext = os.path.splitext(self.filenames[idx])[0]
         
         mask_tensor = None
@@ -77,7 +129,9 @@ class GorillaReIDDataset(Dataset):
             "image": image_tensor,
             "label": label,
             "mask": mask_tensor,
-            "filename": filename_no_ext
+            "filename": filename_no_ext,
+            "video": video,
+            "original_index": idx
         }
 
 def custom_collate_fn(batch):
@@ -97,3 +151,97 @@ def custom_collate_fn(batch):
     collated_batch['mask'] = masks
     
     return collated_batch
+
+class PerturbedGorillaReIDDataset(Dataset):
+    """
+    A wrapper dataset that applies perturbations to images based on relevance maps.
+    This is used to evaluate the impact of LRP-guided perturbations on downstream
+    k-NN accuracy.
+    """
+    def __init__(self,
+                 base_dataset,
+                 relevance_maps: Dict[str, torch.Tensor],
+                 perturbation_mode: str, # 'morf', 'lerf', or 'random'
+                 perturbation_fraction: float,
+                 patch_size: int,
+                 baseline_value: str = "black"):
+        
+        self.base_dataset = base_dataset
+        self.relevance_maps = relevance_maps
+        self.perturbation_mode = perturbation_mode.lower()
+        self.perturbation_fraction = perturbation_fraction
+        self.patch_size = patch_size
+        self.baseline_value = baseline_value
+
+        if self.perturbation_mode not in ['morf', 'lerf', 'random']:
+            raise ValueError("perturbation_mode must be 'morf', 'lerf', or 'random'")
+            
+        # Proxy attributes from the base dataset so it's a drop-in replacement
+        self.filenames = self.base_dataset.filenames
+        self.labels = self.base_dataset.labels
+        self.images_for_cv_knn = self.base_dataset.images_for_cv_knn
+
+    def __len__(self) -> int:
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx: int) -> Dict:
+        # 1. Get the original, unperturbed data from the base dataset
+        original_data = self.base_dataset[idx]
+        input_tensor = original_data["image"]
+        filename = original_data["filename"]
+
+        # If perturbation fraction is 0, just return the original image
+        if self.perturbation_fraction == 0.0:
+            return original_data
+            
+        # 2. Get the corresponding relevance map
+        relevance_map = self.relevance_maps.get(filename)
+        if relevance_map is None:
+            print(f"Warning: No relevance map found for {filename}. Returning original image.")
+            return original_data
+
+        # 3. Calculate patch order based on relevance
+        # This logic is adapted from your srg_knn function
+        patch_relevance = F.avg_pool2d(relevance_map, 
+                                       kernel_size=self.patch_size, 
+                                       stride=self.patch_size)
+        patch_relevance_flat = patch_relevance.flatten()
+        
+        num_patches = len(patch_relevance_flat)
+        
+        if self.perturbation_mode == 'morf':
+            order = torch.argsort(patch_relevance_flat, descending=True)
+        elif self.perturbation_mode == 'lerf':
+            order = torch.argsort(patch_relevance_flat, descending=False)
+        else: # 'random'
+            order = torch.randperm(num_patches)
+            
+        # 4. Determine which patches to perturb
+        num_patches_to_perturb = int(np.floor(self.perturbation_fraction * num_patches))
+        patches_to_perturb = order[:num_patches_to_perturb]
+
+        # 5. Create the perturbed image
+        perturbed_tensor = input_tensor.clone()
+        
+        # Determine baseline fill value
+        if self.baseline_value.lower() == "black":
+            baseline_fill = torch.zeros_like(input_tensor)
+        elif self.baseline_value.lower() == "mean":
+            mean_color = input_tensor.mean(dim=[1, 2], keepdim=True)
+            baseline_fill = mean_color.expand_as(input_tensor)
+        else:
+            raise ValueError(f"Unknown baseline type: {self.baseline_value}")
+
+        h, w = input_tensor.shape[-2:]
+        num_patches_w = w // self.patch_size
+
+        for patch_idx in patches_to_perturb:
+            row = (patch_idx // num_patches_w) * self.patch_size
+            col = (patch_idx % num_patches_w) * self.patch_size
+            
+            perturbed_tensor[..., row:row+self.patch_size, col:col+self.patch_size] = \
+                baseline_fill[..., row:row+self.patch_size, col:col+self.patch_size]
+        
+        # 6. Return the perturbed data, replacing the original image
+        original_data["image"] = perturbed_tensor
+        return original_data

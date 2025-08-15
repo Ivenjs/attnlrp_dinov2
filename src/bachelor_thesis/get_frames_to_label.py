@@ -9,7 +9,7 @@ import pandas as pd
 from decord import VideoReader, cpu
 from psycopg2.extras import execute_values
 from tqdm import tqdm
-
+from typing import List, Tuple, Set, Dict
 # Assuming these utilities are in your project
 from utils import load_config 
 from db_connect import get_db_connection
@@ -22,32 +22,118 @@ FEATURE_TYPE = "body"
 DB_SCHEMA = "public"
 VIDEO_PATH_REPLACE_TUPLE = ("gorillatracker/video_data", "vast-gorilla")
 
-# --- Helper Functions ---
 
-def get_sampled_images_per_class(base_dir: Path, num_images_per_class: int = 1) -> dict[str, list[Path]]:
+def _choose_next_index_maxmin(frames: List[Tuple[int, Path]], picked_idx: Set[int]) -> int | None:
     """
-    Scans specified subdirectories (train, val, test) and samples images for each class.
+    Wählt in 'frames' den Index des nächsten Frames so, dass
+    der minimale Abstand (in frame_nr) zu bereits gepickten maximal wird.
+    frames: [(frame_nr, path)] – muss sortiert nach frame_nr sein.
+    picked_idx: bereits gewählte Indices.
+    Returns: Index in 'frames' oder None, falls nichts mehr verfügbar.
     """
-    class_images = defaultdict(list)
-    splits_to_scan = ["train", "val", "test"] # Explicitly define the subdirectories
+    n = len(frames)
+    remaining = [i for i in range(n) if i not in picked_idx]
+    if not remaining:
+        return None
+    if not picked_idx:
+        return n // 2  # erster Pick: Mitte
 
+    picked_frames = [frames[i][0] for i in picked_idx]
+    best_i, best_dist = None, -1
+    for i in remaining:
+        f = frames[i][0]
+        # min distance zum nächstgelegenen bereits gepickten Frame
+        d = min(abs(f - pf) for pf in picked_frames)
+        if d > best_dist:
+            best_dist = d
+            best_i = i
+    return best_i
+
+
+def get_sampled_images_per_class(base_dir: Path, num_images_per_class: int = 1) -> Dict[str, List[Path]]:
+    """
+    Scans specified subdirectories (train, validation, test) and samples images for each class.
+
+    Ziele (in dieser Reihenfolge):
+    1) Priorisiere Diversität über verschiedene Videos (Round-Robin über Videos).
+    2) Innerhalb eines Videos picke Frames mit maximaler Distanz (greedy max-min nach frame_nr).
+
+    Erwartetes Filename-Schema:
+        <class_label>_..._<video_id>_<frame_nr>_<...>.png
+    wobei:
+        class_label = parts[0]
+        video_id    = int(parts[-3])
+        frame_nr    = int(parts[-2])
+    """
+    if num_images_per_class <= 0:
+        raise ValueError("num_images_per_class must be >= 1")
+
+    splits_to_scan = ["train", "validation", "test"]
+
+    # {class_label: {video_id: [(frame_nr, path), ...]}}
+    all_class_video_frames: Dict[str, Dict[int, List[Tuple[int, Path]]]] = defaultdict(lambda: defaultdict(list))
+
+    # Step 1: Collect frames grouped by class + video
     for split in splits_to_scan:
         split_dir = base_dir / split
         if not split_dir.is_dir():
             logging.warning(f"Split directory not found, skipping: {split_dir}")
             continue
-        
+
         logging.info(f"Scanning for images in {split_dir}...")
-        # Use rglob on the split_dir in case there are nested folders within it.
-        # If images are guaranteed to be at the top level, you can use .glob("*.png")
         for filepath in split_dir.rglob("*.png"):
             try:
-                class_label = filepath.name.split("_")[0]
-                if len(class_images[class_label]) < num_images_per_class:
-                    class_images[class_label].append(filepath)
-            except IndexError:
-                logging.warning(f"Could not parse class from filename: {filepath.name}")
-    
+                parts = filepath.stem.split("_")
+                class_label = parts[0]
+                video_id = int(parts[-3])
+                frame_nr = int(parts[-2])
+                all_class_video_frames[class_label][video_id].append((frame_nr, filepath))
+            except (IndexError, ValueError):
+                logging.warning(f"Could not parse class/video/frame from filename: {filepath.name}")
+
+    class_images: Dict[str, List[Path]] = defaultdict(list)
+
+    # Step 2: Round-robin selection per class
+    for class_label, videos in all_class_video_frames.items():
+        # Sort frames within each video by frame_nr for stable distance calc
+        for vid in videos:
+            videos[vid].sort(key=lambda x: x[0])
+
+        total_available = sum(len(frames) for frames in videos.values())
+        if total_available < num_images_per_class:
+            logging.warning(
+                f"Class '{class_label}' has only {total_available} images, "
+                f"requested {num_images_per_class}."
+            )
+            # Nimm alles, was da ist (Video-Priorität ist hier egal, weil wir eh zu wenig haben)
+            class_images[class_label].extend([p for frames in videos.values() for (_, p) in frames])
+            continue
+
+        # Tracking: pro Video merken wir NUR die gepickten Indices (kein Mutieren der Frames-Liste!)
+        videos_picked_idx: Dict[int, Set[int]] = {vid: set() for vid in videos}
+        picked_count = 0
+
+        # Deterministische Reihenfolge der Videos (z. B. nach video_id)
+        video_order = sorted(videos.keys())
+
+        # Round-Robin bis Ziel erreicht oder alles exhausted
+        while picked_count < num_images_per_class:
+            progress = False
+            for vid in video_order:
+                if picked_count >= num_images_per_class:
+                    break
+                frames = videos[vid]
+                idx = _choose_next_index_maxmin(frames, videos_picked_idx[vid])
+                if idx is None:
+                    continue  # dieses Video ist exhausted
+                videos_picked_idx[vid].add(idx)
+                class_images[class_label].append(frames[idx][1])
+                picked_count += 1
+                progress = True
+            if not progress:
+                # alle Videos exhausted (sollte bei total_available >= target nicht passieren)
+                break
+
     found_count = sum(len(paths) for paths in class_images.values())
     logging.info(f"Sampled {found_count} images across {len(class_images)} classes from all splits.")
     return dict(class_images)
@@ -125,6 +211,11 @@ def extract_and_save_whole_frames(df_with_paths: pd.DataFrame, output_dir: Path)
             logging.warning(f"Skipping {len(group)} images with no associated video path.")
             continue
 
+        if os.path.exists(video_path):
+            logging.info(f"video path {video_path} exists")
+        else:
+            logging.info(f"video path {video_path} does NOT exist")
+
         frame_requests = group[["frame_nr", "source_path"]].to_dict('records')
         frame_numbers = [req["frame_nr"] for req in frame_requests]
         
@@ -132,9 +223,9 @@ def extract_and_save_whole_frames(df_with_paths: pd.DataFrame, output_dir: Path)
         
         # Extract frames in one batch
         try:
-            with VideoReader(video_path, ctx=cpu(0)) as vr:
-                extracted_frames = vr.get_batch(frame_numbers).asnumpy()
-                frame_map = {num: frame for num, frame in zip(frame_numbers, extracted_frames)}
+            vr = VideoReader(video_path, ctx=cpu(0))
+            extracted_frames = vr.get_batch(frame_numbers).asnumpy()
+            frame_map = {num: cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for num, frame in zip(frame_numbers, extracted_frames)}
         except Exception as e:
             logging.error(f"Error reading video {video_path}: {e}. Skipping this video.")
             continue
@@ -157,10 +248,9 @@ def main():
     cfg = load_config("finetuned", [])
     
     # --- Configuration ---
-    # Use Path objects for modern, OS-agnostic path handling
     dataset_dir = Path(cfg["data"]['dataset_dir'])
     save_dir = Path("/workspaces/vast-gorilla/gorillawatch/iven_thesis/frames_to_label")
-    num_images_per_class = 3
+    num_images_per_class = 7
 
     cropped_images_dir = save_dir / "sampled_cropped_images"
     whole_images_dir = save_dir / "corresponding_whole_images"

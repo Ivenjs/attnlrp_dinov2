@@ -207,7 +207,7 @@ if __name__ == "__main__":
     # CHOOSE YOUR MODE HERE
     GENERATION_MODE = "db" # db or "cropped"
 
-    for split in ["train", "val", "test"]:
+    for split in ["train", "validation", "test"]:
         split_dir = os.path.join(root_dir, split)
         if not os.path.isdir(split_dir):
             print(f"!!! Skipping '{split}' – directory not found.")

@@ -113,7 +113,6 @@ class DINOPatcher:
                     self.original_forwards[key] = module.forward
                     module.forward = types.MethodType(_conservative_attention_forward, module)
 
-                # *** FIX 1: Use a truly conservative LayerNorm patch for the test ***
                 elif isinstance(module, nn.LayerNorm):
                     self.original_forwards[key] = module.forward
                     module.forward = types.MethodType(_conservative_layernorm_forward, module)
@@ -123,7 +122,6 @@ class DINOPatcher:
                     self.original_forwards[key] = module.forward
                     module.forward = types.MethodType(_conservative_identity_forward, module)
                 
-                # *** FIX 2: Disable GluMlp's non-conservative operations for the test ***
                 # We make it an identity to remove its SiLU and multiplication from the equation.
                 elif isinstance(module, GluMlp):
                     self.original_forwards[key] = module.forward
@@ -148,9 +146,7 @@ class DINOPatcher:
                 elif isinstance(module, nn.LayerNorm):
                     self.original_forwards[key] = module.forward
                     module.forward = types.MethodType(lrp_layernorm_forward, module)
-                elif isinstance(module, LayerScale):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(lrp_layerscale_forward, module)
+                # layerScalse does NOT need to be patched
         
         return self.wrapper
 
@@ -274,17 +270,6 @@ def lrp_glumlp_forward(self, x: torch.Tensor) -> torch.Tensor:
     x = self.fc2(weighted_value)
     x = self.drop2(x)
     return x
-
-
-# -------------------------------------------------------------------
-# Custom Forward Pass for LayerScale
-# -------------------------------------------------------------------
-def lrp_layerscale_forward(self, x: torch.Tensor) -> torch.Tensor:
-    """
-    LRP rule for LayerScale. This is an Activation x Parameter multiplication.
-    Standard backpropagation handles this correctly. No special rule is needed.
-    """
-    return x * self.gamma
 
 
 # -------------------------------------------------------------------

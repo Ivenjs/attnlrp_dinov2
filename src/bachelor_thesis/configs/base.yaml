@@ -1,11 +1,12 @@
 data:
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated"
-  #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
-  batch_size: 32
+  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated"
+  dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
+  batch_size: 8
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
   output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
 
+seed: 161
 
 db:
   db_schema: "public"
@@ -34,6 +35,7 @@ wandb:
 
 lrp:
   mode: "knn"
+  db_relevances_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db"
 
 mask_exp:
   decision_metric: "soft_knn_margin"
@@ -45,14 +47,17 @@ sweep:
   min_score_threshold: 0.1
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
-  temp: [0.01, 0.03, 0.07, 0.15, 0.3]
-  queries_per_class: 1
+  temp: [0.01]
+  #0.01, 0.03, 0.07, 0.15, 0.3
+  queries_per_class: 2
   #[0.01, 0.03, 0.07, 0.15, 0.3]
-  conv_gammas: [0.001, 0.05, 0.1, 0.25]
+  conv_gammas: [0.25]
+  #0.001, 0.05, 0.1, 0.25
   # in paper: 0.05, 0.1, 0.25
   #0.1, 0.15,0.25, 0.7, 1.0
   #[0.1, 0.15,0.25, 0.4, 0.7, 1.0] 
-  lin_gammas: [0.001, 0.05, 0.1, 0.25]
+  lin_gammas: [0.001]
+  #0.001, 0.05, 0.1, 0.25
     # in paper: 0.05, 0.1, 0.25
   #0.001, 0.025, 0.05, 0.075, 0.1
   #[0.001, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25] 

@@ -7,6 +7,8 @@ import random
 from PIL import Image
 from omegaconf import OmegaConf
 
+from dataset import GorillaReIDDataset
+
 
 def get_class_label(filename: str) -> str:
     """
@@ -113,6 +115,12 @@ def load_config(config_name: str, cli_overrides: list):
     config = OmegaConf.merge(base_config, override_config, cli_config)
     
     return config
+
+def get_db_path(model_checkpoint_path: str, dataset: GorillaReIDDataset, split_name: str, db_dir: str) -> str:
+    checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint_path))[0]
+    db_filename = f"{checkpoint_name}_{dataset.dataset_name}_{split_name}_db.pt"
+    db_path = os.path.join(db_dir, db_filename)
+    return db_path
 
 
 if __name__ == "__main__":
