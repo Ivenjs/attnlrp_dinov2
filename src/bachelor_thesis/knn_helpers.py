@@ -74,23 +74,17 @@ def fill_knn_db(
     return final_embeddings.to(device), all_labels, all_filenames, all_videos
 
 def get_knn_db(
-    db_dir: str,
-    split_name: str, # e.g., "train" or "validation"
+    db_path: str,
     dataset: GorillaReIDDataset,
     model_wrapper: TimmWrapper, 
-    model_checkpoint_path: str,
     batch_size: int,
-    device: torch.device
+    device: torch.device,
+    recompute: bool=False
 ) -> Tuple[torch.Tensor, list, list]:
     """
     Loads a pre-computed k-NN database or creates it if it doesn't exist.
     The database name is a combination of the model dataset_name and the data split.
     """
-    checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint_path))[0]
-    db_filename = f"{checkpoint_name}_{dataset.dataset_name}_{split_name}_db.pt"
-    
-    db_path = os.path.join(db_dir, db_filename)
-
     if os.path.exists(db_path):
         print(f"Loading existing k-NN database: {db_path}")
         db_data = torch.load(db_path, map_location=device)
@@ -269,6 +263,7 @@ def compute_knn_proxy_soft(
 
     # Ensure embeddings are normalized (standard for cosine similarity)
     q_emb = query_embedding.view(1, -1) if query_embedding.dim()==1 else query_embedding
+    #TODO: gleiche videos genauso wie sich selbst auch wegmaskieren?
     # Achtibat:
     q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
     db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
