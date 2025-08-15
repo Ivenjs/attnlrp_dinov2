@@ -7,6 +7,8 @@ from tqdm import tqdm
 import torch.nn.functional as F
 from typing import Tuple
 from torch.utils.data import DataLoader
+from lxt.efficient.rules import identity_rule_implicit
+
 
 import numpy as np
 
@@ -38,12 +40,14 @@ def fill_knn_db(
     all_embeddings_list = []
     all_labels = []
     all_filenames = []
-    
+    all_videos = []
+
     with torch.no_grad():
         for batch in tqdm(dataloader, desc=f"Generating embeddings for {os.path.basename(output_path)}"):
             images = batch["image"]
             labels = batch["label"]
             filenames = batch["filename"]
+            videos = batch["video"]
 
             images = images.to(device)
             embeddings = model_wrapper(images)
@@ -51,13 +55,15 @@ def fill_knn_db(
             all_embeddings_list.append(embeddings.cpu())
             all_labels.extend(labels)
             all_filenames.extend(filenames)
+            all_videos.extend(videos)
 
     final_embeddings = torch.cat(all_embeddings_list, dim=0)
 
     db_data = {
         "embeddings": final_embeddings,
         "labels": all_labels,
-        "filenames": all_filenames
+        "filenames": all_filenames,
+        "videos": all_videos
     }
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -65,11 +71,11 @@ def fill_knn_db(
     
     print(f"Saved {len(all_filenames)} embeddings to {output_path}")
 
-    return final_embeddings.to(device), all_labels, all_filenames
+    return final_embeddings.to(device), all_labels, all_filenames, all_videos
 
 def get_knn_db(
     db_dir: str,
-    split_name: str, # e.g., "train" or "val"
+    split_name: str, # e.g., "train" or "validation"
     dataset: GorillaReIDDataset,
     model_wrapper: TimmWrapper, 
     model_checkpoint_path: str,
@@ -85,13 +91,10 @@ def get_knn_db(
     
     db_path = os.path.join(db_dir, db_filename)
 
-    db_embeddings = []
-    db_filenames = []
-
     if os.path.exists(db_path):
         print(f"Loading existing k-NN database: {db_path}")
         db_data = torch.load(db_path, map_location=device)
-        return db_data["embeddings"], db_data["labels"], db_data["filenames"]
+        return db_data["embeddings"], db_data["labels"], db_data["filenames"], db_data["videos"]
     else:
         print(f"k-NN database not found. Creating new one at: {db_path}")
         return fill_knn_db(
@@ -266,8 +269,10 @@ def compute_knn_proxy_soft(
 
     # Ensure embeddings are normalized (standard for cosine similarity)
     q_emb = query_embedding.view(1, -1) if query_embedding.dim()==1 else query_embedding
-    q_norm = F.normalize(q_emb, p=2, dim=1)
-    db_norm = F.normalize(db_embeddings, p=2, dim=1)
+    # Achtibat:
+    q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
+    db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
+
 
     # Calculate cosine similarity (higher is better)
     # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
