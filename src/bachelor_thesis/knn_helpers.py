@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 from lxt.efficient.rules import identity_rule_implicit
 import torch
 
+
 import numpy as np
 
 from dataset import GorillaReIDDataset, custom_collate_fn
@@ -96,53 +97,42 @@ def get_knn_db(
         )
 
 
-def compute_distances(
-    query_embedding: torch.Tensor,
-    db_embeddings: torch.Tensor,
-    metric: str = "cosine"
-) -> torch.Tensor:
+
+def calculate_distance_batched(db_embeddings, query_batch_embeddings, metric):
     """
-    Computes distances between a query embedding and a database of embeddings.
-
-    This function follows best practices by L2-normalizing features for both
-    cosine and euclidean distances to ensure a fair comparison and robustness.
-
-    Args:
-        query_embedding (torch.Tensor): A single query embedding of shape (1, D).
-        db_embeddings (torch.Tensor): Database embeddings of shape (N, D).
-        metric (str): The distance metric, 'cosine' or 'euclidean'.
-
-    Returns:
-        torch.Tensor: A tensor of distances of shape (N,). Smaller is better.
-    """
-
-    # Ensure query_embedding is shape (1, D) for broadcasting
-    if query_embedding.dim() == 1:
-        query_embedding = query_embedding.unsqueeze(0)
-
-    if metric == "cosine":
-        # L2-normalize features
-        norm_query = F.normalize(query_embedding, p=2, dim=1)
-        norm_db = F.normalize(db_embeddings, p=2, dim=1)
-        
-        # Calculate cosine similarity
-        cosine_sim = F.linear(norm_query, norm_db).squeeze()
-        
-        # Convert similarity to distance (0=identical, 2=opposite)
-        distances = 1 - cosine_sim
-        return distances
+    Calculates distances from a batch of queries to the entire database.
     
-    elif metric == "euclidean":
-        # For a fair comparison, also use normalized features for Euclidean.
-        norm_query = F.normalize(query_embedding, p=2, dim=1)
-        norm_db = F.normalize(db_embeddings, p=2, dim=1)
-        
-        # Calculate L2 distance. torch.cdist is highly efficient.
-        distances = torch.cdist(norm_query, norm_db, p=2.0).squeeze()
-        return distances
-        
+    Args:
+        db_embeddings (Tensor): Shape [db_size, dim]
+        query_batch_embeddings (Tensor): Shape [batch_size, dim]
+        metric (str): 'cosine' or 'euclidean'
+    
+    Returns:
+        Tensor: Distance matrix of shape [batch_size, db_size]
+    """
+    if metric == "cosine":
+        # Normalize both sets of embeddings
+        db_norm = F.normalize(db_embeddings, p=2, dim=1)
+        query_norm = F.normalize(query_batch_embeddings, p=2, dim=1)
+        # Calculate similarity matrix using matrix multiplication
+        similarity_matrix = torch.matmul(query_norm, db_norm.T)
+        # Convert similarity to distance
+        return 1 - similarity_matrix
+    else: # Default to Euclidean
+        return torch.cdist(query_batch_embeddings, db_embeddings)
+    
+def calculate_distance(embeddings, test_embedding, metric):
+    embeddings = embeddings.to(embeddings.device)
+    if metric == "euclidean":
+        distance = torch.norm(embeddings - test_embedding, dim=1)
+    elif metric == "cosine":
+        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+        normalized_test_embedding = F.normalize(test_embedding, p=2, dim=0)
+        cosine_similarity = torch.matmul(normalized_embeddings, normalized_test_embedding.transpose(0, 1)).squeeze()
+        distance = 1 - cosine_similarity
     else:
-        raise ValueError(f"Unknown metric: {metric}. Choose 'cosine' or 'euclidean'.")
+        raise ValueError(f"Unsupported distance metric: {metric}")
+    return distance
 
 def compute_knn_proto_margin(
     query_emb: torch.Tensor,
@@ -281,7 +271,7 @@ def get_query_performance_metrics(
     db_filenames_np = np.array(db_filenames)
 
     with torch.no_grad():
-        distances = compute_distances(query_embedding, db_embeddings, distance_metric)
+        distances = calculate_distances(query_embedding, db_embeddings, distance_metric)
         try:
             query_idx = db_filenames.index(query_filename)
             distances[query_idx] = torch.inf

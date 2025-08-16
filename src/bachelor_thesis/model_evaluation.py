@@ -8,43 +8,8 @@ from utils import load_config, get_db_path
 from basemodel import get_model_wrapper
 from dataset import GorillaReIDDataset, custom_collate_fn
 from torch.utils.data import DataLoader, Subset
+from knn_helpers import calculate_distance_batched, calculate_distance
 
-
-def calculate_distance_batched(db_embeddings, query_batch_embeddings, metric):
-    """
-    Calculates distances from a batch of queries to the entire database.
-    
-    Args:
-        db_embeddings (Tensor): Shape [db_size, dim]
-        query_batch_embeddings (Tensor): Shape [batch_size, dim]
-        metric (str): 'cosine' or 'euclidean'
-    
-    Returns:
-        Tensor: Distance matrix of shape [batch_size, db_size]
-    """
-    if metric == "cosine":
-        # Normalize both sets of embeddings
-        db_norm = F.normalize(db_embeddings, p=2, dim=1)
-        query_norm = F.normalize(query_batch_embeddings, p=2, dim=1)
-        # Calculate similarity matrix using matrix multiplication
-        similarity_matrix = torch.matmul(query_norm, db_norm.T)
-        # Convert similarity to distance
-        return 1 - similarity_matrix
-    else: # Default to Euclidean
-        return torch.cdist(query_batch_embeddings, db_embeddings)
-    
-def calculate_distance(embeddings, test_embedding, metric):
-    embeddings = embeddings.to(embeddings.device)
-    if metric == "euclidean":
-        distance = torch.norm(embeddings - test_embedding, dim=1)
-    elif metric == "cosine":
-        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
-        normalized_test_embedding = F.normalize(test_embedding, p=2, dim=0)
-        cosine_similarity = torch.matmul(normalized_embeddings, normalized_test_embedding.transpose(0, 1)).squeeze()
-        distance = 1 - cosine_similarity
-    else:
-        raise ValueError(f"Unsupported distance metric: {metric}")
-    return distance
 
 def KNN_CV_GPU(model_wrapper, query_source_dataset, db_embeddings, images_to_check, db_labels_int, db_video_ids_int, cfg, device, distance_metric="euclidean"):
     """
