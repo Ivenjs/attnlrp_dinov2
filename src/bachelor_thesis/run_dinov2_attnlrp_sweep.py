@@ -32,6 +32,7 @@ def main(cfg: dict):
 
     MODE = cfg["lrp"]["mode"]
     DECISION_METRIC = MODE
+    print(f"\n--- RUNNING WITH MODE: {MODE} ---")
     FINETUNED = cfg["model"]["finetuned"]
 
     is_finetuned = cfg["model"]["finetuned"]
@@ -92,27 +93,22 @@ def main(cfg: dict):
         model_wrapper=model_wrapper,
         dataloader=tune_dataloader,
         device=DEVICE,
+        conv_gamma_values=cfg["sweep"]["conv_gammas"],
+        lin_gamma_values=cfg["sweep"]["lin_gammas"],
         mode=MODE,
+        distance_metrics=cfg["sweep"]["distance_metrics"],
+        proxy_temp_values=cfg["sweep"]["temp"],
+        topk_neg_values=cfg["sweep"]["topk_neg"],
         db_embeddings=tune_db_embeddings,
         db_filenames=tune_db_filenames,
         db_labels=tune_db_labels,
-        conv_gamma_values=cfg["sweep"]["conv_gammas"],
-        lin_gamma_values=cfg["sweep"]["lin_gammas"],
-        proxy_temp_values=cfg["sweep"]["temp"],  
-        distance_metrics=cfg["sweep"]["distance_metrics"]
     )
-
-    tune_relevances = defaultdict(dict)
-    for item in tune_relevances_all:
-        p = item['params']
-        key = (p['conv_gamma'], p['lin_gamma'], p['distance_metric'], p['proxy_temp'])
-        tune_relevances[item['filename']][key] = item['relevance']
 
     tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
-        tune_relevances, tune_eval_dataloader, model_wrapper,
+        tune_relevances_all, tune_eval_dataloader, model_wrapper,
         tune_db_embeddings, tune_db_labels, tune_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["sweep"]["evaluation_metrics"], cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"],False
+        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
     )
 
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
@@ -139,27 +135,22 @@ def main(cfg: dict):
         model_wrapper=model_wrapper,
         dataloader=holdout_dataloader,
         device=DEVICE,
+        conv_gamma_values=cfg["sweep"]["conv_gammas"],
+        lin_gamma_values=cfg["sweep"]["lin_gammas"],
         mode=MODE,
+        distance_metrics=cfg["sweep"]["distance_metrics"],
+        proxy_temp_values=cfg["sweep"]["temp"],
+        topk_neg_values=cfg["sweep"]["topk_neg"],
         db_embeddings=holdout_db_embeddings,
         db_filenames=holdout_db_filenames,
         db_labels=holdout_db_labels,
-        conv_gamma_values=cfg["sweep"]["conv_gammas"],
-        lin_gamma_values=cfg["sweep"]["lin_gammas"],
-        proxy_temp_values=cfg["sweep"]["temp"],  
-        distance_metrics=cfg["sweep"]["distance_metrics"]
     )
-
-    holdout_relevances = defaultdict(dict)
-    for item in holdout_relevances_all:
-        p = item['params']
-        key = (p['conv_gamma'], p['lin_gamma'], p['distance_metric'], p['proxy_temp'])
-        holdout_relevances[item['filename']][key] = item['relevance']
 
     holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
-        holdout_relevances, holdout_eval_dataloader, model_wrapper,
+        holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
         holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, cfg["model"]["patch_size"], DEVICE,
-        cfg["sweep"]["evaluation_metrics"], cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
+        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
     )
 
     # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---
@@ -171,9 +162,7 @@ def main(cfg: dict):
     print("\nFinding best parameters on TUNE set...")
     best_params_raw_tune, analysis_df_tune, worst_params_raw_tune = find_robust_hyperparameters(
         results=tune_results_list,
-        decision_metric=DECISION_METRIC,
-        robustness_percentile=cfg["sweep"]["robustness_percentile"],
-        min_score_threshold=cfg["sweep"]["min_score_threshold"]
+        decision_metric=DECISION_METRIC
     )
     
     print_robustness_summary(best_params_raw_tune, analysis_df_tune, DECISION_METRIC)
@@ -181,9 +170,7 @@ def main(cfg: dict):
     # Step 3b: Evaluate these BEST parameters on the HOLDOUT set for an unbiased performance estimate.
     _, analysis_df_holdout, _ = find_robust_hyperparameters(
         results=holdout_results_list,
-        decision_metric=DECISION_METRIC,
-        robustness_percentile=cfg["sweep"]["robustness_percentile"],
-        min_score_threshold=cfg["sweep"]["min_score_threshold"]
+        decision_metric=DECISION_METRIC
     )
 
     # Step 3c: Analyze the generalization gap.

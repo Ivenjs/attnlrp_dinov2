@@ -28,9 +28,7 @@ import wandb
 # 3a) compare basemodel vs finetuned model on validation (maybe try train to see of results are better?)
 # 3b) compare finetuned model on train vs validation (overfitting?)
 # 4) save worst performing images and mask their background. How does the knn score change? can I also recompute accuracy with only these few images?
-# mean faithfullness curves for finetuned model vs base model
 
-#faithfullnes score durchschnittskurve berechnen
 
 def get_denormalization_transform(mean: tuple, std: tuple) -> transforms.Compose:
     """Creates a transform to de-normalize image tensors using a lambda function."""
@@ -53,6 +51,7 @@ def run_masking_experiment(
     mask_scores: Dict[str, Tuple], # The output from attention_inside_mask
     batch_size: int,
     device: torch.device,
+    decision_metric: str,
     cfg: Dict
 ) -> pd.DataFrame:
     """
@@ -100,7 +99,9 @@ def run_masking_experiment(
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                     distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
-                
+                #change plot colors to hpi
+                #make these scores dependant on decisionmetric, like in eval or sweep
+                #for similarity, make embedding to compare to compute inside function not outside.
                 baseline_proxy_score = compute_knn_proxy_soft(
                     query_embedding=embedding_orig, query_label=label, query_filename=filename,
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
@@ -314,7 +315,7 @@ def generate_heatmaps(
         # This makes heatmaps comparable by scaling them to the [-1, 1] range
         relevance = relevance / torch.abs(relevance).max()
         
-        save_path = visualizer.plot_heatmap( # <--- MODIFICATION
+        save_path = visualizer.plot_heatmap( 
             filename=f"{reason}_{filename}",
             image_tensor=image_tensor,
             mask=mask,
@@ -411,6 +412,8 @@ def main(cfg: Dict):
     random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
     MODE = cfg["lrp"]["mode"]
+    print(f"\n--- RUNNING WITH MODE: {MODE} ---")
+
     DECISION_METRIC = MODE
 
     is_finetuned = cfg["model"]["finetuned"]
@@ -421,7 +424,7 @@ def main(cfg: Dict):
     wandb.init(
         project="Thesis-Iven", 
         entity="gorillawatch", # Or your entity
-        name=f"dinov2_attnlrp_analysis_{model_type_str}",
+        name=f"dinov2_attnlrp_analysis_{model_type_str}_{MODE}",
         config=cfg_dict,
         job_type="analysis"
     )
@@ -490,6 +493,7 @@ def main(cfg: Dict):
         lin_gamma=cfg["lrp"]["lin_gamma"],             # Pass as single value
         proxy_temp=cfg["knn"]["temp"],          # Pass as single value 
         distance_metric=cfg["knn"]["distance_metric"], #pass as single value
+        topk_neg=cfg["knn"]["topk_neg"],  # Pass as single value
         mode=cfg["lrp"]["mode"],
         db_embeddings=db_embeddings,
         db_filenames=db_filenames,
@@ -512,6 +516,7 @@ def main(cfg: Dict):
         mask_scores=scores,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE,
+        decision_metric=DECISION_METRIC,
         cfg=cfg
     )
 
@@ -582,8 +587,15 @@ if __name__ == "__main__":
 
     cfg = load_config(args.config_name, unknown_args)
 
+    command = [
+        "python", 
+        "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py", 
+        "--config_name", 
+        args.config_name
+    ] + unknown_args
+
     result = subprocess.run(
-        ["python", "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py", "--config_name", args.config_name],
+        command,
         check=True
     )
 

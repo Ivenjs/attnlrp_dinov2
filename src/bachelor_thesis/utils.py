@@ -135,6 +135,16 @@ def get_db_path(model_checkpoint_path: str, dataset: GorillaReIDDataset, split_n
     db_path = os.path.join(db_dir, db_filename)
     return db_path
 
+def get_hpi_colors(cfg: Dict) -> Dict:
+    """
+    returns hpi colors in normalized RGB format
+    """
+    return {
+        "red": tuple(int(c) / 255 for c in cfg["plots"]["red"]),
+        "orange": tuple(int(c) / 255 for c in cfg["plots"]["orange"]),
+        "yellow": tuple(int(c) / 255 for c in cfg["plots"]["yellow"]),
+        "gray": tuple(int(c) / 255 for c in cfg["plots"]["gray"]),
+    }
 
 if __name__ == "__main__":
     data_path = "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval/train"

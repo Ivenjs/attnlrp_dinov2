@@ -4,6 +4,7 @@ model:
 
 knn:
   temp: 0.01
+  topk_neg: 50
 
 lrp:
   conv_gamma: 0.25

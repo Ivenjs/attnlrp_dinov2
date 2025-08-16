@@ -23,9 +23,10 @@ def compute_similarity_proto_margin_pass(
     db_filenames: list,             # len N
     query_label: str,
     query_filename: str = None,
+    distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
-    exclude_self: bool = True,
+    verbose: bool = False
 ) -> torch.Tensor:
     #TODO: the effectiveness of this has not been tested
     #Prototype-Margin (Geometric Explanation): This method explains the model's decision based on the query's geometric position relative to class-conditional 
@@ -50,12 +51,14 @@ def compute_similarity_proto_margin_pass(
             db_filenames=db_filenames,
             query_label=query_label,
             query_filename=query_filename,
+            distance_metric=distance_metric,
             temp=temp,
             topk_neg=topk_neg,
-            exclude_self=exclude_self
         )
 
         score.backward()
+        if verbose:
+            print(f"Explaining k-NN score ({score.item():.4f}) for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
 
         if input_tensor.grad is None:
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
@@ -74,15 +77,18 @@ def compute_similarity_lrp_pass(
     lin_gamma: float, 
     model_wrapper: nn.Module, 
     input_tensor: torch.Tensor,
-    reference_embedding: torch.Tensor, 
+    query_label: str,
+    query_filename: str,
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    db_filenames: list,
     verbose: bool = False
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Computes LRP by explaining the cosine similarity between the output embedding
-    and a reference embedding of the same identity.
+    and a reference embedding of the same identity. For simple comparisons, the
+    reference embedding and its index are being returned
     """
-    assert reference_embedding.ndim == 2 and reference_embedding.shape[0] == 1, \
-        "reference_embedding should be of shape [1, embedding_dim]"
         
     input_tensor.grad = None
     
@@ -98,7 +104,7 @@ def compute_similarity_lrp_pass(
 
         query_embedding = model_wrapper(input_tensor.requires_grad_())
 
-        similarity_score = compute_similarity_score(query_embedding, reference_embedding)
+        similarity_score, reference_embedding, ref_idx = compute_similarity_score(query_embedding=query_embedding, query_label=query_label, query_filename=query_filename, db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,)
 
         if verbose:
             print(f"Explaining similarity score ({similarity_score.item():.4f}) for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
@@ -109,8 +115,8 @@ def compute_similarity_lrp_pass(
 
     finally:
         zennit_comp.remove()
-    
-    return relevance
+
+    return relevance, reference_embedding, ref_idx
 
 
 def compute_knn_attnlrp_pass(
@@ -188,12 +194,14 @@ def generate_relevances(
     # --- Parameters to sweep over ---
     conv_gamma_values: List[float],
     lin_gamma_values: List[float],
+    # --- Mode and mode-specific parameters ---
+    mode: str,
     distance_metrics: List[str] = ["cosine"],
     proxy_temp_values: List[float] = [0.1],
-    # --- Mode and control flags ---
-    mode: str = "knn",
+    topk_neg_values: List[int] = [50],
+    # --- Control flags ---
     verbose: bool = False,
-    # --- Database arguments for 'knn' mode ---
+    # --- Database arguments for relevant modes ---
     db_embeddings: Optional[torch.Tensor] = None,
     db_filenames: Optional[List[str]] = None,
     db_labels: Optional[List[str]] = None,
@@ -210,13 +218,13 @@ def generate_relevances(
         device: The torch device to run on.
         conv_gamma_values: List of convolutional gamma values for LRP.
         lin_gamma_values: List of linear layer gamma values for LRP.
-        distance_metrics: List of distance metrics for KNN mode.
-        proxy_temp_values: List of proxy temperatures for KNN mode.
-        mode: Calculation mode, either "simple" or "knn".
-        include_masks: If True, expects 'mask' in the dataloader batch and
-                       includes it in the output.
-        verbose: If True, prints detailed LRP pass information.
-        db_embeddings: Database embeddings for KNN mode.
+        distance_metrics: List[str] = ["cosine"],
+        proxy_temp_values: List[float] = [0.1],
+        topk_neg_values: List[int] = [50],
+        mode: str,
+        include_masks: bool = False,
+        verbose: bool = False,
+        db_embeddings: Optional[torch.Tensor] = None,
         db_filenames: Database filenames for KNN mode.
         db_labels: Database labels for KNN mode.
 
@@ -227,25 +235,37 @@ def generate_relevances(
     """
     all_results = []
 
-    print("--- Starting Relevance Generation ---")
-    # Validate inputs for KNN mode
-    if mode == "knn":
-        assert db_embeddings is not None, "db_embeddings must be provided for 'knn' mode."
-        assert db_filenames is not None, "db_filenames must be provided for 'knn' mode."
+    print(f"--- Starting Relevance Generation (Mode: {mode}) ---")
+    if mode in ["knn", "proto_margin", "similarity"]:
+        assert db_embeddings is not None, f"db_embeddings must be provided for '{mode}' mode."
+        assert db_filenames is not None, f"db_filenames must be provided for '{mode}' mode."
+        assert db_labels is not None, f"db_labels must be provided for '{mode}' mode."
 
     # Create all combinations of parameters to iterate over.
     # This works even if lists have only one element.
-    param_combinations = list(itertools.product(
-        conv_gamma_values, lin_gamma_values, distance_metrics, proxy_temp_values
-    ))
+    base_params = list(itertools.product(conv_gamma_values, lin_gamma_values))
+    if mode == "soft_knn_margin":
+        mode_specific_params = list(itertools.product(distance_metrics, proxy_temp_values))
+        param_combinations = list(itertools.product(base_params, mode_specific_params))
+    elif mode == "proto_margin":
+        mode_specific_params = list(itertools.product(distance_metrics, proxy_temp_values, topk_neg_values))
+        param_combinations = list(itertools.product(base_params, mode_specific_params))
+    else: # similarity or other future modes
+        param_combinations = base_params
     
     print(f"Total parameter combinations to process: {len(param_combinations)}")
     print("Patching model for LRP...")
 
     with DINOPatcher(model_wrapper):
-        for i, (conv_gamma, lin_gamma, distance_metric, proxy_temp) in enumerate(param_combinations):
-            print(f"\n=== Processing Param Combination {i+1}/{len(param_combinations)}: "
-                  f"conv_γ={conv_gamma}, lin_γ={lin_gamma}, dist={distance_metric}, proxy_temp={proxy_temp} ===")
+        for params in param_combinations:
+            if mode=="soft_knn_margin":
+                (conv_gamma, lin_gamma), (distance_metric, proxy_temp) = params
+                topk_neg = None
+            elif mode=="proto_margin":
+                (conv_gamma, lin_gamma), (distance_metric, proxy_temp, topk_neg) = params
+            else: # similarity
+                conv_gamma, lin_gamma = params
+                distance_metric, proxy_temp, topk_neg = None, None, None 
 
             for batch in tqdm(dataloader, desc="Processing batches"):
                 input_batch = batch["image"].to(device)
@@ -262,23 +282,34 @@ def generate_relevances(
                     label_single = labels_batch[j]
                     
                     relevance_single = None
-                    if mode == "placeholder":
-                        pass
-                    elif mode == "soft_knn_margin":
+                    extra_info = {} # To store mode-specific data like reference_embedding
+
+                    if mode == "soft_knn_margin":
                         relevance_single = compute_knn_attnlrp_pass(
-                            model_wrapper=model_wrapper,
-                            input_tensor=input_tensor_single,
-                            query_label=label_single,
-                            query_filename=filename,
-                            db_embeddings=db_embeddings,
-                            db_labels=db_labels,
-                            db_filenames=db_filenames,
-                            conv_gamma=conv_gamma,
-                            lin_gamma=lin_gamma,
-                            distance_metric=distance_metric,
-                            proxy_temp=proxy_temp,
-                            verbose=verbose
+                            model_wrapper=model_wrapper, input_tensor=input_tensor_single,
+                            query_label=label_single, query_filename=filename,
+                            db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                            conv_gamma=conv_gamma, lin_gamma=lin_gamma,
+                            distance_metric=distance_metric, proxy_temp=proxy_temp, verbose=verbose
                         )
+                    elif mode == "proto_margin":
+                        relevance_single = compute_similarity_proto_margin_pass(
+                             model_wrapper=model_wrapper, input_tensor=input_tensor_single,
+                             query_label=label_single, query_filename=filename,
+                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                             conv_gamma=conv_gamma, lin_gamma=lin_gamma,
+                             distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk_neg, verbose=verbose
+                        )
+                    elif mode == "similarity":
+                        relevance_single, reference_embedding, ref_idx = compute_similarity_lrp_pass(
+                            model_wrapper=model_wrapper, input_tensor=input_tensor_single,
+                            query_label=label_single, query_filename=filename,
+                            db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                            conv_gamma=conv_gamma, lin_gamma=lin_gamma, verbose=verbose
+                        )
+                        # Save the reference embedding used, for evaluation
+                        extra_info["reference_embedding"] = reference_embedding.cpu()
+                        extra_info["reference_filename"] = db_filenames[ref_idx]
 
                     # Prepare the mask if requested
                     mask_single = None
@@ -292,9 +323,12 @@ def generate_relevances(
                             "lin_gamma": lin_gamma,
                             "distance_metric": distance_metric,
                             "proxy_temp": proxy_temp,
+                            "topk_neg": topk_neg
                         },
+                        "mode": mode,
                         "relevance": relevance_single.detach().cpu(),
                         "mask": mask_single,
+                        **extra_info
                     }
                     all_results.append(result_item)
 
@@ -321,12 +355,14 @@ def get_relevances(
     lin_gamma = kwargs.pop('lin_gamma')
     distance_metric = kwargs.pop('distance_metric', 'cosine')
     proxy_temp = kwargs.pop('proxy_temp')
+    topk_neg = kwargs.pop('topk_neg')
 
     # Convert single values to the list format required by generate_relevances
     kwargs['conv_gamma_values'] = [conv_gamma]
     kwargs['lin_gamma_values'] = [lin_gamma]
     kwargs['distance_metrics'] = [distance_metric]
     kwargs['proxy_temp_values'] = [proxy_temp]
+    kwargs['topk_neg_values'] = [topk_neg]
 
     results_list = generate_relevances(
         model_wrapper=model_wrapper,
@@ -344,15 +380,54 @@ def get_relevances(
 #TODO also mask out same video for all three scores
 def compute_knn_proto_margin(
     query_emb: torch.Tensor,
+    query_label: str,
+    query_filename: str,
     db_embeddings: torch.Tensor,
     db_labels: list,
     db_filenames: list,
-    query_label: str,
-    query_filename: str = None,
+    distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
     exclude_self: bool = True
 ):
+    """Computes a margin score based on prototypes of positive and hard-negative neighbors.
+
+    This score is conceptually similar to a hard triplet loss but uses stable
+    prototypes instead of single instances. It constructs two prototypes:
+    1.  A 'positive prototype' by averaging embeddings of the same class.
+    2.  A 'hard-negative prototype' by averaging the `topk_neg` most confusing
+        embeddings from different classes.
+    The final score is the margin: sim(query, proto_pos) - sim(query, proto_neg).
+    Maximizing this score pushes the query to be more like its class archetype
+    and less like its hardest distractors.
+
+    Interpretation of the score:
+      - Near +2.0: Ideal. Query is a perfect archetype of its class and is
+                    maximally dissimilar from hard negatives.
+      -      0.0: Ambiguous. Query is equidistant from the positive and
+                   hard-negative prototypes.
+      - Near -2.0: Catastrophic. Query is the opposite of its own class prototype
+                    and perfectly matches the hard-negative prototype.
+
+    Args:
+        query_emb: The embedding for the query item.
+        query_label: The label of the query item.
+        query_filename: The filename of the query, for self-exclusion.
+        db_embeddings: A tensor of all embeddings in the database.
+        db_labels: A list of all labels in the database.
+        db_filenames: A list of all filenames, for self-exclusion.
+        distance_metric: The metric used; only 'cosine' is supported.
+        temp: Temperature for softmax weighting of prototypes.
+        topk_neg: The number of hard negatives to average for the prototype.
+        exclude_self: If True, the query is excluded from its own neighborhood.
+
+    Returns:
+        torch.Tensor: A scalar tensor representing the prototype-based margin score,
+                      with a value in the range [-2, 2].
+    """
+    if distance_metric != "cosine":
+        raise NotImplementedError("This proto margin is optimized for cosine similarity.")
+
     if query_emb.dim() == 1:
         query_emb = query_emb.view(1, -1)
 
@@ -361,7 +436,7 @@ def compute_knn_proto_margin(
 
     sims = F.linear(dbn, qn).squeeze(1)  # (N,)
 
-    if exclude_self and (query_filename is not None) and (query_filename in db_filenames):
+    if exclude_self and (query_filename in db_filenames):
         try:
             qidx = db_filenames.index(query_filename)
             sims[qidx] = -1e9
@@ -411,10 +486,36 @@ def compute_knn_proxy_soft(
     temp: float = 0.05,
     exclude_self: bool = True
 ) -> torch.Tensor:
-    """
-    Computes a differentiable, contrastive proxy score for k-NN based on
-    softmax-weighted similarities. This avoids the non-differentiable top-k
-    and creates a score that balances friends vs. foes.
+    """Computes a differentiable proxy for a k-NN classifier's confidence.
+
+    This function provides a "soft" version of a k-NN decision. Instead of a
+    hard top-k vote, it uses a softmax over all database similarities to create
+    a probability-like distribution. The final score is a margin between the
+    total weight assigned to "friends" (same label) and "foes" (different labels).
+    Maximizing this score encourages the formation of clean, well-separated
+    class clusters in the embedding space.
+
+    Interpretation of the score:
+      - +1.0: Maximum confidence. Query is deep in its correct class cluster.
+      -  0.0: Maximum confusion. Query is on the decision boundary, equally
+               close to friends and foes.
+      - -1.0: Catastrophically wrong. Query is deep in an incorrect class cluster.
+
+    Args:
+        query_embedding: The embedding for the query item.
+        query_label: The label of the query item.
+        query_filename: The filename of the query, for self-exclusion.
+        db_embeddings: A tensor of all embeddings in the database.
+        db_labels: A list of all labels in the database.
+        db_filenames: A list of all filenames, for self-exclusion.
+        distance_metric: The metric used; only 'cosine' is supported.
+        temp: Temperature for the softmax. Lower values create a "harder" k-NN
+              approximation by focusing on the nearest neighbors.
+        exclude_self: If True, the query is excluded from its own neighborhood.
+
+    Returns:
+        torch.Tensor: A scalar tensor representing the soft k-NN margin score,
+                      with a value in the range [-1, 1].
     """
     if distance_metric != "cosine":
         raise NotImplementedError("This soft proxy is optimized for cosine similarity.")
@@ -455,15 +556,58 @@ def compute_knn_proxy_soft(
 
     # The margin score is the most faithful proxy for a contrastive decision.
     # Maximizing this score means maximizing friend probability and minimizing foe probability.
-    score_prob = prob_friends #TODO try this
+    score_prob = prob_friends 
     score_margin = prob_friends - prob_foes
 
     return score_margin
-    #return score_prob
 
-def compute_similarity_score(query_embedding: torch.Tensor, reference_embedding: torch.Tensor) -> torch.Tensor:
-    # Normalize both embeddings to unit vectors for cosine similarity
+def compute_similarity_score(
+        query_embedding: torch.Tensor, 
+        query_label: str, query_filename: str, 
+        db_embeddings: torch.Tensor, 
+        db_labels: list, 
+        db_filenames: list,
+        reference_embedding: torch.Tensor = None
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    """Computes the cosine similarity between two embeddings of the same class.
+
+    This score measures the direct, one-to-one alignment between two vectors.
+    It is calculated as the dot product of the L2-normalized embeddings.
+
+    Interpretation of the score:
+      - +1.0: Perfect alignment. Vectors point in the same direction.
+      -  0.0: Orthogonal. Vectors are unrelated.
+      - -1.0: Perfect opposition. Vectors point in opposite directions.
+
+    Args:
+        query_embedding (torch.Tensor): The embedding for the query item.
+        reference_embedding (torch.Tensor): The embedding for the reference item.
+
+    Returns:
+        torch.Tensor: A scalar tensor representing the cosine similarity,
+                      with a value in the range [-1, 1].
+    """
+    ref_idx = -1
+    if reference_embedding is None:
+        label_to_indices = {} # for similarity score
+        for idx, label in enumerate(db_labels):
+            if label not in label_to_indices:
+                label_to_indices[label] = []
+            label_to_indices[label].append(idx)
+        # Find a positive reference embedding from the database
+        positive_indices = [idx for idx in label_to_indices.get(query_label, []) if db_filenames[idx] != query_filename]
+        if not positive_indices:
+            print(f"Warning: No other positive samples found for {query_label} ({query_filename}). Skipping.")
+            return 0, None, -1
+
+        ref_idx = positive_indices[0] 
+        device = query_embedding.device
+        reference_embedding = db_embeddings[ref_idx].unsqueeze(0).to(device)
+
+    assert reference_embedding.ndim == 2 and reference_embedding.shape[0] == 1, \
+        "reference_embedding should be of shape [1, embedding_dim]"
     query_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
     reference_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), reference_embedding)
     # The similarity score is the dot product of the normalized vectors
     similarity_score = (query_embedding_norm * reference_embedding_norm).sum()
+    return similarity_score, reference_embedding_norm, ref_idx

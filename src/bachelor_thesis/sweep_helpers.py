@@ -12,12 +12,12 @@ from tqdm import tqdm
 from omegaconf import OmegaConf
 
 from basemodel import TimmWrapper
-from eval_helpers import srg_knn
-
+from eval_helpers import srg_eval
+from utils import get_hpi_colors
 
 
 def evaluate_gamma_sweep(
-    relevances_by_parameters: Dict[str, Dict[Tuple[float, float, str, float], torch.Tensor]], 
+    all_relevance_results: List[Dict],
     evaluation_dataloader: DataLoader,
     model_wrapper: TimmWrapper,
     db_embeddings: torch.Tensor,
@@ -25,7 +25,6 @@ def evaluate_gamma_sweep(
     db_filenames: List[str],
     patch_size: int,
     device: torch.device,
-    evaluation_metrics: List[str],
     patches_per_step: int = 20,
     baseline_value: str = "black",
     plot_curves: bool = False
@@ -40,56 +39,67 @@ def evaluate_gamma_sweep(
     results_list = []
     all_curves_data = []
 
-    sample_filename = next(iter(relevances_by_parameters.keys()))
-    parameters_combinations = list(relevances_by_parameters[sample_filename].keys())
+    relevances_by_file = {}
+    for res in all_relevance_results:
+        fname = res['filename']
+        if fname not in relevances_by_file:
+            relevances_by_file[fname] = []
+        relevances_by_file[fname].append(res)
     
-    for i, batch in enumerate(tqdm(evaluation_dataloader, desc="Evaluating Images")):
+    for batch in tqdm(evaluation_dataloader, desc="Evaluating Images"):
         input_filename = batch["filename"][0]
+        if input_filename not in relevances_by_file:
+            continue
+
         query_label = batch["label"][0]
         input_tensor = batch["image"].to(device)
 
-        print(f"\n=== Evaluating Image {i + 1}/{len(evaluation_dataloader.dataset)}: {input_filename} ===")
+        print(f"\n=== Evaluating Image: {input_filename} ===")
         
-        for parameters in parameters_combinations:
-            conv_gamma, lin_gamma, distance_metric, proxy_temp = parameters
+        # Iterate through all generated relevance maps for this image
+        for relevance_data in relevances_by_file[input_filename]:
+            params = relevance_data["params"]
+            mode = relevance_data["mode"]
+        
+            print(f"  Evaluating Mode='{mode}', γ_conv={params['conv_gamma']}, γ_lin={params['lin_gamma']}...")
 
-            if parameters not in relevances_by_parameters[input_filename]:
-                print(f"  Skipping params {parameters} for {input_filename} (not found).")
-                continue
+            eval_kwargs = {
+                "query_label": query_label,
+                "query_filename": input_filename,
+                "db_embeddings": db_embeddings,
+                "db_labels": db_labels,
+                "db_filenames": db_filenames,
+                "distance_metric": params["distance_metric"],
+                "proxy_temp": params["proxy_temp"],
+            }
+            if mode == "proto_margin":
+                eval_kwargs["topk_neg"] = params["topk_neg"]
 
-            relevance_map = relevances_by_parameters[input_filename][parameters]
-            print(f"  Evaluating γ_conv={conv_gamma}, γ_lin={lin_gamma}, dist={distance_metric}, proxy_temp={proxy_temp}")
+            if mode == "similarity":
+                eval_kwargs["reference_embedding"] = relevance_data["reference_embedding"].to(device)
 
-            srg_results_by_metric = srg_knn(
-                relevance_map=relevance_map,
-                input_tensor=input_tensor, 
+            srg_results_by_metric = srg_eval(
+                relevance_map=relevance_data["relevance"],
+                input_tensor=input_tensor,
                 model=model_wrapper,
+                mode=mode, 
                 patch_size=patch_size,
-                query_label=query_label,         
-                query_filename=input_filename,
-                db_embeddings=db_embeddings,
-                db_labels=db_labels,
-                db_filenames=db_filenames,
-                distance_metric=distance_metric,
-                proxy_temp=proxy_temp,
-                patches_per_step=patches_per_step, 
+                patches_per_step=patches_per_step,
                 baseline_value=baseline_value,
                 plot_curves=plot_curves,
-                evaluation_metrics=evaluation_metrics
-            )
+                **eval_kwargs 
+            ) 
             
             for metric_name, srg_results in srg_results_by_metric.items():
-                results_list.append({
+                result_row = {
                     "image": input_filename,
-                    "conv_gamma": conv_gamma,
-                    "lin_gamma": lin_gamma,
-                    "distance_metric": distance_metric,
-                    "proxy_temp": proxy_temp,
-                    "metric_name": metric_name, 
+                    **params, 
+                    "metric_name": metric_name,
                     "faithfulness_score": srg_results["faithfulness_score"],
                     "auc_morf": srg_results["auc_morf"],
                     "auc_lerf": srg_results["auc_lerf"],
-                })
+                }
+                results_list.append(result_row)
 
                 if srg_results["morf_curve"] is not None:
                     all_curve_sets = [
@@ -102,10 +112,11 @@ def evaluate_gamma_sweep(
                         for step, score in enumerate(curve):
                             row_dict = {
                                 "image": input_filename,
-                                "conv_gamma": conv_gamma,
-                                "lin_gamma": lin_gamma,
-                                "distance_metric": distance_metric,
-                                "proxy_temp": proxy_temp,
+                                "conv_gamma": params["conv_gamma"],
+                                "lin_gamma": params["lin_gamma"],
+                                "distance_metric": params["distance_metric"],
+                                "proxy_temp": params["proxy_temp"],
+                                "topk_neg": params["topk_neg"],
                                 "metric_name": metric_name,
                                 "curve_label": curve_label,
                                 "step": step,
@@ -120,21 +131,19 @@ def evaluate_gamma_sweep(
 def find_robust_hyperparameters(
     results: List[Dict],
     decision_metric: str,
-    robustness_percentile: float = 0.9,
-    min_score_threshold: float = 0.0
 ) -> Tuple[Dict, pd.DataFrame, Dict]:
     """
     Finds robust hyperparameters based on a specific decision metric, but analyzes all metrics.
     """
     df = pd.DataFrame(results)
+    df = df.fillna("NA") # For the None's
     
     # Group by gamma parameters
-    parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp','metric_name'])    
+    parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp','metric_name', 'topk_neg'])    
     analysis_data = []
 
-    for (conv_gamma, lin_gamma, distance_metric, proxy_temp, metric_name), group in parameter_groups:
+    for (conv_gamma, lin_gamma, distance_metric, proxy_temp, metric_name, topk_neg), group in parameter_groups:
         scores = group['faithfulness_score'].values #can potentially include NaN's
-
         num_valid = np.sum(~np.isnan(scores))
         num_invalid = np.sum(np.isnan(scores))
 
@@ -160,6 +169,7 @@ def find_robust_hyperparameters(
             'lin_gamma': lin_gamma,
             'distance_metric': distance_metric,
             'proxy_temp': proxy_temp,
+            'topk_neg': topk_neg,
             'metric_name': metric_name, 
             
             'raw_mean': mean_score,
@@ -171,6 +181,7 @@ def find_robust_hyperparameters(
         })
     
     analysis_df = pd.DataFrame(analysis_data)
+
     
     # Select the best parameters based on the specified decision_metric
     decision_df = analysis_df[analysis_df['metric_name'] == decision_metric].copy()
@@ -188,6 +199,7 @@ def find_robust_hyperparameters(
         'lin_gamma': best_row['lin_gamma'],
         'distance_metric': best_row['distance_metric'],
         'proxy_temp': best_row['proxy_temp'],
+        'topk_neg': best_row['topk_neg'],
         'metric_name': best_row['metric_name'], # The metric used for this decision
         'robustness_score': best_row['robustness_score'],
         'mean_score': best_row['raw_mean'],
@@ -200,6 +212,7 @@ def find_robust_hyperparameters(
         'lin_gamma': worst_row['lin_gamma'],
         'distance_metric': worst_row['distance_metric'],
         'proxy_temp': worst_row['proxy_temp'],
+        'topk_neg': worst_row['topk_neg'],
         'metric_name': worst_row['metric_name'], # The metric used for this decision
         'robustness_score': worst_row['robustness_score'],
         'mean_score': worst_row['raw_mean'],
@@ -215,9 +228,7 @@ def visualize_robustness_analysis(
     save_path: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
 ) -> List[str]:
     """Creates visualizations for each combination of distance and evaluation metric."""    
-    # Get the base path and extension for saving files
     path_root, path_ext = os.path.splitext(save_path)
-
     output_dir = os.path.dirname(save_path)
     os.makedirs(output_dir, exist_ok=True)
     
@@ -229,39 +240,47 @@ def visualize_robustness_analysis(
         ('Overall Robustness Score', 'robustness_score')
     ]
 
-    for eval_metric in analysis_df['metric_name'].unique():
-        for dist_metric in analysis_df['distance_metric'].unique():
-            for proxy_temp in analysis_df['proxy_temp'].unique():
-                df_subset = analysis_df[
-                    (analysis_df['metric_name'] == eval_metric) &
-                    (analysis_df['distance_metric'] == dist_metric) &
-                    (analysis_df['proxy_temp'] == proxy_temp)
-                ]
-                if df_subset.empty:
-                    continue
-                
-                fig, axes = plt.subplots(1, 3, figsize=(22, 6))
-                fig.suptitle(
-                    f"Robustness Analysis (Eval: {eval_metric.title()}, "
-                    f"Distance: {dist_metric.title()}, Proxy Temp: {proxy_temp})",
-                    fontsize=20, y=1.05
-                )
-                
-                for ax, (title, value_col) in zip(axes, plots):
-                    pivot_df = df_subset.pivot(
-                        index='conv_gamma',
-                        columns='lin_gamma',
-                        values=value_col
+    # nur valide Werte nehmen (kein None / NaN)
+    metric_names = analysis_df['metric_name'].dropna().unique()
+    dist_metrics = analysis_df['distance_metric'].dropna().unique() if 'distance_metric' in analysis_df else [None]
+    proxy_temps = analysis_df['proxy_temp'].dropna().unique() if 'proxy_temp' in analysis_df else [None]
+    topk_negs = analysis_df['topk_neg'].dropna().unique() if 'topk_neg' in analysis_df else [None]
+
+    for eval_metric in metric_names:
+        for dist_metric in dist_metrics:
+            for proxy_temp in proxy_temps:
+                for topk_neg in topk_negs:
+                    df_subset = analysis_df[
+                        (analysis_df['metric_name'] == eval_metric) &
+                        (analysis_df['distance_metric'] == dist_metric) &
+                        (analysis_df['proxy_temp'] == proxy_temp) &
+                        (analysis_df['topk_neg'] == topk_neg)
+                    ]
+                    if df_subset.empty:
+                        continue
+
+                    fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+                    fig.suptitle(
+                        f"Robustness Analysis (Eval: {eval_metric}, "
+                        f"Distance: {dist_metric}, Proxy Temp: {proxy_temp}, TopK: {topk_neg})",
+                        fontsize=20, y=1.05
                     )
-                    sns.heatmap(pivot_df, annot=True, fmt='.3f', cmap='viridis', ax=ax)
-                    ax.set_title(title)
-                plt.tight_layout(rect=[0, 0, 1, 0.98])
-                
-                metric_save_path = f"{path_root}_{eval_metric}_{dist_metric}_proxy{proxy_temp}{path_ext}"
-                plt.savefig(metric_save_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
-                saved_paths.append(metric_save_path)
-    
+
+                    for ax, (title, value_col) in zip(axes, plots):
+                        pivot_df = df_subset.pivot(
+                            index='conv_gamma',
+                            columns='lin_gamma',
+                            values=value_col
+                        )
+                        sns.heatmap(pivot_df, annot=True, fmt='.3f', cmap='viridis', ax=ax)
+                        ax.set_title(title)
+
+                    plt.tight_layout(rect=[0, 0, 1, 0.98])
+                    metric_save_path = f"{path_root}_{eval_metric}_{dist_metric}_proxy{proxy_temp}_topk{topk_neg}{path_ext}"
+                    plt.savefig(metric_save_path, dpi=300, bbox_inches='tight')
+                    plt.close(fig)
+                    saved_paths.append(metric_save_path)
+
     return saved_paths
 
 
@@ -373,9 +392,9 @@ def log_nested_validation_to_wandb(
     """Logs the complete story of a nested validation experiment to W&B, handling multiple metrics."""
     print("\n--- Logging Nested Validation Experiment to Weights & Biases ---")
     if cfg["model"]["finetuned"]:
-        wandb_name = "attnlrp_gamma_sweep_multimetric_finetuned"
+        wandb_name = f"attnlrp_gamma_sweep_multimetric_finetuned_{decision_metric}"
     else:
-        wandb_name = "attnlrp_gamma_sweep_multimetric_non_finetuned"
+        wandb_name = f"attnlrp_gamma_sweep_multimetric_non_finetuned_{decision_metric}"
 
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     run = wandb.init(
@@ -392,6 +411,7 @@ def log_nested_validation_to_wandb(
     wandb.summary["approved_lin_gamma"] = approved_params['lin_gamma']
     wandb.summary["approved_distance_metric"] = approved_params['distance_metric']
     wandb.summary["approved_proxy_temp"] = approved_params['proxy_temp']
+    wandb.summary["approved_topk_neg"] = approved_params['topk_neg']
 
     wandb.summary[f"tune_set_mean_faithfulness ({decision_metric})"] = tune_performance['mean_faithfulness']
     wandb.summary[f"holdout_set_mean_faithfulness ({decision_metric})"] = holdout_performance['mean_faithfulness']
@@ -420,35 +440,33 @@ def log_nested_validation_to_wandb(
     # --- 4. Log Curves ---
     print("\n--- Logging Faithfulness Curves for Approved Parameters (All Metrics) ---")
 
-    #curve_cols = ["image", "conv_gamma", "lin_gamma", "distance_metric", "metric_name", "proxy_temp", "curve_label", "step", "score"]
+    needed_cols = ["conv_gamma", "lin_gamma", "proxy_temp", "distance_metric", "topk_neg"]
+
     tune_curves_df = pd.DataFrame(tune_curves_list)
     holdout_curves_df = pd.DataFrame(holdout_curves_list)
 
-    # Filter for approved hyperparameter combination
-    approved_params_filter = (
-        (tune_curves_df['conv_gamma'] == approved_params['conv_gamma']) &
-        (tune_curves_df['lin_gamma'] == approved_params['lin_gamma']) &
-        (tune_curves_df['proxy_temp'] == approved_params['proxy_temp']) &
-        (tune_curves_df['distance_metric'] == approved_params['distance_metric'])
-    )
-    approved_tune_curves_df = tune_curves_df[approved_params_filter].copy()
+    for col in needed_cols:
+        if col not in tune_curves_df.columns:
+            tune_curves_df[col] = np.nan
+        if col not in holdout_curves_df.columns:
+            holdout_curves_df[col] = np.nan
+
+        if col not in approved_params:
+            approved_params[col] = np.nan
+        if col not in worst_params:
+            worst_params[col] = np.nan
     
-    approved_holdout_params_filter = (
-        (holdout_curves_df['conv_gamma'] == approved_params['conv_gamma']) &
-        (holdout_curves_df['lin_gamma'] == approved_params['lin_gamma']) &
-        (holdout_curves_df['proxy_temp'] == approved_params['proxy_temp']) &
-        (holdout_curves_df['distance_metric'] == approved_params['distance_metric'])
-    )
-    approved_holdout_curves_df = holdout_curves_df[approved_holdout_params_filter].copy()
+    # --- Approved ---
+    approved_tune_curves_df = tune_curves_df[_build_filter(tune_curves_df, approved_params)].copy()
+    approved_holdout_curves_df = holdout_curves_df[_build_filter(holdout_curves_df, approved_params)].copy()
 
     approved_tune_curves_df['split'] = 'tune'
     approved_holdout_curves_df['split'] = 'holdout'
     combined_curves_df = pd.concat([approved_tune_curves_df, approved_holdout_curves_df])
 
-    # Plot mean curves for each metric separately
     for eval_metric in combined_curves_df['metric_name'].unique():
         metric_df = combined_curves_df[combined_curves_df['metric_name'] == eval_metric]
-        
+
         log_key_tune = f"plots/mean_curves_tune_{eval_metric}"
         tune_plot = plot_and_log_mean_curve(
             df=metric_df[metric_df['split'] == 'tune'],
@@ -467,30 +485,10 @@ def log_nested_validation_to_wandb(
         )
         if holdout_plot: log_payload[log_key_holdout] = holdout_plot
 
-    # 1. First, let's see what we are trying to filter for.
-    print("\n--- Debugging Worst Params ---")
-    print(f"Worst params to find: {worst_params}")
 
-    # 2. Let's inspect the dtypes of our DataFrame to check for mismatches.
-    print("Data types of tune_curves_df columns:")
-    print(tune_curves_df[['conv_gamma', 'lin_gamma', 'proxy_temp', 'distance_metric']].dtypes)
-    print("Sample data from tune_curves_df:")
-    print(tune_curves_df[['conv_gamma', 'lin_gamma', 'proxy_temp', 'distance_metric']].head())
-    worst_tune_filter = (
-        (tune_curves_df['conv_gamma'] == worst_params['conv_gamma']) &
-        (tune_curves_df['lin_gamma'] == worst_params['lin_gamma']) &
-        (tune_curves_df['proxy_temp'] == worst_params['proxy_temp']) &
-        (tune_curves_df['distance_metric'] == worst_params['distance_metric'])
-    )
-    worst_tune_df = tune_curves_df[worst_tune_filter].copy()
-
-    worst_holdout_filter = (
-        (holdout_curves_df['conv_gamma'] == worst_params['conv_gamma']) &
-        (holdout_curves_df['lin_gamma'] == worst_params['lin_gamma']) &
-        (holdout_curves_df['proxy_temp'] == worst_params['proxy_temp']) &
-        (holdout_curves_df['distance_metric'] == worst_params['distance_metric'])
-    )
-    worst_holdout_df = holdout_curves_df[worst_holdout_filter].copy()
+    # --- Worst ---
+    worst_tune_df = tune_curves_df[_build_filter(tune_curves_df, worst_params)].copy()
+    worst_holdout_df = holdout_curves_df[_build_filter(holdout_curves_df, worst_params)].copy()
 
     worst_tune_df['split'] = 'tune'
     worst_holdout_df['split'] = 'holdout'
@@ -517,16 +515,16 @@ def log_nested_validation_to_wandb(
         )
         if worst_holdout_plot: log_payload[log_key_worst_holdout] = worst_holdout_plot
 
-    if not combined_curves_df.empty:
-        combined_curves_df['series'] = combined_curves_df.apply(
-            lambda row: f"{row['split']}/{row['metric_name']}/{row['curve_label']}", axis=1
-        )
-        plot_table = wandb.Table(dataframe=combined_curves_df[['series', 'step', 'score']])
-        wandb_plot = wandb.plot.line(
-            plot_table, x="step", y="score", stroke="series",                
-            title="Faithfulness Curves (Tune vs. Holdout, All Metrics)"
-        )
-        log_payload["plots/aggregate_faithfulness_curves"] = wandb_plot
+        if not combined_curves_df.empty:
+            combined_curves_df['series'] = combined_curves_df.apply(
+                lambda row: f"{row['split']}/{row['metric_name']}/{row['curve_label']}", axis=1
+            )
+            plot_table = wandb.Table(dataframe=combined_curves_df[['series', 'step', 'score']])
+            wandb_plot = wandb.plot.line(
+                plot_table, x="step", y="score", stroke="series",                
+                title="Faithfulness Curves (Tune vs. Holdout, All Metrics)"
+            )
+            log_payload["plots/aggregate_faithfulness_curves"] = wandb_plot
 
     # --- 5. MAKE THE SINGLE, CONSOLIDATED LOG CALL ---
     if log_payload:
@@ -535,6 +533,19 @@ def log_nested_validation_to_wandb(
 
     run.finish()
     print("--- Finished logging to W&B ---")
+
+def _build_filter(df: pd.DataFrame, params: dict) -> pd.Series:
+    mask = pd.Series(True, index=df.index)
+    for col, val in params.items():
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            # Skip this param if it's None/NaN → don't filter on it
+            continue
+        if col not in df.columns:
+            continue
+        # choose default depending on dtype
+        fill_default = -1 if df[col].dtype.kind in "if" else "NA"
+        mask &= (df[col].fillna(fill_default) == val)
+    return mask
 
 def plot_and_log_mean_curve(
     df: pd.DataFrame,
@@ -549,11 +560,11 @@ def plot_and_log_mean_curve(
     """
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(10, 6))
-
+    hpi_colors = get_hpi_colors(cfg)
     colors = {
-        'morf_raw': tuple(int(c) / 255 for c in cfg["plots"]["red"]), 
-        'lerf_raw': tuple(int(c) / 255 for c in cfg["plots"]["yellow"]),
-        'random_raw': tuple(int(c) / 255 for c in cfg["plots"]["gray"]),
+        'morf_raw': hpi_colors["red"],
+        'lerf_raw': hpi_colors["yellow"],
+        'random_raw': hpi_colors["gray"],
     }
     
     for label, group in df.groupby('curve_label'):

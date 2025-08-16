@@ -1,10 +1,11 @@
 import numpy as np
+from pydash import result
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
-from typing import Tuple, List, Dict
+from typing import Any, Tuple, List, Dict, Callable
 from knn_helpers import calculate_distance
 from lrp_helpers import compute_knn_proxy_soft, compute_knn_proto_margin, compute_similarity_score
 
@@ -18,35 +19,31 @@ def calculate_auc(curve: torch.Tensor) -> float:
     return torch.mean(curve).item()
 
 
-def _run_knn_perturbation(
+def _run_perturbation_experiment(
     model: torch.nn.Module, # UN-PATCHED model
     input_tensor: torch.Tensor,
     patch_order: torch.Tensor,
     perturbation_type: str,
     patch_size: int,
-    # k-NN specific args
-    query_label: str,         
-    query_filename: str,      
-    db_embeddings: torch.Tensor,
-    db_labels: list,
-    db_filenames: list,
-    distance_metric: str,
-    proxy_temp: float,
+    score_fn: Callable,
+    score_fn_kwargs: Dict[str, Any],
     patches_per_step: int = 1,
-    evaluation_metric: str = "soft_knn_margin",
     baseline_value: str = "black",
 ) -> torch.Tensor:
     """
-    Runs a perturbation experiment, tracking the k-NN proxy score at each step.
+    Runs a generic perturbation experiment, tracking a given score at each step.
 
     Args:
-        ... (other args) ...
-        patches_per_step (int): The number of patches to add/remove between each
-                                evaluation. Set to 1 for maximum granularity.
-                                A larger value speeds up the process.
+        model: The model to evaluate.
+        input_tensor: The input image tensor.
+        patch_order: The order in which to perturb patches.
+        perturbation_type: 'deletion' or 'insertion'.
+        patch_size: The size of each square patch.
+        score_fn: A callable function that takes an embedding and kwargs and returns a scalar score.
+        score_fn_kwargs: A dictionary of keyword arguments to pass to score_fn.
+        patches_per_step: Number of patches to perturb in each step.
+        baseline_value: 'black' or 'mean' for the perturbation baseline.
     """
-    if not evaluation_metric == "soft_knn_margin":
-        raise ValueError(f"Unsupported evaluation metric: {evaluation_metric}")
 
     model.eval()
 
@@ -61,10 +58,11 @@ def _run_knn_perturbation(
     # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad():
         initial_embedding = model(input_tensor)
-        initial_score = compute_knn_proxy_soft(
-            initial_embedding, query_label, query_filename, db_embeddings,
-            db_labels, db_filenames, distance_metric, temp=proxy_temp
-        )
+        result = score_fn(initial_embedding, **score_fn_kwargs)
+        if isinstance(result, tuple):
+            initial_score = result[0] #similarity returns reference embedding for easy lookup
+        else:
+            initial_score = result
 
     num_patches = len(patch_order)
     h, w = input_tensor.shape[-2:]
@@ -102,10 +100,11 @@ def _run_knn_perturbation(
         # After perturbing the chunk, run the model and get the score
         with torch.no_grad():
             current_embedding = model(perturbed_tensor)
-            score = compute_knn_proxy_soft(
-                current_embedding, query_label, query_filename, db_embeddings,
-                db_labels, db_filenames, distance_metric, temp=proxy_temp
-            )
+            result = score_fn(current_embedding, **score_fn_kwargs)
+            if isinstance(result, tuple):
+                score = result[0] #similarity returns reference embedding for easy lookup
+            else:
+                score = result
             output_scores.append(score.item())
 
         # Update progress
@@ -119,27 +118,22 @@ def _run_knn_perturbation(
     return torch.tensor(output_scores, device=input_tensor.device)
 
 
-def srg_knn(
+def srg_eval(
     relevance_map: torch.Tensor,
     input_tensor: torch.Tensor,
     model: torch.nn.Module, # UN-PATCHED model
+    mode: str,
     patch_size: int,
-    # k-NN specific args
-    query_label: str,         
-    query_filename: str,      
-    db_embeddings: torch.Tensor,
-    db_labels: list,
-    db_filenames: list,
-    distance_metric: str,
-    proxy_temp: float,
     patches_per_step: int,
     baseline_value: str = "black",
     plot_curves: bool = False,
-    evaluation_metrics: List[str] = ["soft_knn_margin"]
+    **kwargs
 ) -> Dict:
     """
-    Calculates the ∆A_F (SRG-like) score for a k-NN explanation.
-    A higher score is better.
+    Calculates the Faithfulness Score (LeRF_AUC - MoRF_AUC) for a given explanation mode.
+
+    The score function used for perturbation is determined by the `mode`.
+    All mode-specific arguments (e.g., db_embeddings, query_label) must be passed via **kwargs.
     """
     # relevance should be shape (1,1,H,W)
     patch_relevance = F.avg_pool2d(relevance_map, kernel_size=patch_size, stride=patch_size)
@@ -148,96 +142,109 @@ def srg_knn(
     lerf_order = torch.argsort(patch_relevance_flat, descending=False)
     morf_order = torch.argsort(patch_relevance_flat, descending=True)
 
+    if mode == "soft_knn_margin":
+        score_fn = compute_knn_proxy_soft
+        score_fn_kwargs = {
+            "query_label": kwargs["query_label"],
+            "query_filename": kwargs["query_filename"],
+            "db_embeddings": kwargs["db_embeddings"],
+            "db_labels": kwargs["db_labels"],
+            "db_filenames": kwargs["db_filenames"],
+            "distance_metric": kwargs["distance_metric"],
+            "temp": kwargs["proxy_temp"]
+        }
+    elif mode == "proto_margin":
+        score_fn = compute_knn_proto_margin
+        score_fn_kwargs = {
+            "query_label": kwargs["query_label"],
+            "query_filename": kwargs["query_filename"],
+            "db_embeddings": kwargs["db_embeddings"],
+            "db_labels": kwargs["db_labels"],
+            "db_filenames": kwargs["db_filenames"],
+            "temp": kwargs["proxy_temp"],
+            "distance_metric": kwargs["distance_metric"],
+            "topk_neg": kwargs.get("topk_neg", 50)
+        }
+    elif mode == "similarity":
+        score_fn = compute_similarity_score
+        score_fn_kwargs = {
+            "query_label": kwargs["query_label"],
+            "query_filename": kwargs["query_filename"],
+            "db_embeddings": kwargs["db_embeddings"],
+            "db_labels": kwargs["db_labels"],
+            "db_filenames": kwargs["db_filenames"],
+            "reference_embedding": kwargs["reference_embedding"]
+        }
+    else:
+        raise ValueError(f"Unsupported evaluation mode: '{mode}'")
+
     perturb_args = {
         "patch_size": patch_size,
-        "query_label": query_label,
-        "query_filename": query_filename,
-        "db_embeddings": db_embeddings,
-        "db_labels": db_labels,
-        "db_filenames": db_filenames,
-        "distance_metric": distance_metric,
-        "proxy_temp": proxy_temp,
+        "score_fn": score_fn,
+        "score_fn_kwargs": score_fn_kwargs,
         "patches_per_step": patches_per_step,
         "baseline_value": baseline_value
     }
 
     
 
-    results = {}
-    if len(evaluation_metrics) == 0:
-        evaluation_metrics = ["soft_knn_margin"] #e.g. knn lrp mode
+    morf_curve = _run_perturbation_experiment(model, input_tensor, morf_order, 'deletion', **perturb_args)
+    lerf_curve = _run_perturbation_experiment(model, input_tensor, lerf_order, 'deletion', **perturb_args)
+    random_curve = _run_perturbation_experiment(
+        model, input_tensor, torch.randperm(len(morf_order)), 'deletion', **perturb_args
+    )
 
-    for metric_name in evaluation_metrics:
-        perturb_args["evaluation_metric"] = metric_name
+    auc_morf = calculate_auc(morf_curve)
+    auc_lerf = calculate_auc(lerf_curve)
+    auc_random = calculate_auc(random_curve)
 
-        morf_curve = _run_knn_perturbation(model, input_tensor, morf_order, 'deletion', **perturb_args)
-        lerf_curve = _run_knn_perturbation(model, input_tensor, lerf_order, 'deletion', **perturb_args)
+    faithfulness_score = auc_lerf - auc_morf
+    morf_vs_random = auc_random - auc_morf
+    lerf_vs_random = auc_lerf - auc_random
 
-        random_curve = _run_knn_perturbation(
-            model, input_tensor, torch.randperm(len(morf_order)), 'deletion', **perturb_args
-        )
-
-        auc_morf = calculate_auc(morf_curve)
-        auc_lerf = calculate_auc(lerf_curve)
-        auc_random = calculate_auc(random_curve)
-
-        faithfulness_score = auc_lerf - auc_morf
-        morf_vs_random = auc_random - auc_morf
-        lerf_vs_random = auc_lerf - auc_random
-
-        print(f"Area under LeRF curve: {auc_lerf:.4f}")
-        print(f"Area under MoRF curve: {auc_morf:.4f}")
-        print(f"Area under Random curve: {auc_random:.4f}")
-        print(f"-------------------------------------------")
-        print(f"Faithfulness Score (A_LeRF - A_MoRF): {faithfulness_score:.4f}")
-        print(f"MoRF Improvement vs. Random (A_Rand - A_MoRF): {morf_vs_random:.4f}")
-
-        results[metric_name] = {
-            'faithfulness_score': faithfulness_score,
-            'morf_vs_random': morf_vs_random,
-            'lerf_vs_random': lerf_vs_random,
-            'auc_morf': auc_morf,
-            'auc_lerf': auc_lerf,
-            'auc_random': auc_random,
-            'morf_curve': morf_curve.cpu().numpy(),
-            'lerf_curve': lerf_curve.cpu().numpy(),
-            'random_curve': random_curve.cpu().numpy()
-        }
+    print(f"--- SRG Results for Mode: '{mode}' ---")
+    print(f"Area under LeRF curve: {auc_lerf:.4f}")
+    print(f"Area under MoRF curve: {auc_morf:.4f}")
+    print(f"Faithfulness Score (LeRF - MoRF): {faithfulness_score:.4f}")
+    print(f"Improvement vs. Random (Random - MoRF): {morf_vs_random:.4f}")
+    print(f"Improvement vs. Random (LeRF - Random): {lerf_vs_random:.4f}")
+    print("-" * 20)
+    
+    results = {
+        'faithfulness_score': faithfulness_score,
+        'morf_vs_random': morf_vs_random,
+        'lerf_vs_random': lerf_vs_random,
+        'auc_morf': auc_morf,
+        'auc_lerf': auc_lerf,
+        'auc_random': auc_random,
+        'morf_curve': morf_curve.cpu().numpy(),
+        'lerf_curve': lerf_curve.cpu().numpy(),
+        'random_curve': random_curve.cpu().numpy()
+    }
     
 
     
 
     if plot_curves:
-        num_metrics = len(evaluation_metrics)
-        fig, axs = plt.subplots(1, num_metrics, figsize=(9 * num_metrics, 7), sharey=False)
-        if num_metrics == 1:
-            axs = [axs] 
+        fig, ax = plt.subplots(1, 1, figsize=(9, 7))
+        num_eval_steps = len(results['morf_curve'])
+        x_axis = np.linspace(0, 100, num_eval_steps)
+        
+        ax.plot(x_axis, results['morf_curve'], label=f"MoRF (AUC={results['auc_morf']:.3f})", color='red')
+        ax.plot(x_axis, results['lerf_curve'], label=f"LeRF (AUC={results['auc_lerf']:.3f})", color='blue')
+        ax.plot(x_axis, results['random_curve'], label=f"Random (AUC={results['auc_random']:.3f})", color='gray', linestyle='--')
+        ax.set_title(f"Perturbation Curves (Mode: {mode.title()})")
+        ax.set_xlabel('% of Patches Removed')
+        ax.set_ylabel(f"{mode.replace('_', ' ').title()} Score")
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.6)
 
-        for i, metric_name in enumerate(evaluation_metrics):
-            if metric_name not in results or results[metric_name]['morf_curve'] is None:
-                continue # Skip plotting for this metric if data is invalid
-            metric_results = results[metric_name]
-            num_eval_steps = len(metric_results['morf_curve'])
-            x_axis = np.linspace(0, 100, num_eval_steps)
-            
-            axs[i].plot(x_axis, metric_results['morf_curve'], label=f"MoRF (AUC={metric_results['auc_morf']:.3f})", color='red')
-            axs[i].plot(x_axis, metric_results['lerf_curve'], label=f"LeRF (AUC={metric_results['auc_lerf']:.3f})", color='blue')
-            axs[i].plot(x_axis, metric_results['random_curve'], label=f"Random (AUC={metric_results['auc_random']:.3f})", color='gray', linestyle='--')
-            axs[i].set_title(f"Perturbation Curves ({metric_name.replace('_', ' ').title()})")
-            axs[i].set_xlabel('% of Patches Removed')
-            axs[i].set_ylabel(f"{metric_name.replace('_', ' ').title()} Score")
-            axs[i].legend()
-            axs[i].grid(True, linestyle='--', alpha=0.6)
-            if 'recall' in metric_name:
-                 axs[i].set_ylim([-0.05, 1.05])
-
-        plt.suptitle(f'Faithfulness Evaluation for {query_filename}', fontsize=16)
+        plt.suptitle(f'Faithfulness Evaluation for {kwargs.get("query_filename", "Unknown Image")}', fontsize=16)
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        # Consider making the save path an argument if needed
-        plt.savefig("/workspaces/bachelor_thesis_code/src/bachelor_thesis/curves/multi_metric_curves.png")
+        plt.show() # Or save to a file
         plt.close(fig)
 
-    return results
+    return {mode: results}
 
 def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[float, float, float]:
     """

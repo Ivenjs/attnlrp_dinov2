@@ -201,7 +201,6 @@ class PerturbedGorillaReIDDataset(Dataset):
             return original_data
 
         # 3. Calculate patch order based on relevance
-        # This logic is adapted from your srg_knn function
         patch_relevance = F.avg_pool2d(relevance_map, 
                                        kernel_size=self.patch_size, 
                                        stride=self.patch_size)

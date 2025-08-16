@@ -17,11 +17,13 @@ from lxt.efficient import monkey_patch_zennit
 
 
 
-def run_experiment(cfg):
+def main(cfg):
     # --- 1. Standard Setup ---
     monkey_patch_zennit(verbose=True)
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     MODE = cfg["lrp"]["mode"]
+    print(f"\n--- RUNNING WITH MODE: {MODE} ---")
+
     DECISION_METRIC = MODE
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
     random.seed(cfg["seed"])
@@ -80,6 +82,7 @@ def run_experiment(cfg):
         proxy_temp=cfg["knn"]["temp"],          # Pass as single value 
         distance_metric=cfg["knn"]["distance_metric"], #pass as single value
         mode=cfg["lrp"]["mode"],
+        topk_neg=cfg["knn"]["topk_neg"],
         db_embeddings=val_db_embeddings,
         db_filenames=val_db_filenames,
         db_labels=val_db_labels
@@ -173,9 +176,16 @@ if __name__ == "__main__":
     cfg = load_config(args.config_name, unknown_args)
 
     # Also has to be run because of the caching of the relevance and mask values
+    command = [
+        "python", 
+        "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py", 
+        "--config_name", 
+        args.config_name
+    ] + unknown_args
+
     result = subprocess.run(
-        ["python", "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py", "--config_name", args.config_name],
+        command,
         check=True
     )
 
-    run_experiment(cfg)
+    main(cfg)
