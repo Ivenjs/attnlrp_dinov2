@@ -31,7 +31,7 @@ def main(cfg: dict):
 
 
     MODE = cfg["lrp"]["mode"]
-    DECISION_METRIC = cfg["sweep"]["decision_metric"]
+    DECISION_METRIC = MODE
     FINETUNED = cfg["model"]["finetuned"]
 
     is_finetuned = cfg["model"]["finetuned"]
@@ -255,7 +255,8 @@ def main(cfg: dict):
             tune_results_list=tune_results_list,
             holdout_results_list=holdout_results_list,
             tune_curves_list=tune_curves_list,
-            holdout_curves_list=holdout_curves_list
+            holdout_curves_list=holdout_curves_list,
+            decision_metric=DECISION_METRIC
         )
 
 if __name__ == "__main__":

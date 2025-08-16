@@ -29,31 +29,29 @@ model:
   model_dtype: "float16"
 
 plots:
-  red: (162, 41, 64)
-  orange: (206, 104, 45)
-  yellow: (236, 172, 61)
-  gray: (172, 175, 178)
+  red: [162, 41, 64]
+  orange: [206, 104, 45]
+  yellow: [236, 172, 61]
+  gray: [172, 175, 178]
 
 wandb:
   project: "bachelor_thesis"
   entity: "gorillawatch"
 
 lrp:
-  mode: "knn"
+  mode: "soft_knn_margin"
+  # "soft_knn_margin" or "proto_margin" or "similarity"
   db_relevances_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db"
 
-mask_exp:
-  decision_metric: "soft_knn_margin"
 
 sweep:
-  evaluation_metrics: ["soft_knn_margin"]
-  decision_metric: "soft_knn_margin"
+  evaluation_metrics: []
   robustness_percentile: 0.7
   min_score_threshold: 0.1
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
-  temp: [0.01]
-  #0.01, 0.03, 0.07, 0.15, 0.3
+  temp: [0.01, 0.03, 0.07, 0.15]
+  #0.01, 0.03, 0.07, 0.15
   queries_per_class: 3
   #[0.01, 0.03, 0.07, 0.15, 0.3]
   conv_gammas: [0.001, 0.05, 0.1, 0.25]

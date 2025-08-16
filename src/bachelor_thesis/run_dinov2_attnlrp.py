@@ -165,7 +165,6 @@ def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> Li
     print(f"\nOverall Rank-1 Accuracy (Orig):   {rank1_orig:.4f}")
     print(f"Overall Rank-1 Accuracy (Masked): {rank1_masked:.4f}")
 
-    #decision_metric = cfg["mask_exp"]["decision_metric"]
     saved_plot_paths = []
     # --- Correlation Plots ---
     for col in masking_results_df.columns:
@@ -410,6 +409,8 @@ def main(cfg: Dict):
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
+    MODE = cfg["lrp"]["mode"]
+    DECISION_METRIC = MODE
 
     is_finetuned = cfg["model"]["finetuned"]
     model_type_str = "finetuned" if is_finetuned else "base"
@@ -474,7 +475,7 @@ def main(cfg: Dict):
         dataset=val_dataset,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
-        decision_metric=cfg["sweep"]["decision_metric"]
+        decision_metric=DECISION_METRIC
     )
 
     relevances_all = get_relevances(

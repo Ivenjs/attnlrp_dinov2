@@ -368,6 +368,7 @@ def log_nested_validation_to_wandb(
     holdout_results_list: List[Dict],
     tune_curves_list: List,
     holdout_curves_list: List,
+    decision_metric: str
 ):
     """Logs the complete story of a nested validation experiment to W&B, handling multiple metrics."""
     print("\n--- Logging Nested Validation Experiment to Weights & Biases ---")
@@ -382,7 +383,6 @@ def log_nested_validation_to_wandb(
         name=wandb_name, config=cfg_dict
     )
 
-    decision_metric = cfg["sweep"]["decision_metric"]
 
     wandb.summary["final_decision"] = final_decision
     wandb.summary["decision_metric"] = decision_metric
@@ -551,9 +551,9 @@ def plot_and_log_mean_curve(
     fig, ax = plt.subplots(figsize=(10, 6))
 
     colors = {
-        'morf_raw': tuple(c / 255 for c in cfg["plots"]["red"]), 
-        'lerf_raw': tuple(c / 255 for c in cfg["plots"]["yellow"]),
-        'random_raw': tuple(c / 255 for c in cfg["plots"]["gray"]),
+        'morf_raw': tuple(int(c) / 255 for c in cfg["plots"]["red"]), 
+        'lerf_raw': tuple(int(c) / 255 for c in cfg["plots"]["yellow"]),
+        'random_raw': tuple(int(c) / 255 for c in cfg["plots"]["gray"]),
     }
     
     for label, group in df.groupby('curve_label'):

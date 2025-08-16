@@ -1,19 +1,15 @@
 from basemodel import TimmWrapper
-from torchvision import transforms
 import os
-from PIL import Image
 import torch
 from tqdm import tqdm
 import torch.nn.functional as F
 from typing import Tuple
 from torch.utils.data import DataLoader
 from lxt.efficient.rules import identity_rule_implicit
-
+import torch
 
 import numpy as np
 
-import yaml
-from utils import get_class_label
 from dataset import GorillaReIDDataset, custom_collate_fn
 
 def fill_knn_db(
@@ -148,99 +144,63 @@ def compute_distances(
     else:
         raise ValueError(f"Unknown metric: {metric}. Choose 'cosine' or 'euclidean'.")
 
-
-def knn(
-    embedding: torch.Tensor,
-    db_embeddings: torch.Tensor,
-    db_labels: list,
-    device: torch.device,
-    k: int = 5,
-    metric: str = "euclidean",
-) -> str:
-    distances = compute_distances(embedding, db_embeddings, metric=metric)
-
-    top_k_indices = torch.topk(distances, k, largest=False).indices
-    top_k_labels = [db_labels[i] for i in top_k_indices]
-    label = max(set(top_k_labels), key=top_k_labels.count)
-    return label
-
-
-def compute_knn_proxy_score(
-    query_embedding: torch.Tensor,
-    query_label: str,         
-    query_filename: str,      
+def compute_knn_proto_margin(
+    query_emb: torch.Tensor,
     db_embeddings: torch.Tensor,
     db_labels: list,
     db_filenames: list,
-    distance_metric: str = "cosine",
-    k: int = 5,
-    return_indices=False
-) -> torch.Tensor:
-    """
-    Computes a differentiable proxy score for a k-NN classifier's decision.
+    query_label: str,
+    query_filename: str = None,
+    temp: float = 0.05,
+    topk_neg: int = 50,
+    exclude_self: bool = True
+):
+    if query_emb.dim() == 1:
+        query_emb = query_emb.view(1, -1)
 
-    The score is defined as: S = - mean(sim_friends) as LRP wants to backpropagate from a value
-    that should be maximized, so we use the negative distance to friends (ecause we want to minimize dist_friends).
-    """
+    qn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_emb)
+    dbn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
-    
-    num_db_samples = len(db_filenames)
-    
-    is_query_in_db = query_filename in db_filenames
-    
-    num_available_neighbors = num_db_samples - 1 if is_query_in_db else num_db_samples
-    
-    # Ensure k is not larger than the number of available neighbors.
-    # If there are no available neighbors, effective_k will be 0.
-    effective_k = min(k, num_available_neighbors)
+    sims = F.linear(dbn, qn).squeeze(1)  # (N,)
 
-    # If there are no possible neighbors to find, we can't compute a score.
-    # Return a neutral score (0) or handle as an error. NORMALLY, THIS SHOULD NOT HAPPEN.
-    if effective_k <= 0:
-        # Returning a neutral score is often a safe default.
-        print(f"No available neighbors for query '{query_filename}'. Returning neutral score. THIS IS VERY UNUSUAL!")
-        return torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
-    # We must use a detached version of the query for the distance calculation
-    # to find the neighbors. This is because topk is not nicely differentiable
-    # and we only need the *identities* of the neighbors, not their gradient path.
-    with torch.no_grad():
-        distances = compute_distances(query_embedding.detach(), db_embeddings, distance_metric)
-        if is_query_in_db:
-            try:
-                query_idx = db_filenames.index(query_filename)
-                distances[query_idx] = torch.inf
-            except ValueError:
-                pass
-        top_k_indices = torch.topk(distances, effective_k, largest=False).indices
+    if exclude_self and (query_filename is not None) and (query_filename in db_filenames):
+        try:
+            qidx = db_filenames.index(query_filename)
+            sims[qidx] = -1e9
+        except ValueError:
+            pass
 
-    friends_indices = []
-    foes_indices = []
-    for idx_tensor in top_k_indices:
-        idx = idx_tensor.item() 
-        if db_labels[idx] == query_label:
-            friends_indices.append(idx)
-        else:
-            foes_indices.append(idx)
-    
-    differentiable_distances = compute_distances(query_embedding, db_embeddings, distance_metric)
+    # masks
+    device = sims.device
+    labels_tensor = torch.tensor([1 if l == query_label else 0 for l in db_labels], device=device)
 
-    if friends_indices:
-        # We want to MINIMIZE dist_friends, which is equivalent to MAXIMIZING -dist_friends.
-        # LRP explains what contributes to MAXIMIZING the output.
-        score = -differentiable_distances[friends_indices].mean() 
+    # proto_pos (if no friends found, fallback to nearest same-file or zero)
+    pos_idx = torch.nonzero(labels_tensor).squeeze(1) if labels_tensor.sum() > 0 else torch.tensor([], device=device, dtype=torch.long)
+    if pos_idx.numel() == 0:
+        # fallback: take the single best-matching embedding with same filename if any, else top1 overall
+        proto_pos = dbn[sims.argmax()].unsqueeze(0)
     else:
-        # If no friends, there's nothing to explain. We can return a zero map
-        # or handle it gracefully. A neutral score of 0 is a safe bet.
-        # Backpropagating from a constant gives zero gradients.
-        score = torch.tensor(0.0, device=query_embedding.device, requires_grad=True)
-        
-    if return_indices:
-        return score, friends_indices, foes_indices
-    else:
-        return score
+        sims_pos = sims[pos_idx]
+        alpha_pos = F.softmax(sims_pos / temp, dim=0)
+        proto_pos = (alpha_pos.unsqueeze(1) * dbn[pos_idx]).sum(dim=0, keepdim=True)  # (1, D)
 
-import torch
-import torch.nn.functional as F
+    # proto_neg: topk among negatives
+    neg_mask = (labels_tensor == 0)
+    neg_idxs = torch.nonzero(neg_mask).squeeze(1)
+    if neg_idxs.numel() == 0:
+        proto_neg = torch.zeros_like(proto_pos)
+    else:
+        sims_negs = sims[neg_idxs]
+        k = min(topk_neg, sims_negs.numel())
+        topk_vals, topk_idx_in_negs = sims_negs.topk(k)
+        chosen = neg_idxs[topk_idx_in_negs]
+        alpha_neg = F.softmax(topk_vals / temp, dim=0)
+        proto_neg = (alpha_neg.unsqueeze(1) * dbn[chosen]).sum(dim=0, keepdim=True)  # (1, D)
+
+    # similarity scalars
+    sim_pos = (qn * proto_pos).sum()
+    sim_neg = (qn * proto_neg).sum()
+    return sim_pos - sim_neg
 
 def compute_knn_proxy_soft(
     query_embedding: torch.Tensor,

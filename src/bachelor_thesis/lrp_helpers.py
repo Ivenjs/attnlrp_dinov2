@@ -2,33 +2,92 @@ import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Dict, Any
 import os
+import torch.nn.functional as F
 import zennit.rules as z_rules
 from zennit.composites import LayerMapComposite
 import itertools
 from basemodel import TimmWrapper
 from torch.utils.data import DataLoader
 from dino_patcher import DINOPatcher
+from lxt.efficient.rules import identity_rule_implicit
 from tqdm import tqdm
-from dataset import GorillaReIDDataset
 from typing import Tuple
 
-from knn_helpers import compute_knn_proxy_soft
+from knn_helpers import compute_knn_proxy_soft, compute_knn_proto_margin
             
-def compute_simple_attnlrp_pass(
+def compute_similarity_proto_margin_pass(
+    conv_gamma: float,
+    lin_gamma: float,
+    model_wrapper: torch.nn.Module,
+    input_tensor: torch.Tensor,
+    db_embeddings: torch.Tensor,    # (N, D)
+    db_labels: list,                # len N
+    db_filenames: list,             # len N
+    query_label: str,
+    query_filename: str = None,
+    temp: float = 0.05,
+    topk_neg: int = 50,
+    exclude_self: bool = True,
+) -> torch.Tensor:
+    #TODO: the effectiveness of this has not been tested
+    #Prototype-Margin (Geometric Explanation): This method explains the model's decision based on the query's geometric position relative to class-conditional 
+    # "centers of mass" (the prototypes) in the embedding space. It's a very model-centric view.It's like explaining a simplified, implicit contrastive or triplet loss head.
+    """
+    Prototype-Margin LRP: proto_pos = softmax over friend sims, proto_neg = softmax over topk foe sims.
+    score = sim(query, proto_pos) - sim(query, proto_neg)
+    """
+    input_tensor.grad = None
+    zennit_comp = LayerMapComposite([
+        (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
+        (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+    ])
+    try:
+        zennit_comp.register(model_wrapper)
+
+        query_emb = model_wrapper(input_tensor.requires_grad_())
+        score = compute_knn_proto_margin(
+            query_emb=query_emb,
+            db_embeddings=db_embeddings,
+            db_labels=db_labels,
+            db_filenames=db_filenames,
+            query_label=query_label,
+            query_filename=query_filename,
+            temp=temp,
+            topk_neg=topk_neg,
+            exclude_self=exclude_self
+        )
+
+        score.backward()
+
+        if input_tensor.grad is None:
+            relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+        else:
+            relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
+
+    finally:
+        zennit_comp.remove()
+
+    return relevance
+
+
+
+def compute_similarity_lrp_pass(
     conv_gamma: float, 
     lin_gamma: float, 
     model_wrapper: nn.Module, 
     input_tensor: torch.Tensor,
+    reference_embedding: torch.Tensor, 
     verbose: bool = False
 ) -> torch.Tensor:
     """
-    Computes a single LRP forward/backward pass for a given set of gamma rules.
-
-    ASSUMES that the model is already patched by DINOPatcher, that zennit has been patched
+    Computes LRP by explaining the cosine similarity between the output embedding
+    and a reference embedding of the same identity.
     """
+    assert reference_embedding.ndim == 2 and reference_embedding.shape[0] == 1, \
+        "reference_embedding should be of shape [1, embedding_dim]"
+        
     input_tensor.grad = None
     
-    #TODO maybe integrate this into the dinopatcher when optimal parameters have been found
     zennit_comp = LayerMapComposite(
         [
             (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
@@ -39,13 +98,19 @@ def compute_simple_attnlrp_pass(
     try:
         zennit_comp.register(model_wrapper)
 
-        output = model_wrapper(input_tensor.requires_grad_())
-        most_active_feature_idx = torch.argmax(output, dim=1).item()
+        query_embedding = model_wrapper(input_tensor.requires_grad_())
+        
+        # Normalize both embeddings to unit vectors for cosine similarity
+        query_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
+        reference_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), reference_embedding)
+        # The similarity score is the dot product of the normalized vectors
+        similarity_score = (query_embedding_norm * reference_embedding_norm).sum()
+        # ----------------------------------------------------
         
         if verbose:
-            print(f"Explaining feature {most_active_feature_idx} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
+            print(f"Explaining similarity score ({similarity_score.item():.4f}) for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
 
-        output[0, most_active_feature_idx].backward()
+        similarity_score.backward()
 
         relevance = (input_tensor * input_tensor.grad).sum(dim=1, keepdim=True)
 
@@ -66,10 +131,13 @@ def compute_knn_attnlrp_pass(
     db_embeddings: torch.Tensor,
     db_labels: list,
     db_filenames: list,
-    distance_metric: str = "euclidean",
+    distance_metric: str = "cosine",
     proxy_temp: float = 0.1,
     verbose: bool = False
-) -> torch.Tensor:
+) -> torch.Tensor:    
+    # kNN-Proxy (Retrieval Explanation): This method is more faithful to the downstream task. Since Re-ID is ultimately used 
+    # for retrieval (finding nearest neighbors), this method directly explains the outcome of that retrieval process. 
+    # It's a very task-centric view. It's like explaining the retrieval and voting mechanism of a soft k-NN classifier.
     """
     Computes a single LRP pass explaining a k-NN classification decision.
 
@@ -201,15 +269,9 @@ def generate_relevances(
                     label_single = labels_batch[j]
                     
                     relevance_single = None
-                    if mode == "simple":
-                        relevance_single = compute_simple_attnlrp_pass(
-                            model_wrapper=model_wrapper,
-                            input_tensor=input_tensor_single,
-                            conv_gamma=conv_gamma,
-                            lin_gamma=lin_gamma,
-                            verbose=verbose
-                        )
-                    elif mode == "knn":
+                    if mode == "placeholder":
+                        pass
+                    elif mode == "soft_knn_margin":
                         relevance_single = compute_knn_attnlrp_pass(
                             model_wrapper=model_wrapper,
                             input_tensor=input_tensor_single,

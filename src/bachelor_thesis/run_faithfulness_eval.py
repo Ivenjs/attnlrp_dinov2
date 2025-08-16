@@ -21,6 +21,8 @@ def run_experiment(cfg):
     # --- 1. Standard Setup ---
     monkey_patch_zennit(verbose=True)
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    MODE = cfg["lrp"]["mode"]
+    DECISION_METRIC = MODE
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
     random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
@@ -63,7 +65,7 @@ def run_experiment(cfg):
         dataset=base_val_dataset,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
-        decision_metric=cfg["sweep"]["decision_metric"]
+        decision_metric=DECISION_METRIC
     )
 
     relevances_all = get_relevances(

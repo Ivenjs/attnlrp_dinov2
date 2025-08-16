@@ -5,7 +5,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
 from typing import Tuple, List, Dict
-from knn_helpers import compute_knn_proxy_score, compute_distances, compute_knn_proxy_soft
+from knn_helpers import compute_knn_proxy_soft
 
 
 PATCH_SIZE = 14  # Size of the patches to average over
@@ -163,6 +163,8 @@ def srg_knn(
     
 
     results = {}
+    if len(evaluation_metrics) == 0:
+        evaluation_metrics = ["soft_knn_margin"] #e.g. knn lrp mode
 
     for metric_name in evaluation_metrics:
         perturb_args["evaluation_metric"] = metric_name
