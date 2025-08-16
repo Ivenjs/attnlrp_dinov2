@@ -453,7 +453,8 @@ def log_nested_validation_to_wandb(
         tune_plot = plot_and_log_mean_curve(
             df=metric_df[metric_df['split'] == 'tune'],
             title=f"Mean Curves on Tune Set ({eval_metric})",
-            log_key=log_key_tune
+            log_key=log_key_tune,
+            cfg=cfg
         )
         if tune_plot: log_payload[log_key_tune] = tune_plot
 
@@ -461,7 +462,8 @@ def log_nested_validation_to_wandb(
         holdout_plot = plot_and_log_mean_curve(
             df=metric_df[metric_df['split'] == 'holdout'],
             title=f"Mean Curves on Holdout Set ({eval_metric})",
-            log_key=log_key_holdout
+            log_key=log_key_holdout,
+            cfg=cfg
         )
         if holdout_plot: log_payload[log_key_holdout] = holdout_plot
 
@@ -501,7 +503,8 @@ def log_nested_validation_to_wandb(
         worst_tune_plot = plot_and_log_mean_curve(
             df=metric_df[metric_df['split'] == 'tune'],
             title=f"Worst Params - Tune Set ({eval_metric})",
-            log_key=log_key_worst_tune
+            log_key=log_key_worst_tune,
+            cfg=cfg
         )
         if worst_tune_plot: log_payload[log_key_worst_tune] = worst_tune_plot
 
@@ -509,7 +512,8 @@ def log_nested_validation_to_wandb(
         worst_holdout_plot = plot_and_log_mean_curve(
             df=metric_df[metric_df['split'] == 'holdout'],
             title=f"Worst Params - Holdout Set ({eval_metric})",
-            log_key=log_key_worst_holdout
+            log_key=log_key_worst_holdout,
+            cfg=cfg
         )
         if worst_holdout_plot: log_payload[log_key_worst_holdout] = worst_holdout_plot
 
@@ -536,6 +540,7 @@ def plot_and_log_mean_curve(
     df: pd.DataFrame,
     title: str,
     log_key: str,
+    cfg: Dict,
     save_dir: str = "wandb_plots"
 ) -> wandb.Image:
     """
@@ -546,8 +551,9 @@ def plot_and_log_mean_curve(
     fig, ax = plt.subplots(figsize=(10, 6))
 
     colors = {
-        'morf_raw': 'red', 'lerf_raw': 'blue',
-        'random_raw': 'gray',
+        'morf_raw': tuple(c / 255 for c in cfg["plots"]["red"]), 
+        'lerf_raw': tuple(c / 255 for c in cfg["plots"]["yellow"]),
+        'random_raw': tuple(c / 255 for c in cfg["plots"]["gray"]),
     }
     
     for label, group in df.groupby('curve_label'):
