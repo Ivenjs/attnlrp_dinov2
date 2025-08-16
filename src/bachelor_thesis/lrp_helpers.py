@@ -12,8 +12,6 @@ from dino_patcher import DINOPatcher
 from lxt.efficient.rules import identity_rule_implicit
 from tqdm import tqdm
 from typing import Tuple
-
-from knn_helpers import compute_knn_proxy_soft, compute_knn_proto_margin
             
 def compute_similarity_proto_margin_pass(
     conv_gamma: float,
@@ -99,14 +97,9 @@ def compute_similarity_lrp_pass(
         zennit_comp.register(model_wrapper)
 
         query_embedding = model_wrapper(input_tensor.requires_grad_())
-        
-        # Normalize both embeddings to unit vectors for cosine similarity
-        query_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
-        reference_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), reference_embedding)
-        # The similarity score is the dot product of the normalized vectors
-        similarity_score = (query_embedding_norm * reference_embedding_norm).sum()
-        # ----------------------------------------------------
-        
+
+        similarity_score = compute_similarity_score(query_embedding, reference_embedding)
+
         if verbose:
             print(f"Explaining similarity score ({similarity_score.item():.4f}) for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
 
@@ -347,3 +340,130 @@ def get_relevances(
     torch.save(results_list, db_path)
     
     return results_list
+
+#TODO also mask out same video for all three scores
+def compute_knn_proto_margin(
+    query_emb: torch.Tensor,
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    db_filenames: list,
+    query_label: str,
+    query_filename: str = None,
+    temp: float = 0.05,
+    topk_neg: int = 50,
+    exclude_self: bool = True
+):
+    if query_emb.dim() == 1:
+        query_emb = query_emb.view(1, -1)
+
+    qn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_emb)
+    dbn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
+
+    sims = F.linear(dbn, qn).squeeze(1)  # (N,)
+
+    if exclude_self and (query_filename is not None) and (query_filename in db_filenames):
+        try:
+            qidx = db_filenames.index(query_filename)
+            sims[qidx] = -1e9
+        except ValueError:
+            pass
+
+    # masks
+    device = sims.device
+    labels_tensor = torch.tensor([1 if l == query_label else 0 for l in db_labels], device=device)
+
+    # proto_pos (if no friends found, fallback to nearest same-file or zero)
+    pos_idx = torch.nonzero(labels_tensor).squeeze(1) if labels_tensor.sum() > 0 else torch.tensor([], device=device, dtype=torch.long)
+    if pos_idx.numel() == 0:
+        # fallback: take the single best-matching embedding with same filename if any, else top1 overall
+        proto_pos = dbn[sims.argmax()].unsqueeze(0)
+    else:
+        sims_pos = sims[pos_idx]
+        alpha_pos = F.softmax(sims_pos / temp, dim=0)
+        proto_pos = (alpha_pos.unsqueeze(1) * dbn[pos_idx]).sum(dim=0, keepdim=True)  # (1, D)
+
+    # proto_neg: topk among negatives
+    neg_mask = (labels_tensor == 0)
+    neg_idxs = torch.nonzero(neg_mask).squeeze(1)
+    if neg_idxs.numel() == 0:
+        proto_neg = torch.zeros_like(proto_pos)
+    else:
+        sims_negs = sims[neg_idxs]
+        k = min(topk_neg, sims_negs.numel())
+        topk_vals, topk_idx_in_negs = sims_negs.topk(k)
+        chosen = neg_idxs[topk_idx_in_negs]
+        alpha_neg = F.softmax(topk_vals / temp, dim=0)
+        proto_neg = (alpha_neg.unsqueeze(1) * dbn[chosen]).sum(dim=0, keepdim=True)  # (1, D)
+
+    # similarity scalars
+    sim_pos = (qn * proto_pos).sum()
+    sim_neg = (qn * proto_neg).sum()
+    return sim_pos - sim_neg
+
+def compute_knn_proxy_soft(
+    query_embedding: torch.Tensor,
+    query_label: str,
+    query_filename: str,
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    db_filenames: list,
+    distance_metric: str = "cosine",
+    temp: float = 0.05,
+    exclude_self: bool = True
+) -> torch.Tensor:
+    """
+    Computes a differentiable, contrastive proxy score for k-NN based on
+    softmax-weighted similarities. This avoids the non-differentiable top-k
+    and creates a score that balances friends vs. foes.
+    """
+    if distance_metric != "cosine":
+        raise NotImplementedError("This soft proxy is optimized for cosine similarity.")
+
+    # Ensure embeddings are normalized (standard for cosine similarity)
+    q_emb = query_embedding.view(1, -1) if query_embedding.dim()==1 else query_embedding
+    #TODO: gleiche videos genauso wie sich selbst auch wegmaskieren?
+    # Achtibat:
+    q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
+    db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
+
+
+    # Calculate cosine similarity (higher is better)
+    # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
+    similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
+
+    # Exclude the query from its own neighbors if it exists in the database
+    if exclude_self and query_filename in db_filenames:
+        try:
+            query_idx = db_filenames.index(query_filename)
+            # Set similarity to a very low number to give it near-zero weight after softmax
+            similarities[query_idx] = -1e9
+        except ValueError:
+            pass # Query not found, nothing to do
+
+    # Differentiable soft neighbor weights via softmax. `temp` controls sharpness.
+    # Low temp -> focuses on the very nearest neighbors.
+    # High temp -> considers more neighbors.
+    weights = F.softmax(similarities / temp, dim=0)
+
+    # Create a mask to identify friends in the database
+    device = weights.device
+    friend_mask = torch.tensor([1.0 if label == query_label else 0.0 for label in db_labels], device=device)
+    
+    # Calculate the total "probability mass" assigned to friends vs. foes
+    prob_friends = (weights * friend_mask).sum()
+    prob_foes = (weights * (1.0 - friend_mask)).sum() # or 1.0 - prob_friends
+
+    # The margin score is the most faithful proxy for a contrastive decision.
+    # Maximizing this score means maximizing friend probability and minimizing foe probability.
+    score_prob = prob_friends #TODO try this
+    score_margin = prob_friends - prob_foes
+
+    return score_margin
+    #return score_prob
+
+def compute_similarity_score(query_embedding: torch.Tensor, reference_embedding: torch.Tensor) -> torch.Tensor:
+    # Normalize both embeddings to unit vectors for cosine similarity
+    query_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
+    reference_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), reference_embedding)
+    # The similarity score is the dot product of the normalized vectors
+    similarity_score = (query_embedding_norm * reference_embedding_norm).sum()

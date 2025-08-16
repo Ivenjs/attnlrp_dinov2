@@ -5,7 +5,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
 from typing import Tuple, List, Dict
-from knn_helpers import compute_knn_proxy_soft
+from knn_helpers import calculate_distance
+from lrp_helpers import compute_knn_proxy_soft, compute_knn_proto_margin, compute_similarity_score
 
 
 PATCH_SIZE = 14  # Size of the patches to average over
@@ -287,4 +288,63 @@ def attention_inside_mask(relevance: torch.Tensor, mask: np.ndarray) -> Tuple[fl
 
     return total_frac, pos_frac, neg_frac
 
+def get_query_performance_metrics(
+    query_embedding: torch.Tensor,
+    query_label: str,
+    query_filename: str,
+    db_embeddings: torch.Tensor,
+    db_labels: list[str],
+    db_filenames: list[str],
+    distance_metric: str = "cosine",
+    k: int = 5 
+) -> dict:
+    """
+    Computes multiple performance metrics for a single query against a database.
+    """
+    device = query_embedding.device
+    db_labels_np = np.array(db_labels)
+    db_filenames_np = np.array(db_filenames)
+
+    with torch.no_grad():
+        distances = calculate_distance(query_embedding, db_embeddings, distance_metric)
+        try:
+            query_idx = db_filenames.index(query_filename)
+            distances[query_idx] = torch.inf
+        except ValueError:
+            pass
+
+        sorted_indices = torch.argsort(distances)
+        sorted_labels = db_labels_np[sorted_indices.cpu().numpy()]
+
+    match_indices = np.where(sorted_labels == query_label)[0]
+    rank = match_indices[0] + 1 if len(match_indices) > 0 else -1
+
+    gt_positive_mask = (db_labels_np == query_label) & (db_filenames_np != query_filename)
+    gt_positive_indices = np.where(gt_positive_mask)[0]
+    
+    gt_similarity = -1.0
+    if gt_positive_indices.size > 0:
+        min_gt_distance = torch.min(distances[gt_positive_indices])
+        gt_similarity = 1.0 - min_gt_distance.item()
+
+    recall_at_k = 0.0
+    num_gt_positives = gt_positive_indices.size
+    if num_gt_positives > 0:
+        # Get the indices of the top-k results
+        top_k_indices = sorted_indices[:k].cpu().numpy()
+        
+        # Count how many of the top-k results are ground-truth positives
+        # Using sets is efficient for this intersection
+        top_k_set = set(top_k_indices)
+        gt_positives_set = set(gt_positive_indices)
+        
+        num_correct_in_top_k = len(top_k_set.intersection(gt_positives_set))
+        
+        recall_at_k = num_correct_in_top_k / num_gt_positives
+
+    return {
+        'rank': rank,
+        'gt_similarity': gt_similarity,
+        'recall_at_k': recall_at_k
+    }
 

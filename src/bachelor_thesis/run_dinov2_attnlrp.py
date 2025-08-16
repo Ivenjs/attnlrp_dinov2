@@ -3,8 +3,9 @@ from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
 from basemodel import get_model_wrapper
-from knn_helpers import get_knn_db, get_query_performance_metrics, compute_knn_proxy_soft
-from eval_helpers import attention_inside_mask
+from knn_helpers import get_knn_db
+from eval_helpers import attention_inside_mask, get_query_performance_metrics
+from lrp_helpers import compute_knn_proxy_soft
 from tqdm import tqdm
 from typing import Dict, Tuple, List
 from lrp_helpers import get_relevances
