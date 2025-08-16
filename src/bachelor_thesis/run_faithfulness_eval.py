@@ -1,6 +1,7 @@
 import os
 import random
 import subprocess
+from omegaconf import OmegaConf
 import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
@@ -14,6 +15,9 @@ from lrp_helpers import get_relevances
 from knn_helpers import get_knn_db 
 import argparse 
 from lxt.efficient import monkey_patch_zennit
+
+import wandb
+from utils import get_hpi_colors
 
 
 
@@ -31,8 +35,17 @@ def main(cfg):
     split_name = "validation"
     val_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
     val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
-    
+    model_type_str = "finetuned" if cfg["model"]["finetuned"] else "base"
     mask_transform = get_mask_transform(cfg["model"]["img_size"])
+
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    wandb.init(
+        project="Thesis-Iven", 
+        entity="gorillawatch", # Or your entity
+        name=f"attnlrp_faithfulness_analysis_{model_type_str}_{DECISION_METRIC}",
+        config=cfg_dict,
+        job_type="analysis"
+    )
 
     # Create the base validation dataset
     base_val_dataset = GorillaReIDDataset(
@@ -94,9 +107,15 @@ def main(cfg):
 
 
     # --- 3. Run Perturbation Experiments ---
+    hpi_colors = get_hpi_colors(cfg=cfg)
+    colors = {
+        'morf': hpi_colors["red"],
+        'lerf': hpi_colors["yellow"],
+        'random': hpi_colors["gray"],
+    }
 
-    #establish baseline
-    accuracy = evaluate_model(
+    # establish baseline
+    base_accuracy = evaluate_model(
         model_wrapper=model_wrapper,
         val_dataset=base_val_dataset,
         cfg=cfg,
@@ -105,11 +124,11 @@ def main(cfg):
         db_labels=val_db_labels,
         db_videos=val_db_videos
     )
-    print(f"Base accuracy: {accuracy:.4f}")
+    print(f"Base accuracy: {base_accuracy:.4f}")
 
     perturbation_fractions = [0.25, 0.5, 0.75, 0.99]
     modes = ['morf', 'lerf', 'random']
-    results = {mode: [] for mode in modes}
+    results = {mode: [base_accuracy] for mode in modes}
     
 
     patch_size = cfg["model"]["patch_size"] 
@@ -144,9 +163,17 @@ def main(cfg):
             results[mode].append(accuracy)
 
     # --- 4. Plot Results ---
+    plot_fractions = [0.0] + perturbation_fractions
+
     plt.figure(figsize=(10, 6))
     for mode in modes:
-        plt.plot(perturbation_fractions, results[mode], marker='o', linestyle='-', label=mode.upper())
+        plt.plot(plot_fractions, 
+                 results[mode], 
+                 marker='o', 
+                 linestyle='-', 
+                 label=mode.upper(), 
+                 color=colors.get(mode, 'black')
+                )
     
     plt.title(f'Impact of Patch Perturbation on k-NN Re-ID Accuracy for model {cfg["model"]["finetuned"]}')
     plt.xlabel('Fraction of Patches Perturbed')
@@ -154,12 +181,31 @@ def main(cfg):
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.legend()
     plt.ylim(bottom=0)
-    plt.xticks(perturbation_fractions, [f'{int(p*100)}%' for p in perturbation_fractions])
-    plt.savefig(f"knn_perturbation_impact for model {cfg['model']['finetuned']}.png")
+    plt.xticks(plot_fractions, [f'{int(p*100)}%' for p in plot_fractions])
+
+    model_name = "finetuned" if cfg["model"]["finetuned"] else "non_finetuned"
+
+    save_path = f"knn_perturbation_impact_{model_name}_{DECISION_METRIC}.png"
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
     plt.show()
 
     print("\nFinal Results:")
     print(results)
+
+    try:
+        print("\nLogging results to Weights & Biases...")
+        # Log the final results dictionary. WandB will render this nicely.
+        wandb.log({"perturbation_results": results})
+
+        # Log the locally saved plot as a wandb.Image object
+        wandb.log({
+            "perturbation_impact_plot": wandb.Image(save_path, caption=f"Perturbation analysis for {cfg['model']['finetuned']}")
+        })
+        print("Successfully logged to WandB.")
+    except Exception as e:
+        print(f"Could not log to WandB. Please ensure wandb.init() was called. Error: {e}")
+    wandb.finish()
+
 
 
 if __name__ == "__main__":

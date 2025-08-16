@@ -161,8 +161,8 @@ def srg_eval(
             "db_embeddings": kwargs["db_embeddings"],
             "db_labels": kwargs["db_labels"],
             "db_filenames": kwargs["db_filenames"],
-            "temp": kwargs["proxy_temp"],
             "distance_metric": kwargs["distance_metric"],
+            "temp": kwargs["proxy_temp"],
             "topk_neg": kwargs.get("topk_neg", 50)
         }
     elif mode == "similarity":

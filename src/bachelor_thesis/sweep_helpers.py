@@ -225,7 +225,8 @@ def find_robust_hyperparameters(
 
 def visualize_robustness_analysis(
     analysis_df: pd.DataFrame,
-    save_path: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png"
+    hpi_colors: Dict[str, float],
+    save_path: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png",
 ) -> List[str]:
     """Creates visualizations for each combination of distance and evaluation metric."""    
     path_root, path_ext = os.path.splitext(save_path)
@@ -245,6 +246,8 @@ def visualize_robustness_analysis(
     dist_metrics = analysis_df['distance_metric'].dropna().unique() if 'distance_metric' in analysis_df else [None]
     proxy_temps = analysis_df['proxy_temp'].dropna().unique() if 'proxy_temp' in analysis_df else [None]
     topk_negs = analysis_df['topk_neg'].dropna().unique() if 'topk_neg' in analysis_df else [None]
+
+    custom_cmap = sns.blend_palette([hpi_colors.get("yellow"), hpi_colors.get("orange"),hpi_colors.get("red")], as_cmap=True)
 
     for eval_metric in metric_names:
         for dist_metric in dist_metrics:
@@ -272,7 +275,7 @@ def visualize_robustness_analysis(
                             columns='lin_gamma',
                             values=value_col
                         )
-                        sns.heatmap(pivot_df, annot=True, fmt='.3f', cmap='viridis', ax=ax)
+                        sns.heatmap(pivot_df, annot=True, fmt='.3f', cmap=custom_cmap, ax=ax)
                         ax.set_title(title)
 
                     plt.tight_layout(rect=[0, 0, 1, 0.98])
@@ -392,15 +395,17 @@ def log_nested_validation_to_wandb(
     """Logs the complete story of a nested validation experiment to W&B, handling multiple metrics."""
     print("\n--- Logging Nested Validation Experiment to Weights & Biases ---")
     if cfg["model"]["finetuned"]:
-        wandb_name = f"attnlrp_gamma_sweep_multimetric_finetuned_{decision_metric}"
+        wandb_name = f"attnlrp_gamma_sweep_finetuned_{decision_metric}"
     else:
-        wandb_name = f"attnlrp_gamma_sweep_multimetric_non_finetuned_{decision_metric}"
+        wandb_name = f"attnlrp_gamma_sweep_non_finetuned_{decision_metric}"
 
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     run = wandb.init(
         project="Thesis-Iven", entity="gorillawatch", 
         name=wandb_name, config=cfg_dict
     )
+
+    hpi_colors = get_hpi_colors(cfg)
 
 
     wandb.summary["final_decision"] = final_decision
@@ -429,8 +434,8 @@ def log_nested_validation_to_wandb(
 
     # --- 3. Log Visualizations ---
     # visualize_robustness_analysis now creates plots for all metrics
-    tune_paths = visualize_robustness_analysis(analysis_df_tune, save_path="wandb_plots/tune_analysis.png")
-    holdout_paths = visualize_robustness_analysis(analysis_df_holdout, save_path="wandb_plots/holdout_analysis.png")
+    tune_paths = visualize_robustness_analysis(analysis_df_tune, hpi_colors=hpi_colors, save_path="wandb_plots/tune_analysis.png")
+    holdout_paths = visualize_robustness_analysis(analysis_df_holdout, hpi_colors=hpi_colors, save_path="wandb_plots/holdout_analysis.png")
 
     log_payload.update({
         "plots/tune_set_analysis_heatmaps": [wandb.Image(p, caption=os.path.basename(p)) for p in tune_paths],
@@ -472,7 +477,7 @@ def log_nested_validation_to_wandb(
             df=metric_df[metric_df['split'] == 'tune'],
             title=f"Mean Curves on Tune Set ({eval_metric})",
             log_key=log_key_tune,
-            cfg=cfg
+            hpi_colors=hpi_colors
         )
         if tune_plot: log_payload[log_key_tune] = tune_plot
 
@@ -481,7 +486,7 @@ def log_nested_validation_to_wandb(
             df=metric_df[metric_df['split'] == 'holdout'],
             title=f"Mean Curves on Holdout Set ({eval_metric})",
             log_key=log_key_holdout,
-            cfg=cfg
+            hpi_colors=hpi_colors
         )
         if holdout_plot: log_payload[log_key_holdout] = holdout_plot
 
@@ -502,7 +507,7 @@ def log_nested_validation_to_wandb(
             df=metric_df[metric_df['split'] == 'tune'],
             title=f"Worst Params - Tune Set ({eval_metric})",
             log_key=log_key_worst_tune,
-            cfg=cfg
+            hpi_colors=hpi_colors
         )
         if worst_tune_plot: log_payload[log_key_worst_tune] = worst_tune_plot
 
@@ -511,7 +516,7 @@ def log_nested_validation_to_wandb(
             df=metric_df[metric_df['split'] == 'holdout'],
             title=f"Worst Params - Holdout Set ({eval_metric})",
             log_key=log_key_worst_holdout,
-            cfg=cfg
+            hpi_colors=hpi_colors
         )
         if worst_holdout_plot: log_payload[log_key_worst_holdout] = worst_holdout_plot
 
@@ -551,7 +556,7 @@ def plot_and_log_mean_curve(
     df: pd.DataFrame,
     title: str,
     log_key: str,
-    cfg: Dict,
+    hpi_colors: Dict[str, float],
     save_dir: str = "wandb_plots"
 ) -> wandb.Image:
     """
@@ -560,7 +565,6 @@ def plot_and_log_mean_curve(
     """
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(10, 6))
-    hpi_colors = get_hpi_colors(cfg)
     colors = {
         'morf_raw': hpi_colors["red"],
         'lerf_raw': hpi_colors["yellow"],
@@ -597,7 +601,7 @@ def plot_and_log_mean_curve(
     # Dynamische y-Achsen-Grenzen
     y_min = df['score'].min()
     y_max = df['score'].max()
-    padding = (y_max - y_min) * 0.05  # 5% Padding für nicer Look
+    padding = (y_max - y_min) * 0.05 
     ax.set_ylim(y_min - padding, y_max + padding)
 
     fig.tight_layout()

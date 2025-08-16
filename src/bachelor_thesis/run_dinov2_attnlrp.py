@@ -1,11 +1,11 @@
-from utils import get_db_path, get_mask_transform, load_config
+from utils import get_db_path, get_hpi_colors, get_mask_transform, load_config
 from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
 from basemodel import get_model_wrapper
 from knn_helpers import get_knn_db
 from eval_helpers import attention_inside_mask, get_query_performance_metrics
-from lrp_helpers import compute_knn_proxy_soft
+from lrp_helpers import compute_knn_proto_margin, compute_knn_proxy_soft, compute_similarity_score
 from tqdm import tqdm
 from typing import Dict, Tuple, List
 from lrp_helpers import get_relevances
@@ -15,6 +15,7 @@ from visualize import AttentionVisualizer
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr
 from omegaconf import OmegaConf
+import numpy as np 
 import pandas as pd
 import subprocess
 import os
@@ -65,6 +66,38 @@ def run_masking_experiment(
 
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=custom_collate_fn)
 
+    score_fn = None
+    score_fn_kwargs = {}
+
+    if decision_metric == "soft_knn_margin":
+        score_fn = compute_knn_proxy_soft
+        score_fn_kwargs = {
+            "db_embeddings": db_embeddings,
+            "db_labels": db_labels,
+            "db_filenames": db_filenames,
+            "distance_metric": cfg["knn"]["distance_metric"],
+            "temp": cfg["knn"]["temp"]
+        }
+    elif decision_metric == "proto_margin":
+        score_fn = compute_knn_proto_margin
+        score_fn_kwargs = {
+            "db_embeddings": db_embeddings,
+            "db_labels": db_labels,
+            "db_filenames": db_filenames,
+            "distance_metric": cfg["knn"]["distance_metric"],
+            "temp": cfg["knn"]["temp"],
+            "topk_neg": cfg["knn"]["topk_neg"]
+        }
+    elif decision_metric == "similarity":
+        score_fn = compute_similarity_score
+        score_fn_kwargs = {
+            "db_embeddings": db_embeddings,
+            "db_labels": db_labels,
+            "db_filenames": db_filenames
+        }
+    else:
+        raise ValueError(f"Unsupported evaluation decision metric: '{decision_metric}'")
+
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Running masking experiment"):
@@ -100,13 +133,15 @@ def run_masking_experiment(
                     distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
                 #change plot colors to hpi
-                #make these scores dependant on decisionmetric, like in eval or sweep
-                #for similarity, make embedding to compare to compute inside function not outside.
-                baseline_proxy_score = compute_knn_proxy_soft(
+                result_base = score_fn(
                     query_embedding=embedding_orig, query_label=label, query_filename=filename,
-                    db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
-                    distance_metric=cfg["knn"]["distance_metric"], temp=cfg["knn"]["temp"]
-                ).item()
+                    **score_fn_kwargs
+                )
+                if isinstance(result_base, tuple):
+                    baseline_proxy_score = result_base[0].item()
+                else:
+                    baseline_proxy_score = result_base.item()
+
 
                 # --- 2. Masked Performance ---
                 if cfg["eval"]["baseline_value"] == "black":
@@ -123,12 +158,15 @@ def run_masking_experiment(
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                     distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
-
-                masked_proxy_score = compute_knn_proxy_soft(
+                result_mask = score_fn(
                     query_embedding=embedding_masked, query_label=label, query_filename=filename,
-                    db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
-                    distance_metric=cfg["knn"]["distance_metric"], temp=cfg["knn"]["temp"]
-                ).item()
+                    **score_fn_kwargs
+                )
+                if isinstance(result_mask, tuple):
+                    masked_proxy_score = result_mask[0].item()
+                else:
+                    masked_proxy_score = result_mask.item()
+
 
                 # --- 3. Aggregate Results ---
                 AoGR_total = mask_scores[filename][0] 
@@ -156,7 +194,7 @@ def run_masking_experiment(
     print("--- Masking Experiment Complete ---")
     return pd.DataFrame(results_list)
 
-def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> List[str]:
+def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str, colors: Dict[str, float]) -> List[str]:
     # --- Basic Analysis of the Results ---
     print("\n--- Masking Experiment Summary ---")
     print(masking_results_df.describe())
@@ -166,7 +204,8 @@ def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> Li
     rank1_masked = (masking_results_df['rank_masked'] == 1).mean()
     print(f"\nOverall Rank-1 Accuracy (Orig):   {rank1_orig:.4f}")
     print(f"Overall Rank-1 Accuracy (Masked): {rank1_masked:.4f}")
-
+    negative_color = colors.get("gray")
+    primary_color = colors.get("yellow")
     saved_plot_paths = []
     # --- Correlation Plots ---
     for col in masking_results_df.columns:
@@ -175,7 +214,8 @@ def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> Li
             plt.scatter(
                 masking_results_df['background_attention_total'],
                 masking_results_df[col],
-                alpha=0.6
+                alpha=0.6,
+                color=primary_color
             )
             plt.title('Performance Change vs. Background Attention')
             plt.xlabel('Background Attention (1 - AoGR)')
@@ -191,12 +231,13 @@ def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> Li
             plt.scatter(
                 masking_results_df['background_attention_positive'],
                 masking_results_df[col],
-                alpha=0.6, label='Positive AoGR'
+                alpha=0.6, label='Positive AoGR',
+                color=primary_color
             )
             plt.scatter(
                 masking_results_df['background_attention_negative'],
                 masking_results_df[col],
-                alpha=0.6, label='Negative AoGR', color='orange'
+                alpha=0.6, label='Negative AoGR', color=negative_color
             )
             plt.title('Performance Change vs. Positive/Negative Background Attention')
             plt.xlabel('Background Attention (1 - AoGR)')
@@ -224,6 +265,7 @@ def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str) -> Li
                     attention_col=att_col,
                     metric_col=col,
                     output_path=plot_path,
+                    plot_color=primary_color,
                     attention_name=att_name
                 )
                 saved_plot_paths.append(plot_path)
@@ -234,6 +276,7 @@ def create_binned_plot(
     attention_col: str, 
     metric_col: str, 
     output_path: str,
+    plot_color: str = "blue",
     attention_name: str = "Attention"
 ):
     """
@@ -241,11 +284,12 @@ def create_binned_plot(
     """
     try:
         # Define bins for the attention score (-1 to 1)
-        bins = [-1.0, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1.0]
-        bin_labels = pd.cut(df[attention_col], bins=bins, include_lowest=True)
+        bins = np.linspace(-1.0, 1.0, 11)
+        df_copy = df.copy() 
+        df_copy['bin_labels'] = pd.cut(df_copy[attention_col], bins=bins, include_lowest=True)
 
-        # Group and aggregate
-        binned_stats = df.groupby(bin_labels, observed=False)[metric_col].agg(['mean', 'sem'])
+
+        binned_stats = df_copy.groupby('bin_labels', observed=False)[metric_col].agg(['mean', 'sem'])
 
         if binned_stats.empty or binned_stats['mean'].isnull().all():
             print(f"Skipping plot: No data for {metric_col} vs {attention_col}")
@@ -255,7 +299,7 @@ def create_binned_plot(
         fig, ax = plt.subplots(figsize=(10, 6))
         binned_stats.plot(
             kind='bar', y='mean', yerr='sem', ax=ax, capsize=4, 
-            legend=False, color='skyblue', edgecolor='black'
+            legend=False, color=plot_color, edgecolor='black'
         )
         
         # Formatting
@@ -535,7 +579,13 @@ def main(cfg: Dict):
     wandb.summary["rank1_masked"] = rank1_masked
     wandb.summary["mean_delta_proxy_score"] = masking_results_df['delta_proxy_score'].mean()
 
-    correlation_plot_paths = analyze_masking_exp(masking_results_df=masking_results_df, output_dir=os.path.join(visualization_dir, "plots"))
+    hpi_colors = get_hpi_colors(cfg)
+    colors = {
+        'yellow': hpi_colors["yellow"],
+        'gray': hpi_colors["gray"],
+    }
+
+    correlation_plot_paths = analyze_masking_exp(masking_results_df=masking_results_df, output_dir=os.path.join(visualization_dir, "plots"), colors=colors)
     corr, p_value = spearmanr(masking_results_df['background_attention_total'], masking_results_df['delta_rank'])
     print(f"\nSpearman Correlation (Background Attention vs. Delta Rank): {corr:.3f} (p-value: {p_value:.3f})")
     wandb.summary["spearman_corr"] = corr

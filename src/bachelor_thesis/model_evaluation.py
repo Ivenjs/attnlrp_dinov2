@@ -45,16 +45,13 @@ def KNN_CV_GPU(model_wrapper, query_source_dataset, db_embeddings, images_to_che
         # `batch` is now a dictionary of tensors, e.g., batch['image'], batch['label']
         query_image_batch = batch["image"].to(device)
         
-        # --- MAJOR CHANGE 1: Batch Forward Pass ---
         # Get embeddings for the entire batch in one go.
         query_embeddings_batch = model_wrapper(query_image_batch)
         # Shape: [batch_size, dim]
 
-        # --- MAJOR CHANGE 2: Batch Distance Calculation ---
         # Get a distance matrix of [batch_size, db_size]
         distance_matrix = calculate_distance_batched(embeddings, query_embeddings_batch, distance_metric)
         
-        # --- MAJOR CHANGE 3: Batch Masking (using broadcasting) ---
         # Get the original indices and video IDs for this specific batch
         query_original_indices = batch["original_index"] # You'll need to modify your dataset/collate to pass this
         query_video_ids_batch = video_ids_tensor[query_original_indices].to(device) # Shape: [batch_size]
