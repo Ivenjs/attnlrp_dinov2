@@ -13,7 +13,7 @@ db:
   feature_type: "body"
 
 eval:
-  patches_per_step: 50
+  patches_per_step: 75
   baseline_value: "mean" #mean or black
 
 knn:
@@ -28,6 +28,11 @@ model:
   patch_size: 14
   model_dtype: "float16"
 
+plots:
+  red: (162, 41, 64)
+  orange: (206, 104, 45)
+  yellow: (236, 172, 61)
+  gray: (172, 175, 178)
 
 wandb:
   project: "bachelor_thesis"
@@ -49,14 +54,14 @@ sweep:
   holdout_percentage: 0.2
   temp: [0.01]
   #0.01, 0.03, 0.07, 0.15, 0.3
-  queries_per_class: 2
+  queries_per_class: 3
   #[0.01, 0.03, 0.07, 0.15, 0.3]
-  conv_gammas: [0.25]
+  conv_gammas: [0.001, 0.05, 0.1, 0.25]
   #0.001, 0.05, 0.1, 0.25
   # in paper: 0.05, 0.1, 0.25
   #0.1, 0.15,0.25, 0.7, 1.0
   #[0.1, 0.15,0.25, 0.4, 0.7, 1.0] 
-  lin_gammas: [0.001]
+  lin_gammas: [0.001, 0.05, 0.1, 0.25]
   #0.001, 0.05, 0.1, 0.25
     # in paper: 0.05, 0.1, 0.25
   #0.001, 0.025, 0.05, 0.075, 0.1

@@ -473,7 +473,8 @@ def main(cfg: Dict):
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset=val_dataset,
         split_name=split_name,
-        db_dir=cfg["lrp"]["db_relevances_dir"]
+        db_dir=cfg["lrp"]["db_relevances_dir"],
+        decision_metric=cfg["sweep"]["decision_metric"]
     )
 
     relevances_all = get_relevances(
