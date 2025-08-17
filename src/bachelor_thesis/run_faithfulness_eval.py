@@ -98,7 +98,8 @@ def main(cfg):
         topk_neg=cfg["knn"]["topk_neg"],
         db_embeddings=val_db_embeddings,
         db_filenames=val_db_filenames,
-        db_labels=val_db_labels
+        db_labels=val_db_labels,
+        db_video_ids=val_db_videos
     )
 
     relevance_dict = {

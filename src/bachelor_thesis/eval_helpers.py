@@ -147,9 +147,11 @@ def srg_eval(
         score_fn_kwargs = {
             "query_label": kwargs["query_label"],
             "query_filename": kwargs["query_filename"],
+            "query_video_id": kwargs["query_video_id"],
             "db_embeddings": kwargs["db_embeddings"],
             "db_labels": kwargs["db_labels"],
             "db_filenames": kwargs["db_filenames"],
+            "db_video_ids": kwargs["db_video_ids"],
             "distance_metric": kwargs["distance_metric"],
             "temp": kwargs["proxy_temp"]
         }
@@ -158,9 +160,11 @@ def srg_eval(
         score_fn_kwargs = {
             "query_label": kwargs["query_label"],
             "query_filename": kwargs["query_filename"],
+            "query_video_id": kwargs["query_video_id"],
             "db_embeddings": kwargs["db_embeddings"],
             "db_labels": kwargs["db_labels"],
             "db_filenames": kwargs["db_filenames"],
+            "db_video_ids": kwargs["db_video_ids"],
             "distance_metric": kwargs["distance_metric"],
             "temp": kwargs["proxy_temp"],
             "topk_neg": kwargs.get("topk_neg", 50)
@@ -170,9 +174,11 @@ def srg_eval(
         score_fn_kwargs = {
             "query_label": kwargs["query_label"],
             "query_filename": kwargs["query_filename"],
+            "query_video_id": kwargs["query_video_id"],
             "db_embeddings": kwargs["db_embeddings"],
             "db_labels": kwargs["db_labels"],
             "db_filenames": kwargs["db_filenames"],
+            "db_video_ids": kwargs["db_video_ids"],
             "reference_embedding": kwargs["reference_embedding"]
         }
     else:

@@ -23,6 +23,7 @@ def evaluate_gamma_sweep(
     db_embeddings: torch.Tensor,
     db_labels: List[str],
     db_filenames: List[str],
+    db_video_ids: List[str],
     patch_size: int,
     device: torch.device,
     patches_per_step: int = 20,
@@ -53,6 +54,7 @@ def evaluate_gamma_sweep(
 
         query_label = batch["label"][0]
         input_tensor = batch["image"].to(device)
+        video_id = batch["video"][0]
 
         print(f"\n=== Evaluating Image: {input_filename} ===")
         
@@ -66,9 +68,11 @@ def evaluate_gamma_sweep(
             eval_kwargs = {
                 "query_label": query_label,
                 "query_filename": input_filename,
+                "query_video_id": video_id,
                 "db_embeddings": db_embeddings,
                 "db_labels": db_labels,
                 "db_filenames": db_filenames,
+                "db_video_ids": db_video_ids,
                 "distance_metric": params["distance_metric"],
                 "proxy_temp": params["proxy_temp"],
             }

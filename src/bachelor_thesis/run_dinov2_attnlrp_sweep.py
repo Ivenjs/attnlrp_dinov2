@@ -79,7 +79,7 @@ def main(cfg: dict):
         split_name=tune_db_split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    tune_db_embeddings, tune_db_labels, tune_db_filenames, _ = get_knn_db(
+    tune_db_embeddings, tune_db_labels, tune_db_filenames, tune_db_videos = get_knn_db(
         db_path=tune_db_path,
         dataset=tune_db_dataset,
         model_wrapper=model_wrapper,
@@ -102,12 +102,13 @@ def main(cfg: dict):
         db_embeddings=tune_db_embeddings,
         db_filenames=tune_db_filenames,
         db_labels=tune_db_labels,
+        db_video_ids=tune_db_videos
     )
 
     tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
         tune_relevances_all, tune_eval_dataloader, model_wrapper,
-        tune_db_embeddings, tune_db_labels, tune_db_filenames, cfg["model"]["patch_size"], DEVICE,
+        tune_db_embeddings, tune_db_labels, tune_db_filenames, tune_db_videos,cfg["model"]["patch_size"], DEVICE,
         cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
     )
 
@@ -122,7 +123,7 @@ def main(cfg: dict):
         split_name=holdout_db_split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, _ = get_knn_db(
+    holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, holdout_db_videos = get_knn_db(
         db_path=holdout_db_path,
         dataset=holdout_db_dataset,
         model_wrapper=model_wrapper,
@@ -144,12 +145,13 @@ def main(cfg: dict):
         db_embeddings=holdout_db_embeddings,
         db_filenames=holdout_db_filenames,
         db_labels=holdout_db_labels,
+        db_video_ids=holdout_db_videos,
     )
 
     holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
         holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
-        holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, cfg["model"]["patch_size"], DEVICE,
+        holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, holdout_db_videos, cfg["model"]["patch_size"], DEVICE,
         cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
     )
 

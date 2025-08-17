@@ -18,11 +18,13 @@ def compute_similarity_proto_margin_pass(
     lin_gamma: float,
     model_wrapper: torch.nn.Module,
     input_tensor: torch.Tensor,
+    query_label: str,
+    query_filename: str,
+    query_video_id: str,
     db_embeddings: torch.Tensor,    # (N, D)
     db_labels: list,                # len N
     db_filenames: list,             # len N
-    query_label: str,
-    query_filename: str = None,
+    db_video_ids: list,             # len N
     distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
@@ -43,14 +45,16 @@ def compute_similarity_proto_margin_pass(
     try:
         zennit_comp.register(model_wrapper)
 
-        query_emb = model_wrapper(input_tensor.requires_grad_())
+        query_embedding = model_wrapper(input_tensor.requires_grad_())
         score = compute_knn_proto_margin(
-            query_emb=query_emb,
+            query_embedding=query_embedding,
+            query_label=query_label,
+            query_filename=query_filename,
+            query_video_id=query_video_id,
             db_embeddings=db_embeddings,
             db_labels=db_labels,
             db_filenames=db_filenames,
-            query_label=query_label,
-            query_filename=query_filename,
+            db_video_ids=db_video_ids,
             distance_metric=distance_metric,
             temp=temp,
             topk_neg=topk_neg,
@@ -67,7 +71,8 @@ def compute_similarity_proto_margin_pass(
 
     finally:
         zennit_comp.remove()
-
+    if relevance is None:
+        relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance
 
 
@@ -79,9 +84,11 @@ def compute_similarity_lrp_pass(
     input_tensor: torch.Tensor,
     query_label: str,
     query_filename: str,
+    query_video_id: str,
     db_embeddings: torch.Tensor,
     db_labels: list,
     db_filenames: list,
+    db_video_ids: list,
     verbose: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
@@ -104,7 +111,16 @@ def compute_similarity_lrp_pass(
 
         query_embedding = model_wrapper(input_tensor.requires_grad_())
 
-        similarity_score, reference_embedding, ref_idx = compute_similarity_score(query_embedding=query_embedding, query_label=query_label, query_filename=query_filename, db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,)
+        similarity_score, reference_embedding, ref_idx = compute_similarity_score(
+            query_embedding=query_embedding, 
+            query_label=query_label, 
+            query_filename=query_filename, 
+            query_video_id=query_video_id,
+            db_embeddings=db_embeddings, 
+            db_labels=db_labels, 
+            db_filenames=db_filenames,
+            db_video_ids=db_video_ids
+        )
 
         if verbose:
             print(f"Explaining similarity score ({similarity_score.item():.4f}) for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
@@ -115,7 +131,8 @@ def compute_similarity_lrp_pass(
 
     finally:
         zennit_comp.remove()
-
+    if relevance is None:
+        relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance, reference_embedding, ref_idx
 
 
@@ -127,9 +144,11 @@ def compute_knn_attnlrp_pass(
     # parameters required for the k-NN score
     query_label: str,         
     query_filename: str,      
+    query_video_id: str,
     db_embeddings: torch.Tensor,
     db_labels: list,
     db_filenames: list,
+    db_video_ids: list,
     distance_metric: str = "cosine",
     proxy_temp: float = 0.1,
     verbose: bool = False
@@ -162,9 +181,11 @@ def compute_knn_attnlrp_pass(
             query_embedding=query_embedding,
             query_label=query_label,
             query_filename=query_filename,
+            query_video_id=query_video_id,
             db_embeddings=db_embeddings,
             db_labels=db_labels,
             db_filenames=db_filenames,
+            db_video_ids=db_video_ids,
             distance_metric=distance_metric,
             temp=proxy_temp
         )
@@ -185,6 +206,8 @@ def compute_knn_attnlrp_pass(
     finally:
         zennit_comp.remove()
 
+    if relevance is None:
+        relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance
 
 def generate_relevances(
@@ -205,6 +228,7 @@ def generate_relevances(
     db_embeddings: Optional[torch.Tensor] = None,
     db_filenames: Optional[List[str]] = None,
     db_labels: Optional[List[str]] = None,
+    db_video_ids: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     """
     A unified function to generate relevance maps for a dataset.
@@ -271,7 +295,8 @@ def generate_relevances(
                 input_batch = batch["image"].to(device)
                 labels_batch = batch["label"]
                 filenames_batch = batch["filename"]
-                
+                video_ids_batch = batch["video"]
+
                 # Safely get masks only if needed
                 mask_batch = batch.get("mask") 
                 if mask_batch is None:
@@ -280,35 +305,39 @@ def generate_relevances(
                 for j, filename in enumerate(filenames_batch):
                     input_tensor_single = input_batch[j].unsqueeze(0)
                     label_single = labels_batch[j]
-                    
+                    video_id = video_ids_batch[j]
+
                     relevance_single = None
                     extra_info = {} # To store mode-specific data like reference_embedding
 
                     if mode == "soft_knn_margin":
                         relevance_single = compute_knn_attnlrp_pass(
                             model_wrapper=model_wrapper, input_tensor=input_tensor_single,
-                            query_label=label_single, query_filename=filename,
+                            query_label=label_single, query_filename=filename, query_video_id=video_id,
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                            db_video_ids=db_video_ids,
                             conv_gamma=conv_gamma, lin_gamma=lin_gamma,
                             distance_metric=distance_metric, proxy_temp=proxy_temp, verbose=verbose
                         )
                     elif mode == "proto_margin":
                         relevance_single = compute_similarity_proto_margin_pass(
                              model_wrapper=model_wrapper, input_tensor=input_tensor_single,
-                             query_label=label_single, query_filename=filename,
+                             query_label=label_single, query_filename=filename, query_video_id=video_id,
                              db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                             db_video_ids=db_video_ids,
                              conv_gamma=conv_gamma, lin_gamma=lin_gamma,
                              distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk_neg, verbose=verbose
                         )
                     elif mode == "similarity":
                         relevance_single, reference_embedding, ref_idx = compute_similarity_lrp_pass(
                             model_wrapper=model_wrapper, input_tensor=input_tensor_single,
-                            query_label=label_single, query_filename=filename,
+                            query_label=label_single, query_filename=filename, query_video_id=video_id,
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                            db_video_ids=db_video_ids,
                             conv_gamma=conv_gamma, lin_gamma=lin_gamma, verbose=verbose
                         )
                         # Save the reference embedding used, for evaluation
-                        extra_info["reference_embedding"] = reference_embedding.cpu()
+                        extra_info["reference_embedding"] = reference_embedding.cpu() if reference_embedding is not None else reference_embedding
                         extra_info["reference_filename"] = db_filenames[ref_idx]
 
                     # Prepare the mask if requested
@@ -377,14 +406,16 @@ def get_relevances(
     
     return results_list
 
-#TODO also mask out same video for all three scores
+#TODO optimize masking with integer indices
 def compute_knn_proto_margin(
-    query_emb: torch.Tensor,
+    query_embedding: torch.Tensor,
     query_label: str,
     query_filename: str,
+    query_video_id: str,
     db_embeddings: torch.Tensor,
     db_labels: list,
     db_filenames: list,
+    db_video_ids: list,
     distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
@@ -410,7 +441,7 @@ def compute_knn_proto_margin(
                     and perfectly matches the hard-negative prototype.
 
     Args:
-        query_emb: The embedding for the query item.
+        query_embedding: The embedding for the query item.
         query_label: The label of the query item.
         query_filename: The filename of the query, for self-exclusion.
         db_embeddings: A tensor of all embeddings in the database.
@@ -428,10 +459,10 @@ def compute_knn_proto_margin(
     if distance_metric != "cosine":
         raise NotImplementedError("This proto margin is optimized for cosine similarity.")
 
-    if query_emb.dim() == 1:
-        query_emb = query_emb.view(1, -1)
+    if query_embedding.dim() == 1:
+        query_embedding = query_embedding.view(1, -1)
 
-    qn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_emb)
+    qn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
     dbn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
     sims = F.linear(dbn, qn).squeeze(1)  # (N,)
@@ -442,20 +473,32 @@ def compute_knn_proto_margin(
             sims[qidx] = -1e9
         except ValueError:
             pass
+            
+    # 2. Exclude all images from the same video as the query
+    if query_video_id and db_video_ids:
+        # Create a boolean mask for items from the same video
+        same_video_mask = torch.tensor(
+            [vid == query_video_id for vid in db_video_ids], 
+            device=sims.device, 
+            dtype=torch.bool
+        )
+        # Invalidate similarities for same-video items
+        sims[same_video_mask] = -1e9
 
     # masks
     device = sims.device
     labels_tensor = torch.tensor([1 if l == query_label else 0 for l in db_labels], device=device)
 
-    # proto_pos (if no friends found, fallback to nearest same-file or zero)
-    pos_idx = torch.nonzero(labels_tensor).squeeze(1) if labels_tensor.sum() > 0 else torch.tensor([], device=device, dtype=torch.long)
-    if pos_idx.numel() == 0:
-        # fallback: take the single best-matching embedding with same filename if any, else top1 overall
-        proto_pos = dbn[sims.argmax()].unsqueeze(0)
-    else:
-        sims_pos = sims[pos_idx]
+    pos_mask = (labels_tensor == 1)
+    valid_pos_sims = sims[pos_mask]
+    if valid_pos_sims.numel() > 0 and valid_pos_sims.max() > -1e8: # Check if any valid positives exist, e.g. cross video not itself
+        pos_idx_original = torch.nonzero(pos_mask).squeeze(1)
+        sims_pos = sims[pos_idx_original]
         alpha_pos = F.softmax(sims_pos / temp, dim=0)
-        proto_pos = (alpha_pos.unsqueeze(1) * dbn[pos_idx]).sum(dim=0, keepdim=True)  # (1, D)
+        proto_pos = (alpha_pos.unsqueeze(1) * dbn[pos_idx_original]).sum(dim=0, keepdim=True)
+    else:
+        # Fallback if no valid cross-video positives are found
+        proto_pos = torch.zeros_like(qn)
 
     # proto_neg: topk among negatives
     neg_mask = (labels_tensor == 0)
@@ -479,9 +522,11 @@ def compute_knn_proxy_soft(
     query_embedding: torch.Tensor,
     query_label: str,
     query_filename: str,
+    query_video_id: str,
     db_embeddings: torch.Tensor,
     db_labels: list,
     db_filenames: list,
+    db_video_ids: list,
     distance_metric: str = "cosine",
     temp: float = 0.05,
     exclude_self: bool = True
@@ -532,14 +577,21 @@ def compute_knn_proxy_soft(
     # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
     similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
 
-    # Exclude the query from its own neighbors if it exists in the database
     if exclude_self and query_filename in db_filenames:
         try:
             query_idx = db_filenames.index(query_filename)
-            # Set similarity to a very low number to give it near-zero weight after softmax
             similarities[query_idx] = -1e9
         except ValueError:
-            pass # Query not found, nothing to do
+            pass
+
+    # cross video
+    if query_video_id and db_video_ids:
+        same_video_mask = torch.tensor(
+            [vid == query_video_id for vid in db_video_ids], 
+            device=similarities.device, 
+            dtype=torch.bool
+        )
+        similarities[same_video_mask] = -1e9
 
     # Differentiable soft neighbor weights via softmax. `temp` controls sharpness.
     # Low temp -> focuses on the very nearest neighbors.
@@ -564,9 +616,11 @@ def compute_knn_proxy_soft(
 def compute_similarity_score(
         query_embedding: torch.Tensor, 
         query_label: str, query_filename: str, 
+        query_video_id: str,
         db_embeddings: torch.Tensor, 
         db_labels: list, 
         db_filenames: list,
+        db_video_ids: list,
         reference_embedding: torch.Tensor = None
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """Computes the cosine similarity between two embeddings of the same class.
@@ -594,11 +648,18 @@ def compute_similarity_score(
             if label not in label_to_indices:
                 label_to_indices[label] = []
             label_to_indices[label].append(idx)
-        # Find a positive reference embedding from the database
+        # Find a positive reference embedding from the database that is not itself
         positive_indices = [idx for idx in label_to_indices.get(query_label, []) if db_filenames[idx] != query_filename]
+        
+        # cross videos
+        if query_video_id and db_video_ids:
+            positive_indices = [
+                idx for idx in positive_indices 
+                if db_video_ids[idx] != query_video_id
+            ]
         if not positive_indices:
             print(f"Warning: No other positive samples found for {query_label} ({query_filename}). Skipping.")
-            return 0, None, -1
+            return query_embedding.sum() * 0, None, -1
 
         ref_idx = positive_indices[0] 
         device = query_embedding.device

@@ -49,6 +49,7 @@ def run_masking_experiment(
     db_embeddings: torch.Tensor,
     db_labels: List[str],
     db_filenames: List[str],
+    db_video_ids: List[str],
     mask_scores: Dict[str, Tuple], # The output from attention_inside_mask
     batch_size: int,
     device: torch.device,
@@ -75,6 +76,7 @@ def run_masking_experiment(
             "db_embeddings": db_embeddings,
             "db_labels": db_labels,
             "db_filenames": db_filenames,
+            "db_video_ids": db_video_ids,
             "distance_metric": cfg["knn"]["distance_metric"],
             "temp": cfg["knn"]["temp"]
         }
@@ -84,6 +86,7 @@ def run_masking_experiment(
             "db_embeddings": db_embeddings,
             "db_labels": db_labels,
             "db_filenames": db_filenames,
+            "db_video_ids": db_video_ids,
             "distance_metric": cfg["knn"]["distance_metric"],
             "temp": cfg["knn"]["temp"],
             "topk_neg": cfg["knn"]["topk_neg"]
@@ -93,7 +96,8 @@ def run_masking_experiment(
         score_fn_kwargs = {
             "db_embeddings": db_embeddings,
             "db_labels": db_labels,
-            "db_filenames": db_filenames
+            "db_filenames": db_filenames,
+            "db_video_ids": db_video_ids,
         }
     else:
         raise ValueError(f"Unsupported evaluation decision metric: '{decision_metric}'")
@@ -108,7 +112,8 @@ def run_masking_experiment(
             masks_batch = batch["mask"] # This is a list of tensors/Nones
             labels_batch = batch["label"]
             filenames_batch = batch["filename"]
-            
+            video_ids_batch = batch["video"]
+
             # --- Process each item within the batch individually ---
             for i in range(len(filenames_batch)):
                 # Isolate the data for the i-th sample
@@ -116,6 +121,7 @@ def run_masking_experiment(
                 mask_tensor = masks_batch[i]
                 label = labels_batch[i]
                 filename = filenames_batch[i]
+                video_id = video_ids_batch[i]
 
                 # The experiment cannot proceed without a valid mask.
                 if mask_tensor is None:
@@ -134,7 +140,7 @@ def run_masking_experiment(
                 )
                 #change plot colors to hpi
                 result_base = score_fn(
-                    query_embedding=embedding_orig, query_label=label, query_filename=filename,
+                    query_embedding=embedding_orig, query_label=label, query_filename=filename, query_video_id=video_id,
                     **score_fn_kwargs
                 )
                 if isinstance(result_base, tuple):
@@ -159,7 +165,7 @@ def run_masking_experiment(
                     distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
                 result_mask = score_fn(
-                    query_embedding=embedding_masked, query_label=label, query_filename=filename,
+                    query_embedding=embedding_masked, query_label=label, query_filename=filename, query_video_id=video_id,
                     **score_fn_kwargs
                 )
                 if isinstance(result_mask, tuple):
@@ -509,7 +515,7 @@ def main(cfg: Dict):
         split_name=split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    db_embeddings, db_labels, db_filenames, _ = get_knn_db(
+    db_embeddings, db_labels, db_filenames, db_video_ids = get_knn_db(
         db_path=db_path_knn,
         dataset=val_dataset,
         model_wrapper=model_wrapper,
@@ -541,7 +547,8 @@ def main(cfg: Dict):
         mode=cfg["lrp"]["mode"],
         db_embeddings=db_embeddings,
         db_filenames=db_filenames,
-        db_labels=db_labels
+        db_labels=db_labels,
+        db_video_ids=db_video_ids
     )
 
 
@@ -557,6 +564,7 @@ def main(cfg: Dict):
         db_embeddings=db_embeddings,
         db_labels=db_labels,
         db_filenames=db_filenames,
+        db_video_ids=db_video_ids,
         mask_scores=scores,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE,
