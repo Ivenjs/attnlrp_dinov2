@@ -195,7 +195,7 @@ if __name__ == "__main__":
     root_dir = cfg["data"]["dataset_dir"]
     dataset_name = os.path.basename(root_dir)
 
-    sam_checkpoint_path = "/workspaces/vast-gorilla/gorillawatch/model_checkpoints/sam2.1_hiera_large.pt"
+    sam_checkpoint_path = "/workspaces/bachelor_thesis_code/sam2.1_l_finetuned.pt"#"/workspaces/vast-gorilla/gorillawatch/model_checkpoints/sam2.1_hiera_large.pt"
     config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
     mask_generator = MaskGenerator(
         model_checkpoint_path=sam_checkpoint_path,

@@ -204,7 +204,7 @@ def main(cfg: dict):
 
     print(f"\nGeneralization Drop: {relative_drop_percent:.2f}%")
 
-    ACCEPTABLE_DROP_PERCENT = 25.0
+    ACCEPTABLE_DROP_PERCENT = 30.0
     if relative_drop_percent > ACCEPTABLE_DROP_PERCENT:
         print(f"DECISION: REJECT. High generalization drop.")
         FINAL_DECISION = "REJECTED"

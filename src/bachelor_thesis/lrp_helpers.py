@@ -127,7 +127,14 @@ def compute_similarity_lrp_pass(
 
         similarity_score.backward()
 
-        relevance = (input_tensor * input_tensor.grad).sum(dim=1, keepdim=True)
+        if input_tensor.grad is None:
+            if verbose:
+                print(f"WARNING: No gradient for LRP on '{query_filename}'. "
+                      "Producing a zero relevance map.")
+            relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+        else:
+            # Standard LRP relevance calculation when gradients are present
+            relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
 
     finally:
         zennit_comp.remove()
@@ -567,7 +574,6 @@ def compute_knn_proxy_soft(
 
     # Ensure embeddings are normalized (standard for cosine similarity)
     q_emb = query_embedding.view(1, -1) if query_embedding.dim()==1 else query_embedding
-    #TODO: gleiche videos genauso wie sich selbst auch wegmaskieren?
     # Achtibat:
     q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
     db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
@@ -643,7 +649,7 @@ def compute_similarity_score(
     """
     ref_idx = -1
     if reference_embedding is None:
-        label_to_indices = {} # for similarity score
+        label_to_indices = {} 
         for idx, label in enumerate(db_labels):
             if label not in label_to_indices:
                 label_to_indices[label] = []

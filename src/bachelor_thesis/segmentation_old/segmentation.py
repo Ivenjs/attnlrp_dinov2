@@ -284,7 +284,7 @@ def process_batch(predictor, batch_df):
 
 def save_batch_results(
     results, resized_masks_list=None, dino_input_size=(518, 518)
-):  # TODO: read this dino_input size from somewhere else
+):  
     """Saves masks and overlays from a processed batch to disk using a thread pool."""
     if not results:
         return

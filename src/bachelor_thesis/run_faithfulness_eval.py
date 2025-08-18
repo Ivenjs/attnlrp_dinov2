@@ -175,8 +175,9 @@ def main(cfg):
                  label=mode.upper(), 
                  color=colors.get(mode, 'black')
                 )
-    
-    plt.title(f'Impact of Patch Perturbation on k-NN Re-ID Accuracy for model {cfg["model"]["finetuned"]}')
+
+    finetuned_str = "finetuned" if cfg["model"]["finetuned"] else "base"
+    plt.title(f'Impact of Patch Perturbation on k-NN Re-ID Accuracy for {finetuned_str} model')
     plt.xlabel('Fraction of Patches Perturbed')
     plt.ylabel(f"Cross-Video k-NN@{cfg['knn']['k']} Accuracy")
     plt.grid(True, linestyle='--', alpha=0.6)

@@ -47,7 +47,6 @@ class GorillaReIDDataset(Dataset):
         self.labels = [self.label_extractor(f) for f in self.filenames]
         self.videos = [self.video_extractor(f) for f in self.filenames]
 
-        # This logic is now lightweight and fast. It just checks for files.
         if base_mask_dir:
             # Construct the full path to the specific mask directory
             mask_dir = os.path.join(base_mask_dir, self.dataset_name, self.split_name)
@@ -157,6 +156,9 @@ class PerturbedGorillaReIDDataset(Dataset):
     A wrapper dataset that applies perturbations to images based on relevance maps.
     This is used to evaluate the impact of LRP-guided perturbations on downstream
     k-NN accuracy.
+
+    This version filters the dataset at initialization to only include samples
+    for which a relevance map is available, ensuring methodological purity.
     """
     def __init__(self,
                  base_dataset,
@@ -176,17 +178,50 @@ class PerturbedGorillaReIDDataset(Dataset):
         if self.perturbation_mode not in ['morf', 'lerf', 'random']:
             raise ValueError("perturbation_mode must be 'morf', 'lerf', or 'random'")
             
-        # Proxy attributes from the base dataset so it's a drop-in replacement
-        self.filenames = self.base_dataset.filenames
-        self.labels = self.base_dataset.labels
-        self.images_for_cv_knn = self.base_dataset.images_for_cv_knn
+        # --- Pre-filter the dataset to only include valid samples ---
+        self.valid_indices = []
+        print("Filtering dataset for available relevance maps...")
+        for i, filename_with_ext in enumerate(self.base_dataset.filenames):
+            filename_no_ext = os.path.splitext(filename_with_ext)[0]
+            if filename_no_ext in self.relevance_maps:
+                self.valid_indices.append(i)
+        
+        original_count = len(self.base_dataset)
+        valid_count = len(self.valid_indices)
+        print(f"Found relevance maps for {valid_count} out of {original_count} images.")
+        if valid_count == 0:
+            raise ValueError("No relevance maps found for any images in the dataset. Cannot proceed.")
+
+        # --- Create a map from original index to new, filtered index ---
+        self.original_to_new_idx_map = {original_idx: new_idx for new_idx, original_idx in enumerate(self.valid_indices)}
+
+        # --- Create new proxy attributes, re-mapping indices where needed ---
+        self.filenames = [self.base_dataset.filenames[i] for i in self.valid_indices]
+        self.labels = [self.base_dataset.labels[i] for i in self.valid_indices]
+        
+        # Correctly re-map the k-NN index lists
+        self.images_for_cv_knn = [
+            self.original_to_new_idx_map[original_knn_idx]
+            for original_knn_idx in self.base_dataset.images_for_cv_knn
+            if original_knn_idx in self.original_to_new_idx_map
+        ]
+        
+        self.images_for_standard_knn = [
+            self.original_to_new_idx_map[original_knn_idx]
+            for original_knn_idx in self.base_dataset.images_for_standard_knn
+            if original_knn_idx in self.original_to_new_idx_map
+        ]
+        
+        print(f"Re-mapped k-NN lists. CV-KNN valid queries: {len(self.images_for_cv_knn)}. Standard-KNN valid queries: {len(self.images_for_standard_knn)}")
+
 
     def __len__(self) -> int:
-        return len(self.base_dataset)
+        return len(self.valid_indices)
 
     def __getitem__(self, idx: int) -> Dict:
-        # 1. Get the original, unperturbed data from the base dataset
-        original_data = self.base_dataset[idx]
+        original_idx = self.valid_indices[idx]
+        
+        original_data = self.base_dataset[original_idx]
         input_tensor = original_data["image"]
         filename = original_data["filename"]
 
@@ -194,13 +229,9 @@ class PerturbedGorillaReIDDataset(Dataset):
         if self.perturbation_fraction == 0.0:
             return original_data
             
-        # 2. Get the corresponding relevance map
-        relevance_map = self.relevance_maps.get(filename)
-        if relevance_map is None:
-            print(f"Warning: No relevance map found for {filename}. Returning original image.")
-            return original_data
+        relevance_map = self.relevance_maps[filename]
 
-        # 3. Calculate patch order based on relevance
+        # Note: A relevance_map of all zeros will result in a random-like perturbation
         patch_relevance = F.avg_pool2d(relevance_map, 
                                        kernel_size=self.patch_size, 
                                        stride=self.patch_size)
@@ -215,14 +246,11 @@ class PerturbedGorillaReIDDataset(Dataset):
         else: # 'random'
             order = torch.randperm(num_patches)
             
-        # 4. Determine which patches to perturb
         num_patches_to_perturb = int(np.floor(self.perturbation_fraction * num_patches))
         patches_to_perturb = order[:num_patches_to_perturb]
 
-        # 5. Create the perturbed image
         perturbed_tensor = input_tensor.clone()
         
-        # Determine baseline fill value
         if self.baseline_value.lower() == "black":
             baseline_fill = torch.zeros_like(input_tensor)
         elif self.baseline_value.lower() == "mean":
@@ -241,6 +269,5 @@ class PerturbedGorillaReIDDataset(Dataset):
             perturbed_tensor[..., row:row+self.patch_size, col:col+self.patch_size] = \
                 baseline_fill[..., row:row+self.patch_size, col:col+self.patch_size]
         
-        # 6. Return the perturbed data, replacing the original image
         original_data["image"] = perturbed_tensor
         return original_data

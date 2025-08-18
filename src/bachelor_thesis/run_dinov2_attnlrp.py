@@ -289,8 +289,8 @@ def create_binned_plot(
     Creates and saves a binned bar plot of a metric vs. an attention score.
     """
     try:
-        # Define bins for the attention score (-1 to 1)
-        bins = np.linspace(-1.0, 1.0, 11)
+        # Define bins for the attention score (0 to 1)
+        bins = np.linspace(0.0, 1.0, 11)
         df_copy = df.copy() 
         df_copy['bin_labels'] = pd.cut(df_copy[attention_col], bins=bins, include_lowest=True)
 
@@ -557,6 +557,7 @@ def main(cfg: Dict):
         for item in relevances_all
     }
 
+    #TODO: FILTER OUT TENSOR 0 FOR WHEN NO RELEVANCE TO NOW SKEW STATISTICS (AND AVOID WEIRD PLOTS)
     # --- 5. Run Masking Experiment ---
     masking_results_df = run_masking_experiment(
         model_wrapper=model_wrapper,
