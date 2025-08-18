@@ -5,6 +5,8 @@ data:
   batch_size: 8
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
   output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
+  analysis_split: "test"
+  #test or val?
 
 seed: 161
 
@@ -13,7 +15,7 @@ db:
   feature_type: "body"
 
 eval:
-  patches_per_step: 75
+  patches_per_step: 50
   baseline_value: "mean" #mean or black
 
 knn:

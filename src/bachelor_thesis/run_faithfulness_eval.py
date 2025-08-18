@@ -32,9 +32,9 @@ def main(cfg):
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
     random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
-    split_name = "validation"
-    val_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
-    val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
+    split_name = cfg["data"]["analysis_split"]
+    split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
+    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
     model_type_str = "finetuned" if cfg["model"]["finetuned"] else "base"
     mask_transform = get_mask_transform(cfg["model"]["img_size"])
 
@@ -48,9 +48,9 @@ def main(cfg):
     )
 
     # Create the base validation dataset
-    base_val_dataset = GorillaReIDDataset(
-        image_dir=val_dir,
-        filenames=val_files,
+    base_dataset = GorillaReIDDataset(
+        image_dir=split_dir,
+        filenames=split_files,
         transform=image_transforms,
         base_mask_dir=cfg["data"]["base_mask_dir"],
         mask_transform=mask_transform,
@@ -60,24 +60,24 @@ def main(cfg):
     # --- 2. Generate or Load Relevance Maps (Expensive step, do it once!) ---
     db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=base_val_dataset,
+        dataset=base_dataset,
         split_name=split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    val_db_embeddings, val_db_labels, val_db_filenames, val_db_videos = get_knn_db(
+    db_embeddings, db_labels, db_filenames, db_video_ids = get_knn_db(
         db_path=db_path_knn,
-        dataset=base_val_dataset,
+        dataset=base_dataset,
         model_wrapper=model_wrapper,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE
     )
     
-    val_dataloader = DataLoader(base_val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0,shuffle=False, collate_fn=custom_collate_fn)
+    dataloader = DataLoader(base_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0,shuffle=False, collate_fn=custom_collate_fn)
 
 
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=base_val_dataset,
+        dataset=base_dataset,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=DECISION_METRIC
@@ -86,7 +86,7 @@ def main(cfg):
     relevances_all = get_relevances(
         db_path=db_path_relevances,
         model_wrapper=model_wrapper,
-        dataloader=val_dataloader,
+        dataloader=dataloader,
         device=DEVICE,
         recompute=False,
         # All of these will be caught by **kwargs and passed to generate_relevances
@@ -96,10 +96,10 @@ def main(cfg):
         distance_metric=cfg["knn"]["distance_metric"], #pass as single value
         mode=cfg["lrp"]["mode"],
         topk_neg=cfg["knn"]["topk_neg"],
-        db_embeddings=val_db_embeddings,
-        db_filenames=val_db_filenames,
-        db_labels=val_db_labels,
-        db_video_ids=val_db_videos
+        db_embeddings=db_embeddings,
+        db_filenames=db_filenames,
+        db_labels=db_labels,
+        db_video_ids=db_video_ids
     )
 
     relevance_dict = {
@@ -118,12 +118,12 @@ def main(cfg):
     # establish baseline
     base_accuracy = evaluate_model(
         model_wrapper=model_wrapper,
-        val_dataset=base_val_dataset,
+        val_dataset=base_dataset,
         cfg=cfg,
         device=DEVICE,
-        db_embeddings=val_db_embeddings,
-        db_labels=val_db_labels,
-        db_videos=val_db_videos
+        db_embeddings=db_embeddings,
+        db_labels=db_labels,
+        db_videos=db_video_ids
     )
     print(f"Base accuracy: {base_accuracy:.4f}")
 
@@ -141,7 +141,7 @@ def main(cfg):
             
             # Create the perturbed dataset for this specific configuration
             perturbed_dataset = PerturbedGorillaReIDDataset(
-                base_dataset=base_val_dataset,
+                base_dataset=base_dataset,
                 relevance_maps=relevance_dict,
                 perturbation_mode=mode,
                 perturbation_fraction=frac,
@@ -152,12 +152,12 @@ def main(cfg):
             # Run the full, original evaluation pipeline on the perturbed data
             accuracy = evaluate_model(
                 model_wrapper=model_wrapper,
-                val_dataset=base_val_dataset,
+                val_dataset=base_dataset,
                 cfg=cfg,
                 device=DEVICE,
-                db_embeddings=val_db_embeddings,
-                db_labels=val_db_labels,
-                db_videos=val_db_videos,
+                db_embeddings=db_embeddings,
+                db_labels=db_labels,
+                db_videos=db_video_ids,
                 query_dataset=perturbed_dataset
             )
             print(f"Accuracy for {mode.upper()} at {frac*100:.1f}% perturbation: {accuracy:.4f}")

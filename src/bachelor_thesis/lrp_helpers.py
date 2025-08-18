@@ -650,7 +650,6 @@ def compute_similarity_score(
             label_to_indices[label].append(idx)
         # Find a positive reference embedding from the database that is not itself
         positive_indices = [idx for idx in label_to_indices.get(query_label, []) if db_filenames[idx] != query_filename]
-        
         # cross videos
         if query_video_id and db_video_ids:
             positive_indices = [

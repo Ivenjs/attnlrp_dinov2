@@ -27,6 +27,7 @@ def get_class_label(filename: str) -> str:
     """
     return filename.split("_")[0]
 
+#TODO: make this deliberately cross video to enable more diverse queries
 def get_balanced_individual_splits(
     train_files: List[str],
     holdout_percentage: float,

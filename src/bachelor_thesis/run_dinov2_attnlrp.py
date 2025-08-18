@@ -491,33 +491,33 @@ def main(cfg: Dict):
     model_wrapper, image_transforms, model_data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
 
     root_dir = cfg["data"]["dataset_dir"]
-    val_dir = os.path.join(root_dir, "validation")
-    val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
+    split_name = cfg["data"]["analysis_split"] 
+    split_dir = os.path.join(root_dir, split_name)
+    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
 
 
     mask_transform = get_mask_transform(cfg["model"]["img_size"])
 
-    val_dataset = GorillaReIDDataset(
-        image_dir=val_dir,
-        filenames=val_files,
+    dataset = GorillaReIDDataset(
+        image_dir=split_dir,
+        filenames=split_files,
         transform=image_transforms,
         base_mask_dir=cfg["data"]["base_mask_dir"],
         mask_transform=mask_transform
     )
 
-    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, collate_fn=custom_collate_fn, shuffle=False)
-    split_name = "validation"
+    dataloader = DataLoader(dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, collate_fn=custom_collate_fn, shuffle=False)
 
     # --- 3. Compute k-NN Database ---
     db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=val_dataset,
+        dataset=dataset,
         split_name=split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     db_embeddings, db_labels, db_filenames, db_video_ids = get_knn_db(
         db_path=db_path_knn,
-        dataset=val_dataset,
+        dataset=dataset,
         model_wrapper=model_wrapper,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE
@@ -526,7 +526,7 @@ def main(cfg: Dict):
     # --- 4. Compute Relevances ---
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=val_dataset,
+        dataset=dataset,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=DECISION_METRIC
@@ -535,7 +535,7 @@ def main(cfg: Dict):
     relevances_all = get_relevances(
         db_path=db_path_relevances,
         model_wrapper=model_wrapper,
-        dataloader=val_dataloader,
+        dataloader=dataloader,
         device=DEVICE,
         recompute=False,
         # All of these will be caught by **kwargs and passed to generate_relevances
@@ -560,7 +560,7 @@ def main(cfg: Dict):
     # --- 5. Run Masking Experiment ---
     masking_results_df = run_masking_experiment(
         model_wrapper=model_wrapper,
-        dataset=val_dataset,
+        dataset=dataset,
         db_embeddings=db_embeddings,
         db_labels=db_labels,
         db_filenames=db_filenames,
@@ -611,7 +611,7 @@ def main(cfg: Dict):
     heatmap_paths = generate_heatmaps(
         samples_to_plot=samples_to_plot,
         masking_results_df=masking_results_df,
-        val_dataset=val_dataset, 
+        val_dataset=dataset, 
         relevance_mask_dict=relevance_mask_dict, 
         model_data_config=model_data_config, 
         output_dir=os.path.join(visualization_dir, "heatmaps")

@@ -157,27 +157,26 @@ if __name__ == '__main__':
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # --- 2. Setup Model, Transforms, and Dataset ---
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
-    split_name = "validation"
-    val_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
-    val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
+    split_name = "test"
+    split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
+    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
 
-    # KEY CHANGE HERE: Pass 'k' to the dataset constructor.
-    val_dataset = GorillaReIDDataset(
-        image_dir=val_dir,
-        filenames=val_files,
+    dataset = GorillaReIDDataset(
+        image_dir=split_dir,
+        filenames=split_files,
         transform=image_transforms,
         k=cfg["knn"]["k"], 
     )
 
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=val_dataset,
+        dataset=dataset,
         split_name=split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    val_db_embeddings, val_db_labels, val_db_filenames, val_db_videos = get_knn_db(
+    db_embeddings, db_labels, db_filenames, db_videos = get_knn_db(
         db_path=db_path,
-        dataset=val_dataset,
+        dataset=dataset,
         model_wrapper=model_wrapper,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE
@@ -186,10 +185,10 @@ if __name__ == '__main__':
     # --- 3. Run Evaluation ---
     evaluate_model(
         model_wrapper=model_wrapper,
-        val_dataset=val_dataset,
+        val_dataset=dataset,
         cfg=cfg,
         device=DEVICE,
-        db_embeddings=val_db_embeddings,
-        db_labels=val_db_labels,
-        db_videos=val_db_videos
+        db_embeddings=db_embeddings,
+        db_labels=db_labels,
+        db_videos=db_videos
     )

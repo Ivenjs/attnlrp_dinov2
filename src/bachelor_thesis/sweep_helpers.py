@@ -80,7 +80,7 @@ def evaluate_gamma_sweep(
                 eval_kwargs["topk_neg"] = params["topk_neg"]
 
             if mode == "similarity":
-                eval_kwargs["reference_embedding"] = relevance_data["reference_embedding"].to(device)
+                eval_kwargs["reference_embedding"] = relevance_data["reference_embedding"].to(device) if relevance_data["reference_embedding"] is not None else None
 
             srg_results_by_metric = srg_eval(
                 relevance_map=relevance_data["relevance"],
@@ -345,7 +345,7 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
     }
     
     # Combine all overall stats
-    overall_stats = {**raw_stats, **norm_stats}
+    overall_stats = {**raw_stats}
     
     # Statistics by gamma combination for both score types
     parameter_stats_raw = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp'])['faithfulness_score'].agg([
@@ -394,26 +394,15 @@ def log_nested_validation_to_wandb(
     holdout_results_list: List[Dict],
     tune_curves_list: List,
     holdout_curves_list: List,
-    decision_metric: str
+    run
 ):
     """Logs the complete story of a nested validation experiment to W&B, handling multiple metrics."""
     print("\n--- Logging Nested Validation Experiment to Weights & Biases ---")
-    if cfg["model"]["finetuned"]:
-        wandb_name = f"attnlrp_gamma_sweep_finetuned_{decision_metric}"
-    else:
-        wandb_name = f"attnlrp_gamma_sweep_non_finetuned_{decision_metric}"
-
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    run = wandb.init(
-        project="Thesis-Iven", entity="gorillawatch", 
-        name=wandb_name, config=cfg_dict
-    )
-
     hpi_colors = get_hpi_colors(cfg)
 
 
     wandb.summary["final_decision"] = final_decision
-    wandb.summary["decision_metric"] = decision_metric
+    wandb.summary["decision_metric"] = cfg["lrp"]["mode"]
     wandb.summary["generalization_drop_percent"] = generalization_drop_percent
     
     wandb.summary["approved_conv_gamma"] = approved_params['conv_gamma']
@@ -422,9 +411,9 @@ def log_nested_validation_to_wandb(
     wandb.summary["approved_proxy_temp"] = approved_params['proxy_temp']
     wandb.summary["approved_topk_neg"] = approved_params['topk_neg']
 
-    wandb.summary[f"tune_set_mean_faithfulness ({decision_metric})"] = tune_performance['mean_faithfulness']
-    wandb.summary[f"holdout_set_mean_faithfulness ({decision_metric})"] = holdout_performance['mean_faithfulness']
-    
+    wandb.summary[f"tune_set_mean_faithfulness ({cfg['lrp']['mode']})"] = tune_performance['mean_faithfulness']
+    wandb.summary[f"holdout_set_mean_faithfulness ({cfg['lrp']['mode']})"] = holdout_performance['mean_faithfulness']
+
     # --- 2. Log Detailed Data as Tables ---
     # The 'metric_name' column will now be present in these tables
     log_payload = {}
@@ -539,8 +528,6 @@ def log_nested_validation_to_wandb(
     if log_payload:
         print("\n--- Logging all artifacts to W&B in a single step ---")
         wandb.log(log_payload)
-
-    run.finish()
     print("--- Finished logging to W&B ---")
 
 def _build_filter(df: pd.DataFrame, params: dict) -> pd.Series:
