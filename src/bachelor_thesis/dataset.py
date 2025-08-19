@@ -8,6 +8,8 @@ from torch.utils.data.dataloader import default_collate
 from collections import defaultdict
 import numpy as np
 import torch.nn.functional as F
+import hashlib
+from utils import deterministic_randperm
 
 class GorillaReIDDataset(Dataset):
     """
@@ -166,6 +168,7 @@ class PerturbedGorillaReIDDataset(Dataset):
                  perturbation_mode: str, # 'morf', 'lerf', or 'random'
                  perturbation_fraction: float,
                  patch_size: int,
+                 seed: int = 161,
                  baseline_value: str = "black"):
         
         self.base_dataset = base_dataset
@@ -174,6 +177,7 @@ class PerturbedGorillaReIDDataset(Dataset):
         self.perturbation_fraction = perturbation_fraction
         self.patch_size = patch_size
         self.baseline_value = baseline_value
+        self.seed = seed
 
         if self.perturbation_mode not in ['morf', 'lerf', 'random']:
             raise ValueError("perturbation_mode must be 'morf', 'lerf', or 'random'")
@@ -189,6 +193,9 @@ class PerturbedGorillaReIDDataset(Dataset):
         original_count = len(self.base_dataset)
         valid_count = len(self.valid_indices)
         print(f"Found relevance maps for {valid_count} out of {original_count} images.")
+        #print how many relevance maps are filled with 0 only
+        zero_count = sum(1 for map in self.relevance_maps.values() if torch.all(map == 0))
+        print(f"Found {zero_count} relevance maps filled with zeros.")
         if valid_count == 0:
             raise ValueError("No relevance maps found for any images in the dataset. Cannot proceed.")
 
@@ -244,7 +251,8 @@ class PerturbedGorillaReIDDataset(Dataset):
         elif self.perturbation_mode == 'lerf':
             order = torch.argsort(patch_relevance_flat, descending=False)
         else: # 'random'
-            order = torch.randperm(num_patches)
+            key = self.base_dataset.filenames[idx] 
+            order = deterministic_randperm(num_patches, key, self.seed)
             
         num_patches_to_perturb = int(np.floor(self.perturbation_fraction * num_patches))
         patches_to_perturb = order[:num_patches_to_perturb]

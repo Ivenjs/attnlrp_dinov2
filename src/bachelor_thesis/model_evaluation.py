@@ -30,6 +30,7 @@ def KNN_CV_GPU(model_wrapper, query_source_dataset, db_embeddings, images_to_che
     query_subset = Subset(query_source_dataset, images_to_check)
     query_loader = DataLoader(
         query_subset, 
+        num_workers=0, #try this to reduce random noise
         batch_size=cfg["data"]["batch_size"], 
         shuffle=False, # Maintain order
         collate_fn=custom_collate_fn 
@@ -238,7 +239,7 @@ def KNN_CV_GPU_unified(
     if not use_precomputed:
         query_subset = Subset(query_source_dataset, query_indices)
         query_loader = DataLoader(
-            query_subset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn
+            query_subset, batch_size=batch_size, num_workers=0, shuffle=False, collate_fn=custom_collate_fn
         )
         query_iterator = query_loader
     else:

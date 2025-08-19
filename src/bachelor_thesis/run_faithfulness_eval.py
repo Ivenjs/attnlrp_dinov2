@@ -27,11 +27,10 @@ def main(cfg):
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     MODE = cfg["lrp"]["mode"]
     print(f"\n--- RUNNING WITH MODE: {MODE} ---")
-
-    DECISION_METRIC = MODE
-    model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
     random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
+    DECISION_METRIC = MODE
+    model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
     split_name = cfg["data"]["analysis_split"]
     split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
     split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
@@ -128,7 +127,7 @@ def main(cfg):
     print(f"Base accuracy: {base_accuracy:.4f}")
 
     perturbation_fractions = [0.25, 0.5, 0.75, 0.99]
-    modes = ['morf', 'lerf', 'random']
+    modes = ['random','morf', 'lerf']
     results = {mode: [base_accuracy] for mode in modes}
     
 
@@ -146,6 +145,7 @@ def main(cfg):
                 perturbation_mode=mode,
                 perturbation_fraction=frac,
                 patch_size=patch_size,
+                seed=cfg["seed"],
                 baseline_value=cfg["eval"]["baseline_value"],
             )
 

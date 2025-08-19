@@ -1,4 +1,4 @@
-from utils import get_db_path, get_hpi_colors, get_mask_transform, load_config
+from utils import get_db_path, get_hpi_colors, get_mask_transform, load_config, get_denormalization_transform
 from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from torchvision import transforms
@@ -30,18 +30,6 @@ import wandb
 # 3b) compare finetuned model on train vs validation (overfitting?)
 # 4) save worst performing images and mask their background. How does the knn score change? can I also recompute accuracy with only these few images?
 
-
-def get_denormalization_transform(mean: tuple, std: tuple) -> transforms.Compose:
-    """Creates a transform to de-normalize image tensors using a lambda function."""
-    # Convert to tensors for broadcasting
-    mean_tensor = torch.tensor(mean)
-    std_tensor = torch.tensor(std)
-
-    return transforms.Compose([
-        # Reshape to (C, 1, 1) to work with image tensors (C, H, W)
-        transforms.Lambda(lambda x: x * std_tensor.view(3, 1, 1)),
-        transforms.Lambda(lambda x: x + mean_tensor.view(3, 1, 1)),
-    ])
 
 def run_masking_experiment(
     model_wrapper: TimmWrapper,
@@ -329,7 +317,8 @@ def generate_heatmaps(
     val_dataset: GorillaReIDDataset, 
     relevance_mask_dict: Dict, 
     model_data_config: Dict, 
-    output_dir: str
+    output_dir: str,
+    seed: int
 ) -> List[str]:
     print("\n--- Starting heatmap visualization ---")
     saved_heatmap_paths = []
@@ -337,7 +326,8 @@ def generate_heatmaps(
 
     visualizer = AttentionVisualizer(
         save_dir=output_dir,
-        denorm_transform=denorm_transform
+        denorm_transform=denorm_transform,
+        seed=seed
     )
     
     # Create a mapping from filename to its index in the dataset for quick lookup
@@ -615,7 +605,8 @@ def main(cfg: Dict):
         val_dataset=dataset, 
         relevance_mask_dict=relevance_mask_dict, 
         model_data_config=model_data_config, 
-        output_dir=os.path.join(visualization_dir, "heatmaps")
+        output_dir=os.path.join(visualization_dir, "heatmaps"),
+        seed=cfg["seed"]
     )
 
     wandb.log({

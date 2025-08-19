@@ -7,9 +7,28 @@ import random
 from PIL import Image
 from omegaconf import OmegaConf
 from torchvision import transforms
+import torch
 
-from dataset import GorillaReIDDataset
+from torch.utils.data import Dataset
 
+import hashlib
+
+def deterministic_randperm(num_patches, key, global_seed=161):
+    h = int(hashlib.sha1((str(key) + str(global_seed)).encode()).hexdigest(), 16) % (2**32)
+    g = torch.Generator()
+    g.manual_seed(h)
+    return torch.randperm(num_patches, generator=g)
+
+def get_denormalization_transform(mean: tuple, std: tuple) -> transforms.Compose:
+    """Creates a transform to de-normalize image tensors using a lambda function."""
+    mean_tensor = torch.tensor(mean)
+    std_tensor = torch.tensor(std)
+
+    return transforms.Compose([
+        # Reshape to (C, 1, 1) to work with image tensors (C, H, W)
+        transforms.Lambda(lambda x: x * std_tensor.view(3, 1, 1)),
+        transforms.Lambda(lambda x: x + mean_tensor.view(3, 1, 1)),
+    ])
 
 def get_mask_transform(img_size):
     return transforms.Compose([
@@ -127,7 +146,7 @@ def load_config(config_name: str, cli_overrides: list):
     
     return config
 
-def get_db_path(model_checkpoint_path: str, dataset: GorillaReIDDataset, split_name: str, db_dir: str, decision_metric: str=None) -> str:
+def get_db_path(model_checkpoint_path: str, dataset: Dataset, split_name: str, db_dir: str, decision_metric: str=None) -> str:
     checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint_path))[0]
     if decision_metric:
         db_filename = f"{checkpoint_name}_{dataset.dataset_name}_{split_name}_{decision_metric}_db.pt"

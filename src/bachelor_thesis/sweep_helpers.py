@@ -28,7 +28,8 @@ def evaluate_gamma_sweep(
     device: torch.device,
     patches_per_step: int = 20,
     baseline_value: str = "black",
-    plot_curves: bool = False
+    plot_curves: bool = False,
+    seed=161
 ) -> List[Dict]:
     """
     Evaluate faithfulness scores for each image and gamma combination.
@@ -89,8 +90,10 @@ def evaluate_gamma_sweep(
                 mode=mode, 
                 patch_size=patch_size,
                 patches_per_step=patches_per_step,
+                input_filename=input_filename,
                 baseline_value=baseline_value,
                 plot_curves=plot_curves,
+                seed=seed,
                 **eval_kwargs 
             ) 
             

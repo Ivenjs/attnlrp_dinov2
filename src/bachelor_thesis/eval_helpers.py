@@ -8,6 +8,7 @@ from basemodel import TimmWrapper
 from typing import Any, Tuple, List, Dict, Callable
 from knn_helpers import calculate_distance
 from lrp_helpers import compute_knn_proxy_soft, compute_knn_proto_margin, compute_similarity_score
+from src.bachelor_thesis.utils import deterministic_randperm
 
 
 PATCH_SIZE = 14  # Size of the patches to average over
@@ -125,8 +126,10 @@ def srg_eval(
     mode: str,
     patch_size: int,
     patches_per_step: int,
+    input_filename: str,
     baseline_value: str = "black",
     plot_curves: bool = False,
+    seed=161,
     **kwargs
 ) -> Dict:
     """
@@ -192,12 +195,12 @@ def srg_eval(
         "baseline_value": baseline_value
     }
 
-    
+    order = deterministic_randperm(len(morf_order), input_filename, seed)
 
     morf_curve = _run_perturbation_experiment(model, input_tensor, morf_order, 'deletion', **perturb_args)
     lerf_curve = _run_perturbation_experiment(model, input_tensor, lerf_order, 'deletion', **perturb_args)
     random_curve = _run_perturbation_experiment(
-        model, input_tensor, torch.randperm(len(morf_order)), 'deletion', **perturb_args
+        model, input_tensor, order, 'deletion', **perturb_args
     )
 
     auc_morf = calculate_auc(morf_curve)

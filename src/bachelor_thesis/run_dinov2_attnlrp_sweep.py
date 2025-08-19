@@ -117,7 +117,7 @@ def main(cfg: dict):
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
         tune_relevances_all, tune_eval_dataloader, model_wrapper,
         train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos,cfg["model"]["patch_size"], DEVICE,
-        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
+        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False, cfg["seed"]
     )
 
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
@@ -145,7 +145,7 @@ def main(cfg: dict):
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
         holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
         train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
-        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False
+        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], False, cfg["seed"]
     )
 
     # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---
