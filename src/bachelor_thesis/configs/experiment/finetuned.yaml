@@ -1,11 +1,38 @@
 model:
   finetuned: True
-  checkpoint_path: "/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth"
-
-knn:
-  temp: 0.01
-  topk_neg: 50
+  checkpoint_path: "/workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth"
 
 lrp:
-  conv_gamma: 0.25
-  lin_gamma: 0.001
+  mode: "soft_knn_margin"  # default
+  conv_gamma: ${lrp_params.${lrp.mode}.lrp.conv_gamma}
+  lin_gamma:  ${lrp_params.${lrp.mode}.lrp.lin_gamma}
+
+knn:
+  temp:       ${lrp_params.${lrp.mode}.knn.temp}
+  topk_neg:   ${lrp_params.${lrp.mode}.knn.topk_neg}
+
+
+lrp_params:
+  soft_knn_margin:
+    knn:
+      temp: 0.01
+      topk_neg: null
+    lrp:
+      conv_gamma: 0.25
+      lin_gamma: 0.001
+
+  proto_margin:
+    knn:
+      temp: 0.01
+      topk_neg: 50
+    lrp:
+      conv_gamma: 0.1
+      lin_gamma: 0.05
+  
+  similarity:
+    knn:
+      temp: null
+      topk_neg: null
+    lrp:
+      conv_gamma: 0.25
+      lin_gamma: 0.05
