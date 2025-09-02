@@ -28,11 +28,9 @@ def compute_similarity_proto_margin_pass(
     distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
+    cross_video: bool = True,
     verbose: bool = False
 ) -> torch.Tensor:
-    #TODO: the effectiveness of this has not been tested
-    #Prototype-Margin (Geometric Explanation): This method explains the model's decision based on the query's geometric position relative to class-conditional 
-    # "centers of mass" (the prototypes) in the embedding space. It's a very model-centric view.It's like explaining a simplified, implicit contrastive or triplet loss head.
     """
     Prototype-Margin LRP: proto_pos = softmax over friend sims, proto_neg = softmax over topk foe sims.
     score = sim(query, proto_pos) - sim(query, proto_neg)
@@ -58,6 +56,7 @@ def compute_similarity_proto_margin_pass(
             distance_metric=distance_metric,
             temp=temp,
             topk_neg=topk_neg,
+            cross_video=cross_video
         )
 
         score.backward()
@@ -89,6 +88,7 @@ def compute_similarity_lrp_pass(
     db_labels: list,
     db_filenames: list,
     db_video_ids: list,
+    cross_video: bool = True,
     verbose: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
@@ -119,7 +119,8 @@ def compute_similarity_lrp_pass(
             db_embeddings=db_embeddings, 
             db_labels=db_labels, 
             db_filenames=db_filenames,
-            db_video_ids=db_video_ids
+            db_video_ids=db_video_ids,
+            cross_video=cross_video
         )
 
         if verbose:
@@ -158,6 +159,7 @@ def compute_knn_attnlrp_pass(
     db_video_ids: list,
     distance_metric: str = "cosine",
     proxy_temp: float = 0.1,
+    cross_video: bool = True,
     verbose: bool = False
 ) -> torch.Tensor:    
     # kNN-Proxy (Retrieval Explanation): This method is more faithful to the downstream task. Since Re-ID is ultimately used 
@@ -194,7 +196,8 @@ def compute_knn_attnlrp_pass(
             db_filenames=db_filenames,
             db_video_ids=db_video_ids,
             distance_metric=distance_metric,
-            temp=proxy_temp
+            temp=proxy_temp,
+            cross_video=cross_video
         )
         if verbose:
             print(f"Explaining k-NN proxy score: {knn_score.item():.4f} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
@@ -235,7 +238,8 @@ def generate_relevances(
     db_embeddings: Optional[torch.Tensor] = None,
     db_filenames: Optional[List[str]] = None,
     db_labels: Optional[List[str]] = None,
-    db_video_ids: Optional[List[str]] = None
+    db_video_ids: Optional[List[str]] = None,
+    cross_video: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     A unified function to generate relevance maps for a dataset.
@@ -283,9 +287,7 @@ def generate_relevances(
         param_combinations = list(itertools.product(base_params, mode_specific_params))
     else: # similarity or other future modes
         param_combinations = base_params
-    
-    print(f"Total parameter combinations to process: {len(param_combinations)}")
-    print("Patching model for LRP...")
+
 
     with DINOPatcher(model_wrapper):
         for params in param_combinations:
@@ -316,7 +318,6 @@ def generate_relevances(
 
                     relevance_single = None
                     extra_info = {} # To store mode-specific data like reference_embedding
-
                     if mode == "soft_knn_margin":
                         relevance_single = compute_knn_attnlrp_pass(
                             model_wrapper=model_wrapper, input_tensor=input_tensor_single,
@@ -324,7 +325,7 @@ def generate_relevances(
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                             db_video_ids=db_video_ids,
                             conv_gamma=conv_gamma, lin_gamma=lin_gamma,
-                            distance_metric=distance_metric, proxy_temp=proxy_temp, verbose=verbose
+                            distance_metric=distance_metric, proxy_temp=proxy_temp, cross_video=cross_video, verbose=verbose
                         )
                     elif mode == "proto_margin":
                         relevance_single = compute_similarity_proto_margin_pass(
@@ -333,7 +334,7 @@ def generate_relevances(
                              db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                              db_video_ids=db_video_ids,
                              conv_gamma=conv_gamma, lin_gamma=lin_gamma,
-                             distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk_neg, verbose=verbose
+                             distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk_neg, cross_video=cross_video, verbose=verbose
                         )
                     elif mode == "similarity":
                         relevance_single, reference_embedding, ref_idx = compute_similarity_lrp_pass(
@@ -341,7 +342,7 @@ def generate_relevances(
                             query_label=label_single, query_filename=filename, query_video_id=video_id,
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                             db_video_ids=db_video_ids,
-                            conv_gamma=conv_gamma, lin_gamma=lin_gamma, verbose=verbose
+                            conv_gamma=conv_gamma, lin_gamma=lin_gamma, cross_video=cross_video, verbose=verbose
                         )
                         # Save the reference embedding used, for evaluation
                         extra_info["reference_embedding"] = reference_embedding.cpu() if reference_embedding is not None else reference_embedding
@@ -426,6 +427,7 @@ def compute_knn_proto_margin(
     distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
+    cross_video: bool = True,
     exclude_self: bool = True
 ):
     """Computes a margin score based on prototypes of positive and hard-negative neighbors.
@@ -482,7 +484,7 @@ def compute_knn_proto_margin(
             pass
             
     # 2. Exclude all images from the same video as the query
-    if query_video_id and db_video_ids:
+    if query_video_id and db_video_ids and cross_video:
         # Create a boolean mask for items from the same video
         same_video_mask = torch.tensor(
             [vid == query_video_id for vid in db_video_ids], 
@@ -536,6 +538,7 @@ def compute_knn_proxy_soft(
     db_video_ids: list,
     distance_metric: str = "cosine",
     temp: float = 0.05,
+    cross_video: bool = True,
     exclude_self: bool = True
 ) -> torch.Tensor:
     """Computes a differentiable proxy for a k-NN classifier's confidence.
@@ -591,7 +594,7 @@ def compute_knn_proxy_soft(
             pass
 
     # cross video
-    if query_video_id and db_video_ids:
+    if query_video_id and db_video_ids and cross_video:
         same_video_mask = torch.tensor(
             [vid == query_video_id for vid in db_video_ids], 
             device=similarities.device, 
@@ -627,6 +630,7 @@ def compute_similarity_score(
         db_labels: list, 
         db_filenames: list,
         db_video_ids: list,
+        cross_video: bool = True,
         reference_embedding: torch.Tensor = None
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """Computes the cosine similarity between two embeddings of the same class.
@@ -657,7 +661,7 @@ def compute_similarity_score(
         # Find a positive reference embedding from the database that is not itself
         positive_indices = [idx for idx in label_to_indices.get(query_label, []) if db_filenames[idx] != query_filename]
         # cross videos
-        if query_video_id and db_video_ids:
+        if query_video_id and db_video_ids and cross_video:
             positive_indices = [
                 idx for idx in positive_indices 
                 if db_video_ids[idx] != query_video_id

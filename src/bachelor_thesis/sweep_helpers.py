@@ -28,6 +28,7 @@ def evaluate_gamma_sweep(
     device: torch.device,
     patches_per_step: int = 20,
     baseline_value: str = "black",
+    cross_video: bool = True,
     plot_curves: bool = False,
     seed=161
 ) -> List[Dict]:
@@ -76,6 +77,7 @@ def evaluate_gamma_sweep(
                 "db_video_ids": db_video_ids,
                 "distance_metric": params["distance_metric"],
                 "proxy_temp": params["proxy_temp"],
+                "cross_video": cross_video,
             }
             if mode == "proto_margin":
                 eval_kwargs["topk_neg"] = params["topk_neg"]

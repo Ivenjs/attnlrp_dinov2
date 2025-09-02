@@ -19,7 +19,6 @@ from dataset import GorillaReIDDataset, custom_collate_fn
 from basemodel import get_model_wrapper
 from knn_helpers import get_knn_db
 from lrp_helpers import get_relevances
-from run_dinov2_attnlrp import get_denormalization_transform
 from utils import deterministic_randperm, get_db_path, get_mask_transform, load_config, get_denormalization_transform
 
 class AttentionVisualizer:
@@ -58,8 +57,9 @@ class AttentionVisualizer:
         image_tensor: torch.Tensor,
         mask: Union[torch.Tensor, np.ndarray],
         relevance: torch.Tensor,
-        stats: Dict[str, Any]  
-    )-> str:
+        stats: Dict[str, Any],
+        intensify: bool = False
+    ) -> str:
         """
         Generates and saves a comprehensive relevance plot for a single model and image.
 
@@ -115,6 +115,9 @@ class AttentionVisualizer:
         axs[1].axis('off')
 
         relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
+        if intensify:
+            relevance_norm = torch.tanh(3 * relevance_norm)
+
         heatmap_img = imgify(relevance_norm, vmin=-1.0, vmax=1.0)
         axs[2].imshow(heatmap_img)
         axs[2].set_title("Relevance Heatmap")
@@ -124,6 +127,7 @@ class AttentionVisualizer:
         axs[3].imshow(img_np)
         axs[3].imshow(heatmap_img, alpha=0.6)
         axs[3].set_title("Relevance Overlay")
+        axs[3].contour(mask_np, colors='lime', linewidths=1.5)
         axs[3].axis('off')
         
 
@@ -142,7 +146,8 @@ class AttentionVisualizer:
         patch_size: int,
         perturbation_fraction: float,
         perturbation_mode: str = 'morf',
-        baseline_value: str = 'black'
+        baseline_value: str = 'black',
+        intensify: bool = True
     ) -> str:
         """
         Generates a plot showing the perturbed image alongside the original
@@ -205,13 +210,16 @@ class AttentionVisualizer:
             perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = \
                 baseline_fill[..., row:row+patch_size, col:col+patch_size]
 
-        # --- 2. Visualization (CHANGED) ---
         # Prepare all necessary images for plotting
         perturbed_img_np = self._preprocess_image(perturbed_tensor)
         original_img_np = self._preprocess_image(image_tensor)
         
         # Create the relevance heatmap image using logic from plot_heatmap
         relevance_norm = relevance_map.squeeze() / torch.abs(relevance_map).max()
+        #relevance_norm = torch.sign(relevance_norm ) * torch.abs(relevance_norm )**0.7
+        if intensify:
+            relevance_norm = torch.tanh(3 * relevance_norm)
+
         heatmap_img = imgify(relevance_norm, vmin=-1.0, vmax=1.0)
 
         # Create the plot
@@ -221,9 +229,9 @@ class AttentionVisualizer:
                  f"({perturbation_fraction:.0%}, Patch Size: {patch_size})")
         fig.suptitle(title, fontsize=16)
 
-        # Plot 1: The perturbed image
-        axs[0].imshow(perturbed_img_np)
-        axs[0].set_title(f"Perturbed with '{baseline_value.title()}' Baseline")
+        # Plot 1: Just the relevance map
+        axs[0].imshow(heatmap_img)
+        axs[0].set_title("Relevance Map")
         axs[0].axis('off')
 
         # Plot 2: The original image with relevance overlay
@@ -232,22 +240,23 @@ class AttentionVisualizer:
         axs[1].set_title("Original with Relevance Overlay")
         axs[1].axis('off')
 
-        # Plot 3: Just the relevance map
-        axs[2].imshow(heatmap_img)
-        axs[2].set_title("Relevance Map")
+        # Plot 3: The perturbed image
+        axs[2].imshow(perturbed_img_np)
+        axs[2].set_title(f"Perturbed with '{baseline_value.title()}' Baseline")
         axs[2].axis('off')
+
 
         plt.tight_layout(rect=[0, 0, 1, 0.95]) # Adjust for suptitle
 
         # --- 3. Save and Return (Unchanged) ---
-        save_path = os.path.join(self.save_dir, f"{filename}_perturb_{perturbation_mode}.png")
+        save_path = os.path.join(self.save_dir, f"{filename}_perturb_{perturbation_fraction}_{perturbation_mode}.png")
         plt.savefig(save_path, bbox_inches='tight')
         plt.close(fig)
         return save_path
     
 def main(cfg):
     monkey_patch_zennit(verbose=True)
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    DEVICE = torch.device("cpu")
     MODE = cfg["lrp"]["mode"]
     print(f"\n--- RUNNING WITH MODE: {MODE} ---")
 
@@ -274,7 +283,7 @@ def main(cfg):
     # --- 3. Compute k-NN Database ---
     db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=dataset,
+        dataset_name=dataset.dataset_name,
         split_name=split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
@@ -289,7 +298,7 @@ def main(cfg):
     # --- 4. Compute Relevances ---
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=dataset,
+        dataset_name=dataset.dataset_name,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=DECISION_METRIC
@@ -311,11 +320,12 @@ def main(cfg):
         db_embeddings=db_embeddings,
         db_filenames=db_filenames,
         db_labels=db_labels,
-        db_video_ids=db_video_ids
+        db_video_ids=db_video_ids,
+        cross_video=cfg["lrp"]["cross_video"]
     )
 
     relevance_dict = {
-        item['filename']: item['relevance'] for item in relevances_all
+        item['filename']: (item['relevance'], item['mask']) for item in relevances_all
     }
     print(f"length of relevance_dict: {len(relevance_dict)}")
 
@@ -327,16 +337,16 @@ def main(cfg):
         seed=cfg["seed"]
     )
 
-    #remove extension from the example images
-    example_images = [os.path.splitext(f)[0] for f in split_files][:5]
+    # select 20 random images
+    example_images = random.sample([os.path.splitext(f)[0] for f in split_files], 50)
 
-    print(f"Example images for visualization: {example_images}")
+    #print(f"Example images for visualization: {example_images}")
 
     fname_to_idx = {
         os.path.splitext(f)[0]: i for i, f in enumerate(dataset.filenames)
     }
 
-
+    example_images = ["PL02_Tm002_20220706_015_2394_31676", "TU03_R118_20220912_096_42_851638"]
     for filename in example_images:
 
         # Get the necessary data for plotting
@@ -347,18 +357,29 @@ def main(cfg):
         sample_data = dataset[fname_to_idx[os.path.splitext(filename)[0]]]
         image_tensor = sample_data["image"]
         
-        relevance = relevance_dict[filename]
+        relevance, mask = relevance_dict[filename]
 
         # Normalize relevance map for consistent visualization
         # This makes heatmaps comparable by scaling them to the [-1, 1] range
-        relevance = relevance / torch.abs(relevance).max()
-        
-        saved_path_morf = visualizer.plot_perturbation(
+        #relevance = relevance / torch.abs(relevance).max()
+        #relevance = torch.sign(relevance ) * torch.abs(relevance )**2
+        frac = 0.75
+
+        save_path = visualizer.plot_heatmap(
+            filename=filename,
+            image_tensor=image_tensor,
+            mask=mask,
+            relevance=relevance,
+            stats={},
+            intensify=True
+        )
+
+        """saved_path_morf = visualizer.plot_perturbation(
             filename=filename,
             image_tensor=image_tensor,
             relevance_map=relevance,
             patch_size=cfg["model"]["patch_size"],
-            perturbation_fraction=0.25, # Perturb the top 25% of patches
+            perturbation_fraction=frac, # Perturb the top 25% of patches
             perturbation_mode='morf',   # Most Relevant First
             baseline_value='mean'
         )
@@ -369,7 +390,7 @@ def main(cfg):
             image_tensor=image_tensor,
             relevance_map=relevance,
             patch_size=cfg["model"]["patch_size"],
-            perturbation_fraction=0.25,
+            perturbation_fraction=frac,
             perturbation_mode='lerf',    # Least Relevant First
             baseline_value='mean'
         )
@@ -380,11 +401,11 @@ def main(cfg):
             image_tensor=image_tensor,
             relevance_map=relevance,
             patch_size=cfg["model"]["patch_size"],
-            perturbation_fraction=0.25,
+            perturbation_fraction=frac,
             perturbation_mode='random',    # Random
             baseline_value='mean'
         )
-        print(f"Random perturbation plot saved to: {saved_path_lerf}")
+        print(f"Random perturbation plot saved to: {saved_path_lerf}")"""
 
 
 

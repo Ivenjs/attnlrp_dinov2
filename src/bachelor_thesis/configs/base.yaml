@@ -1,6 +1,7 @@
 data:
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated"
+  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated" #TODO change to data 3
+  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/body_renamed"
   #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
   batch_size: 8
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
@@ -42,6 +43,7 @@ wandb:
 
 lrp:
   mode: "soft_knn_margin"
+  cross_video: True
   # "soft_knn_margin" or "proto_margin" or "similarity"
   db_relevances_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db"
 

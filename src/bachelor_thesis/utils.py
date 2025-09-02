@@ -146,12 +146,13 @@ def load_config(config_name: str, cli_overrides: list):
     
     return config
 
-def get_db_path(model_checkpoint_path: str, dataset: Dataset, split_name: str, db_dir: str, decision_metric: str=None) -> str:
+def get_db_path(model_checkpoint_path: str, dataset_name: str, split_name: str, db_dir: str, decision_metric: str=None) -> str:
     checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint_path))[0]
+
     if decision_metric:
-        db_filename = f"{checkpoint_name}_{dataset.dataset_name}_{split_name}_{decision_metric}_db.pt"
+        db_filename = f"{checkpoint_name}_{dataset_name}_{split_name}_{decision_metric}_db.pt"
     else:
-        db_filename = f"{checkpoint_name}_{dataset.dataset_name}_{split_name}_db.pt"
+        db_filename = f"{checkpoint_name}_{dataset_name}_{split_name}_db.pt"
     db_path = os.path.join(db_dir, db_filename)
     return db_path
 

@@ -1,6 +1,8 @@
 model:
   finetuned: True
-  checkpoint_path: "/workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth"
+  checkpoint_path: /workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth
+  #/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth
+  #/workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth
 
 lrp:
   mode: "soft_knn_margin"  # default
@@ -23,7 +25,7 @@ lrp_params:
 
   proto_margin:
     knn:
-      temp: 0.01
+      temp: 0.03
       topk_neg: 50
     lrp:
       conv_gamma: 0.1

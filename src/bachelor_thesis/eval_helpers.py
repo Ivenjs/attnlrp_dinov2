@@ -8,7 +8,7 @@ from basemodel import TimmWrapper
 from typing import Any, Tuple, List, Dict, Callable
 from knn_helpers import calculate_distance
 from lrp_helpers import compute_knn_proxy_soft, compute_knn_proto_margin, compute_similarity_score
-from src.bachelor_thesis.utils import deterministic_randperm
+from utils import deterministic_randperm
 
 
 PATCH_SIZE = 14  # Size of the patches to average over
@@ -156,7 +156,8 @@ def srg_eval(
             "db_filenames": kwargs["db_filenames"],
             "db_video_ids": kwargs["db_video_ids"],
             "distance_metric": kwargs["distance_metric"],
-            "temp": kwargs["proxy_temp"]
+            "temp": kwargs["proxy_temp"],
+            "cross_video": kwargs["cross_video"]
         }
     elif mode == "proto_margin":
         score_fn = compute_knn_proto_margin
@@ -170,7 +171,8 @@ def srg_eval(
             "db_video_ids": kwargs["db_video_ids"],
             "distance_metric": kwargs["distance_metric"],
             "temp": kwargs["proxy_temp"],
-            "topk_neg": kwargs.get("topk_neg", 50)
+            "topk_neg": kwargs.get("topk_neg", 50),
+            "cross_video": kwargs["cross_video"]
         }
     elif mode == "similarity":
         score_fn = compute_similarity_score
@@ -182,6 +184,7 @@ def srg_eval(
             "db_labels": kwargs["db_labels"],
             "db_filenames": kwargs["db_filenames"],
             "db_video_ids": kwargs["db_video_ids"],
+            "cross_video": kwargs["cross_video"],
             "reference_embedding": kwargs["reference_embedding"]
         }
     else:

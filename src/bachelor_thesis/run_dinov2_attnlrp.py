@@ -23,11 +23,9 @@ import random
 import torch
 import argparse 
 import wandb
-# 1) run sam to get segmentation masks of data split, if not already saved
-# 2) create dataset with masks
-# 3) run lrp with swept parameters on images in dataset and compute the mask score
-# 3a) compare basemodel vs finetuned model on validation (maybe try train to see of results are better?)
-# 3b) compare finetuned model on train vs validation (overfitting?)
+from relevance_metrics import compute_all_relevance_metrics
+import seaborn as sns
+
 # 4) save worst performing images and mask their background. How does the knn score change? can I also recompute accuracy with only these few images?
 
 
@@ -66,7 +64,8 @@ def run_masking_experiment(
             "db_filenames": db_filenames,
             "db_video_ids": db_video_ids,
             "distance_metric": cfg["knn"]["distance_metric"],
-            "temp": cfg["knn"]["temp"]
+            "temp": cfg["knn"]["temp"],
+            "cross_video": cfg["lrp"]["cross_video"]
         }
     elif decision_metric == "proto_margin":
         score_fn = compute_knn_proto_margin
@@ -77,7 +76,8 @@ def run_masking_experiment(
             "db_video_ids": db_video_ids,
             "distance_metric": cfg["knn"]["distance_metric"],
             "temp": cfg["knn"]["temp"],
-            "topk_neg": cfg["knn"]["topk_neg"]
+            "topk_neg": cfg["knn"]["topk_neg"],
+            "cross_video": cfg["lrp"]["cross_video"]
         }
     elif decision_metric == "similarity":
         score_fn = compute_similarity_score
@@ -86,6 +86,7 @@ def run_masking_experiment(
             "db_labels": db_labels,
             "db_filenames": db_filenames,
             "db_video_ids": db_video_ids,
+            "cross_video": cfg["lrp"]["cross_video"]
         }
     else:
         raise ValueError(f"Unsupported evaluation decision metric: '{decision_metric}'")
@@ -163,9 +164,11 @@ def run_masking_experiment(
 
 
                 # --- 3. Aggregate Results ---
-                AoGR_total = mask_scores[filename][0] 
-                AoGR_positive = mask_scores[filename][1]
-                AoGR_negative = mask_scores[filename][2]
+                #TODO this is not very good, investigate:
+                if filename in mask_scores:
+                    AoGR_total = mask_scores[filename][0] 
+                    AoGR_positive = mask_scores[filename][1]
+                    AoGR_negative = mask_scores[filename][2]
                 
                 results_list.append({
                     'filename': filename, 'label': label,
@@ -188,81 +191,75 @@ def run_masking_experiment(
     print("--- Masking Experiment Complete ---")
     return pd.DataFrame(results_list)
 
-def analyze_masking_exp(masking_results_df: pd.DataFrame, output_dir: str, colors: Dict[str, float]) -> List[str]:
-    # --- Basic Analysis of the Results ---
-    print("\n--- Masking Experiment Summary ---")
-    print(masking_results_df.describe())
+def analyze_masking_exp_and_metrics(results_df: pd.DataFrame, output_dir: str, colors: Dict[str, float]) -> List[str]:
+    print("\n--- Masking Experiment and Metrics Analysis ---")
+    print(results_df.describe())
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Calculate overall change in Rank-1 accuracy
-    rank1_orig = (masking_results_df['rank_orig'] == 1).mean()
-    rank1_masked = (masking_results_df['rank_masked'] == 1).mean()
+    rank1_orig = (results_df['rank_orig'] == 1).mean()
+    rank1_masked = (results_df['rank_masked'] == 1).mean()
     print(f"\nOverall Rank-1 Accuracy (Orig):   {rank1_orig:.4f}")
     print(f"Overall Rank-1 Accuracy (Masked): {rank1_masked:.4f}")
-    negative_color = colors.get("gray")
+
     primary_color = colors.get("yellow")
     saved_plot_paths = []
-    # --- Correlation Plots ---
-    for col in masking_results_df.columns:
-        if col.startswith("delta_"):
-            plt.figure(figsize=(10, 6))
-            plt.scatter(
-                masking_results_df['background_attention_total'],
-                masking_results_df[col],
-                alpha=0.6,
-                color=primary_color
-            )
-            plt.title('Performance Change vs. Background Attention')
-            plt.xlabel('Background Attention (1 - AoGR)')
-            plt.ylabel(f'Change in {col} (Masked - Original)')
-            plt.grid(True)
-            correlation_plot_path = os.path.join(output_dir, f"correlation_plot_{col}.png")
-            os.makedirs(os.path.dirname(correlation_plot_path), exist_ok=True)
-            plt.savefig(correlation_plot_path)
-            saved_plot_paths.append(correlation_plot_path)
 
-            # do another plot for positive and negative AoGR
-            plt.figure(figsize=(10, 6))
-            plt.scatter(
-                masking_results_df['background_attention_positive'],
-                masking_results_df[col],
-                alpha=0.6, label='Positive AoGR',
-                color=primary_color
-            )
-            plt.scatter(
-                masking_results_df['background_attention_negative'],
-                masking_results_df[col],
-                alpha=0.6, label='Negative AoGR', color=negative_color
-            )
-            plt.title('Performance Change vs. Positive/Negative Background Attention')
-            plt.xlabel('Background Attention (1 - AoGR)')
-            plt.ylabel(f'Change in {col} (Masked - Original)')
-            plt.legend()
-            plt.grid(True)
-            correlation_plot_path_pos_neg = os.path.join(output_dir, f"correlation_plot_pos_neg_{col}.png")
-            os.makedirs(os.path.dirname(correlation_plot_path_pos_neg), exist_ok=True)
-            plt.savefig(correlation_plot_path_pos_neg)
-            saved_plot_paths.append(correlation_plot_path_pos_neg)
+    # --- 1. Correlation Heatmap ---
+    # Select key metrics for the heatmap
+    corr_cols = [
+        'delta_proxy_score', 'delta_rank',
+        'total_aogr', 'total_gini', 'total_sparsity', 'total_entropy', 'total_auroc',
+        'pos_aogr', 'pos_gini', 'pos_auroc',
+        'neg_aogr', 'neg_gini', 'neg_auroc'
+    ]
+    # Filter out columns that might not exist or are all NaN
+    corr_cols = [col for col in corr_cols if col in results_df.columns]
+    
+    correlation_matrix = results_df[corr_cols].corr()
+    
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(correlation_matrix, annot=True, fmt=".2f", cmap="vlag", center=0)
+    plt.title("Correlation Matrix of Performance Change and Relevance Metrics")
+    plt.tight_layout()
+    heatmap_path = os.path.join(output_dir, "correlation_heatmap.png")
+    plt.savefig(heatmap_path)
+    plt.close()
+    saved_plot_paths.append(heatmap_path)
 
-            # Create binned plots for better visibility
-            attention_types = {
-                'Total': 'background_attention_total',
-                'Positive': 'background_attention_positive',
-                'Negative': 'background_attention_negative'
-            }
+    # --- 2. Scatter Plots for Key Relationships ---
+    # Define relationships to plot: (x_axis_metric, y_axis_metric)
+    plots_to_make = [
+        ('total_background_attention', 'delta_proxy_score'),
+        ('total_gini', 'delta_proxy_score'),
+        ('total_auroc', 'delta_proxy_score'),
+        ('pos_aogr', 'delta_proxy_score'),
+        ('neg_aogr', 'delta_proxy_score'),
+        ('total_sparsity', 'delta_rank'),
+    ]
 
-            for att_name, att_col in attention_types.items():
-                plot_path = os.path.join(output_dir, f"binned_plot_{col}_vs_{att_col}.png")
-                os.makedirs(os.path.dirname(plot_path), exist_ok=True)
-                
-                create_binned_plot(
-                    df=masking_results_df,
-                    attention_col=att_col,
-                    metric_col=col,
-                    output_path=plot_path,
-                    plot_color=primary_color,
-                    attention_name=att_name
-                )
-                saved_plot_paths.append(plot_path)
+    for x_col, y_col in plots_to_make:
+        if x_col not in results_df.columns or y_col not in results_df.columns:
+            continue
+            
+        plt.figure(figsize=(8, 6))
+        
+        # Drop NaNs for plotting
+        plot_df = results_df[[x_col, y_col]].dropna()
+
+        plt.scatter(plot_df[x_col], plot_df[y_col], alpha=0.6, color=primary_color)
+        
+        # Add spearman correlation to the plot title
+        corr, p_val = spearmanr(plot_df[x_col], plot_df[y_col])
+        plt.title(f'{y_col} vs. {x_col}\nSpearman R = {corr:.3f} (p = {p_val:.3f})')
+        plt.xlabel(x_col.replace("_", " ").title())
+        plt.ylabel(y_col.replace("_", " ").title())
+        plt.grid(True, linestyle='--', alpha=0.6)
+        
+        plot_path = os.path.join(output_dir, f"scatter_{y_col}_vs_{x_col}.png")
+        plt.savefig(plot_path)
+        plt.close()
+        saved_plot_paths.append(plot_path)
+        
     return saved_plot_paths
 
 def create_binned_plot(
@@ -442,11 +439,59 @@ def select_samples_for_visualization(
     print(f"Selected {len(samples_to_plot)} unique samples for plotting.")
     return samples_to_plot
 
+def compute_and_log_relevance_metrics(relevances_all: List[Dict]) -> pd.DataFrame:
+    """
+    Computes a comprehensive set of metrics for each relevance map.
+    It standardizes input types and shapes before calculation, handling
+    the resolution mismatch between relevance maps and masks by upsampling.
+    """
+    print("\n--- Computing Relevance Map Metrics ---")
+    metrics_list = []
+    
+    for item in tqdm(relevances_all, desc="Calculating relevance metrics"):
+        filename = item['filename']
+        relevance = item['relevance']
+        mask = item['mask']
+        
+        if mask is None:
+            print(f"Warning: Skipping metrics for {filename}, no mask available.")
+            continue
+        
+        if torch.all(relevance == 0):
+            print(f"Warning: Relevance map for {filename} is all zeros. Skipping.")
+            continue
+
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.from_numpy(mask).to(relevance.device)
+
+        relevance_final = relevance.squeeze()
+        mask_final = mask.squeeze()
+
+        relevance_pos = torch.relu(relevance_final)
+        relevance_neg = torch.relu(-relevance_final)
+
+        metrics_total = compute_all_relevance_metrics(relevance_final, mask_final)
+        metrics_pos = compute_all_relevance_metrics(relevance_pos, mask_final)
+        metrics_neg = compute_all_relevance_metrics(relevance_neg, mask_final)
+
+        combined_metrics = {'filename': filename}
+        for k, v in metrics_total.items():
+            combined_metrics[f'total_{k}'] = v
+        for k, v in metrics_pos.items():
+            combined_metrics[f'pos_{k}'] = v
+        for k, v in metrics_neg.items():
+            combined_metrics[f'neg_{k}'] = v
+            
+        metrics_list.append(combined_metrics)
+        
+    return pd.DataFrame(metrics_list)
+
 def main(cfg: Dict):
     """
     Main function to run the LRP and masking experiment for a single model configuration.
     """
     monkey_patch_zennit(verbose=True)
+
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random.seed(cfg["seed"])
@@ -501,7 +546,7 @@ def main(cfg: Dict):
     # --- 3. Compute k-NN Database ---
     db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=dataset,
+        dataset_name=dataset.dataset_name,
         split_name=split_name,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
@@ -516,7 +561,7 @@ def main(cfg: Dict):
     # --- 4. Compute Relevances ---
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset=dataset,
+        dataset_name=dataset.dataset_name,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=DECISION_METRIC
@@ -538,14 +583,24 @@ def main(cfg: Dict):
         db_embeddings=db_embeddings,
         db_filenames=db_filenames,
         db_labels=db_labels,
-        db_video_ids=db_video_ids
+        db_video_ids=db_video_ids,
+        cross_video=cfg["lrp"]["cross_video"]
     )
 
+    #for the graphs and stuff, filter out all relevance tensors that have no valid relevance
+    relevances_all = [
+        item for item in relevances_all 
+        if item['relevance'] is not None and not torch.all(item['relevance'] == 0)
+    ]
 
-    scores = {
-        item['filename']: attention_inside_mask(item['relevance'], item['mask'])
-        for item in relevances_all
-    }
+    relevance_metrics_df = compute_and_log_relevance_metrics(relevances_all)
+    
+    scores_for_masking_exp = {}
+    for _, row in relevance_metrics_df.iterrows():
+        # The masking experiment expects (total_aogr, pos_aogr, neg_aogr)
+        scores_for_masking_exp[row['filename']] = (
+            row['total_aogr'], row['pos_aogr'], row['neg_aogr']
+        )
 
     #TODO: FILTER OUT TENSOR 0 FOR WHEN NO RELEVANCE TO NOW SKEW STATISTICS (AND AVOID WEIRD PLOTS)
     # --- 5. Run Masking Experiment ---
@@ -556,27 +611,32 @@ def main(cfg: Dict):
         db_labels=db_labels,
         db_filenames=db_filenames,
         db_video_ids=db_video_ids,
-        mask_scores=scores,
+        mask_scores=scores_for_masking_exp,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE,
         decision_metric=DECISION_METRIC,
         cfg=cfg
     )
 
+    final_results_df = pd.merge(masking_results_df, relevance_metrics_df, on='filename', how='inner')
+
     # Use the dynamic experiment_output_dir for saving results
-    results_path = os.path.join(experiment_output_dir, "masking_experiment_results.csv")
-    masking_results_df.to_csv(results_path, index=False)
-    print(f"\nSaved systematic masking experiment results to: {results_path}")
+    results_path = os.path.join(experiment_output_dir, "final_experiment_results.csv")
+    final_results_df.to_csv(results_path, index=False)
+    print(f"\nSaved combined experiment results to: {results_path}")
 
     wandb.log({
-        "masking_experiment_results": wandb.Table(dataframe=masking_results_df)
+        "final_experiment_results": wandb.Table(dataframe=final_results_df)
     })
+
     # Log key overall metrics to the summary for easy comparison
-    rank1_orig = (masking_results_df['rank_orig'] == 1).mean()
-    rank1_masked = (masking_results_df['rank_masked'] == 1).mean()
+    rank1_orig = (final_results_df['rank_orig'] == 1).mean()
+    rank1_masked = (final_results_df['rank_masked'] == 1).mean()
     wandb.summary["rank1_orig"] = rank1_orig
     wandb.summary["rank1_masked"] = rank1_masked
-    wandb.summary["mean_delta_proxy_score"] = masking_results_df['delta_proxy_score'].mean()
+    wandb.summary["mean_delta_proxy_score"] = final_results_df['delta_proxy_score'].mean()
+    wandb.summary["mean_total_gini"] = final_results_df['total_gini'].mean()
+    wandb.summary["mean_total_auroc"] = final_results_df['total_auroc'].mean()
 
     hpi_colors = get_hpi_colors(cfg)
     colors = {
@@ -584,14 +644,23 @@ def main(cfg: Dict):
         'gray': hpi_colors["gray"],
     }
 
-    correlation_plot_paths = analyze_masking_exp(masking_results_df=masking_results_df, output_dir=os.path.join(visualization_dir, "plots"), colors=colors)
-    corr, p_value = spearmanr(masking_results_df['background_attention_total'], masking_results_df['delta_rank'])
-    print(f"\nSpearman Correlation (Background Attention vs. Delta Rank): {corr:.3f} (p-value: {p_value:.3f})")
-    wandb.summary["spearman_corr"] = corr
-    wandb.summary["spearman_p_value"] = p_value
+    plot_paths = analyze_masking_exp_and_metrics(
+        results_df=final_results_df, 
+        output_dir=os.path.join(visualization_dir, "plots"), 
+        colors=colors
+    )
+
+    corr, p_value = spearmanr(final_results_df['total_background_attention'], final_results_df['delta_proxy_score'])
+    print(f"\nSpearman Correlation (Background Attention vs. Delta Proxy Score): {corr:.3f} (p-value: {p_value:.3f})")
+    wandb.summary["spearman_corr_bg_vs_delta_proxy"] = corr
+    
+    # Example of new correlation
+    corr_gini, p_gini = spearmanr(final_results_df['total_gini'].dropna(), final_results_df.loc[final_results_df['total_gini'].notna(), 'delta_proxy_score'])
+    print(f"Spearman Correlation (Gini Coefficient vs. Delta Proxy Score): {corr_gini:.3f} (p-value: {p_gini:.3f})")
+    wandb.summary["spearman_corr_gini_vs_delta_proxy"] = corr_gini
 
     samples_to_plot = select_samples_for_visualization(
-        df=masking_results_df,
+        df=final_results_df,
         n_per_category=2, 
         n_random=10
     )
@@ -601,7 +670,7 @@ def main(cfg: Dict):
     }
     heatmap_paths = generate_heatmaps(
         samples_to_plot=samples_to_plot,
-        masking_results_df=masking_results_df,
+        masking_results_df=final_results_df,
         val_dataset=dataset, 
         relevance_mask_dict=relevance_mask_dict, 
         model_data_config=model_data_config, 
@@ -611,7 +680,7 @@ def main(cfg: Dict):
 
     wandb.log({
         "analysis_plots/correlations": [
-            wandb.Image(p, caption=os.path.basename(p)) for p in correlation_plot_paths
+            wandb.Image(p, caption=os.path.basename(p)) for p in plot_paths
         ],
         "visualizations/heatmaps": [
             wandb.Image(p, caption=os.path.basename(p)) for p in heatmap_paths

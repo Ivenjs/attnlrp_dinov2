@@ -15,7 +15,7 @@ knn:
 lrp_params:
   soft_knn_margin:
     knn:
-      temp: 0.01
+      temp: 0.015
       topk_neg: null
     lrp:
       conv_gamma: 0.25
@@ -23,7 +23,7 @@ lrp_params:
 
   proto_margin:
     knn:
-      temp: 0.01
+      temp: 0.03
       topk_neg: 50
     lrp:
       conv_gamma: 0.1

@@ -16,6 +16,7 @@ class GorillaReIDDataset(Dataset):
     A dataset for gorilla Re-Identification tasks.
     This version is a lightweight loader, assuming masks are pre-generated.
     """
+    #TODO: IMPORTANT FOR VIDEO DO f.split('_')[1] + "_" + f.split('_')[2] + "_" + f.split('_')[3]
     def __init__(self, 
                  image_dir: str, 
                  filenames: List[str], 
@@ -73,7 +74,7 @@ class GorillaReIDDataset(Dataset):
         for i, (label, video) in enumerate(zip(self.labels, self.videos)):
             data_by_label[label]["videos"][video].append(i)
 
-        self.images_for_cv_knn = []
+        self.images_for_cv_knn = [] #TODO: This is outdated. To aggressive
         self.images_for_standard_knn = []
         
         # 2. Iterate through each image and apply the filtering logic
@@ -104,6 +105,10 @@ class GorillaReIDDataset(Dataset):
         if len(self.images_for_cv_knn) == 0:
             print("Warning: No images were found suitable for Cross-Video KNN evaluation. Using all images instead.")
             self.images_for_cv_knn = list(range(len(self)))
+
+        
+        self.images_for_cv_knn = list(range(len(self))) # This is a temporary fix to use all images for CV-KNN
+        self.images_for_standard_knn = list(range(len(self))) # This is a temporary fix to use all images for Standard KNN
 
     def __len__(self) -> int:
         return len(self.filenames)
