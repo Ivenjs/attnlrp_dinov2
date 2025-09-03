@@ -21,6 +21,7 @@ seg_test_out/*
 src/bachelor_thesis/heatmaps/*
 /*sample_images*/*
 
+visualizations/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

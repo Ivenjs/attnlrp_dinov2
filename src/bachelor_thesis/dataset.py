@@ -16,7 +16,6 @@ class GorillaReIDDataset(Dataset):
     A dataset for gorilla Re-Identification tasks.
     This version is a lightweight loader, assuming masks are pre-generated.
     """
-    #TODO: IMPORTANT FOR VIDEO DO f.split('_')[1] + "_" + f.split('_')[2] + "_" + f.split('_')[3]
     def __init__(self, 
                  image_dir: str, 
                  filenames: List[str], 
@@ -24,7 +23,7 @@ class GorillaReIDDataset(Dataset):
                  base_mask_dir: Optional[str] = None,
                  mask_transform: Optional[transforms.Compose] = None,
                  label_extractor: Callable[[str], str] = lambda f: f.split('_')[0],
-                 video_extractor: Callable[[str], str] = lambda f: f.split('_')[1] + "_" + f.split('_')[2],
+                 video_extractor: Callable[[str], str] = lambda f: f.split('_')[1] + "_" + f.split('_')[2] + "_" + f.split('_')[3],
                  dataset_name: Optional[str] = None,
                  k: int = 5):
         """
@@ -68,6 +67,7 @@ class GorillaReIDDataset(Dataset):
         Cross-Video and Standard KNN evaluation based on label distribution.
         """
         print(f"Filtering images for KNN evaluation with k={self.k}...")
+        #TODO: Data has been filtered cross video. here we need to filter for cross encounter, which is a bit more strict. remove classes that only have same camera on same day
         
         # 1. Build a map of labels to their videos and image counts
         data_by_label = defaultdict(lambda: {"videos": defaultdict(list)})

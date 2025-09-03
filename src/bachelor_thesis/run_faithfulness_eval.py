@@ -108,7 +108,7 @@ def main(cfg):
         device=DEVICE, recompute=False, conv_gamma=cfg["lrp"]["conv_gamma"], lin_gamma=cfg["lrp"]["lin_gamma"],
         proxy_temp=cfg["knn"]["temp"], distance_metric=cfg["knn"]["distance_metric"], mode=cfg["lrp"]["mode"],
         topk_neg=cfg["knn"]["topk_neg"], db_embeddings=val_embeddings, db_filenames=val_filenames,
-        db_labels=val_labels, db_video_ids=val_video_ids, cross_video=cfg["lrp"]["cross_video"]
+        db_labels=val_labels, db_video_ids=val_video_ids, cross_encounter=cfg["lrp"]["cross_encounter"]
     )
     relevance_dict = {item['filename']: item['relevance'] for item in relevances_all}
 

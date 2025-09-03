@@ -321,7 +321,7 @@ def main(cfg):
         db_filenames=db_filenames,
         db_labels=db_labels,
         db_video_ids=db_video_ids,
-        cross_video=cfg["lrp"]["cross_video"]
+        cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
     relevance_dict = {

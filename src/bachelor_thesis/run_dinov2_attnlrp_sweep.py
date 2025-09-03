@@ -155,14 +155,14 @@ def main(cfg: dict):
         db_filenames=train_db_filenames,
         db_labels=train_db_labels,
         db_video_ids=train_db_videos,
-        cross_video=cfg["lrp"]["cross_video"]
+        cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
     tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     tune_results_list, tune_curves_list = evaluate_gamma_sweep(
         tune_relevances_all, tune_eval_dataloader, model_wrapper,
         train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
-        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_video"],False, cfg["seed"]
+        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"],False, cfg["seed"]
     )
 
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
@@ -184,14 +184,14 @@ def main(cfg: dict):
         db_filenames=train_db_filenames,
         db_labels=train_db_labels,
         db_video_ids=train_db_videos,
-        cross_video=cfg["lrp"]["cross_video"]
+        cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
     holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
     holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
         holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
         train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
-        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_video"], False, cfg["seed"]
+        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"], False, cfg["seed"]
     )
 
     # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---

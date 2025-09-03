@@ -46,6 +46,23 @@ def get_class_label(filename: str) -> str:
     """
     return filename.split("_")[0]
 
+def parse_video_id(video_id: str) -> Tuple[str, str]:
+    """
+    Parses a video ID like 'R105_20230201_263' into camera and date.
+    
+    Returns:
+        A tuple (camera, date) or (None, None) if parsing fails.
+    """
+    if not isinstance(video_id, str):
+        return None, None
+    try:
+        parts = video_id.split('_')
+        if len(parts) >= 2:
+            return parts[0], parts[1]  # (camera, date)
+    except IndexError:
+        pass
+    return None, None
+
 #TODO: make this deliberately cross video to enable more diverse queries
 def get_balanced_individual_splits(
     train_files: List[str],

@@ -43,7 +43,7 @@ wandb:
 
 lrp:
   mode: "soft_knn_margin"
-  cross_video: True
+  cross_encounter: True
   # "soft_knn_margin" or "proto_margin" or "similarity"
   db_relevances_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db"
 

@@ -12,6 +12,7 @@ from dino_patcher import DINOPatcher
 from lxt.efficient.rules import identity_rule_implicit
 from tqdm import tqdm
 from typing import Tuple
+from utils import parse_video_id
             
 def compute_similarity_proto_margin_pass(
     conv_gamma: float,
@@ -28,7 +29,7 @@ def compute_similarity_proto_margin_pass(
     distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
-    cross_video: bool = True,
+    cross_encounter: bool = True,
     verbose: bool = False
 ) -> torch.Tensor:
     """
@@ -56,7 +57,7 @@ def compute_similarity_proto_margin_pass(
             distance_metric=distance_metric,
             temp=temp,
             topk_neg=topk_neg,
-            cross_video=cross_video
+            cross_encounter=cross_encounter
         )
 
         score.backward()
@@ -88,7 +89,7 @@ def compute_similarity_lrp_pass(
     db_labels: list,
     db_filenames: list,
     db_video_ids: list,
-    cross_video: bool = True,
+    cross_encounter: bool = True,
     verbose: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
@@ -120,7 +121,7 @@ def compute_similarity_lrp_pass(
             db_labels=db_labels, 
             db_filenames=db_filenames,
             db_video_ids=db_video_ids,
-            cross_video=cross_video
+            cross_encounter=cross_encounter
         )
 
         if verbose:
@@ -159,7 +160,7 @@ def compute_knn_attnlrp_pass(
     db_video_ids: list,
     distance_metric: str = "cosine",
     proxy_temp: float = 0.1,
-    cross_video: bool = True,
+    cross_encounter: bool = True,
     verbose: bool = False
 ) -> torch.Tensor:    
     # kNN-Proxy (Retrieval Explanation): This method is more faithful to the downstream task. Since Re-ID is ultimately used 
@@ -197,7 +198,7 @@ def compute_knn_attnlrp_pass(
             db_video_ids=db_video_ids,
             distance_metric=distance_metric,
             temp=proxy_temp,
-            cross_video=cross_video
+            cross_encounter=cross_encounter
         )
         if verbose:
             print(f"Explaining k-NN proxy score: {knn_score.item():.4f} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
@@ -239,7 +240,7 @@ def generate_relevances(
     db_filenames: Optional[List[str]] = None,
     db_labels: Optional[List[str]] = None,
     db_video_ids: Optional[List[str]] = None,
-    cross_video: bool = True,
+    cross_encounter: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     A unified function to generate relevance maps for a dataset.
@@ -325,7 +326,7 @@ def generate_relevances(
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                             db_video_ids=db_video_ids,
                             conv_gamma=conv_gamma, lin_gamma=lin_gamma,
-                            distance_metric=distance_metric, proxy_temp=proxy_temp, cross_video=cross_video, verbose=verbose
+                            distance_metric=distance_metric, proxy_temp=proxy_temp, cross_encounter=cross_encounter, verbose=verbose
                         )
                     elif mode == "proto_margin":
                         relevance_single = compute_similarity_proto_margin_pass(
@@ -334,7 +335,7 @@ def generate_relevances(
                              db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                              db_video_ids=db_video_ids,
                              conv_gamma=conv_gamma, lin_gamma=lin_gamma,
-                             distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk_neg, cross_video=cross_video, verbose=verbose
+                             distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk_neg, cross_encounter=cross_encounter, verbose=verbose
                         )
                     elif mode == "similarity":
                         relevance_single, reference_embedding, ref_idx = compute_similarity_lrp_pass(
@@ -342,7 +343,7 @@ def generate_relevances(
                             query_label=label_single, query_filename=filename, query_video_id=video_id,
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                             db_video_ids=db_video_ids,
-                            conv_gamma=conv_gamma, lin_gamma=lin_gamma, cross_video=cross_video, verbose=verbose
+                            conv_gamma=conv_gamma, lin_gamma=lin_gamma, cross_encounter=cross_encounter, verbose=verbose
                         )
                         # Save the reference embedding used, for evaluation
                         extra_info["reference_embedding"] = reference_embedding.cpu() if reference_embedding is not None else reference_embedding
@@ -427,7 +428,7 @@ def compute_knn_proto_margin(
     distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
-    cross_video: bool = True,
+    cross_encounter: bool = True,
     exclude_self: bool = True
 ):
     """Computes a margin score based on prototypes of positive and hard-negative neighbors.
@@ -459,6 +460,7 @@ def compute_knn_proto_margin(
         distance_metric: The metric used; only 'cosine' is supported.
         temp: Temperature for softmax weighting of prototypes.
         topk_neg: The number of hard negatives to average for the prototype.
+        cross_encounter: If True, only allows cross-encounter comparisons.
         exclude_self: If True, the query is excluded from its own neighborhood.
 
     Returns:
@@ -476,23 +478,17 @@ def compute_knn_proto_margin(
 
     sims = F.linear(dbn, qn).squeeze(1)  # (N,)
 
-    if exclude_self and (query_filename in db_filenames):
-        try:
-            qidx = db_filenames.index(query_filename)
-            sims[qidx] = -1e9
-        except ValueError:
-            pass
-            
-    # 2. Exclude all images from the same video as the query
-    if query_video_id and db_video_ids and cross_video:
-        # Create a boolean mask for items from the same video
-        same_video_mask = torch.tensor(
-            [vid == query_video_id for vid in db_video_ids], 
-            device=sims.device, 
-            dtype=torch.bool
-        )
-        # Invalidate similarities for same-video items
-        sims[same_video_mask] = -1e9
+    filter_mode = "none"
+    if cross_encounter:
+        filter_mode = "cross_encounter"
+    elif exclude_self:
+        filter_mode = "exclude_self_only"
+
+    exclusion_mask = create_exclusion_mask(
+        query_filename, query_video_id, db_filenames, db_video_ids,
+        filter_mode=filter_mode, device=sims.device
+    )
+    sims[exclusion_mask] = -1e9
 
     # masks
     device = sims.device
@@ -538,7 +534,7 @@ def compute_knn_proxy_soft(
     db_video_ids: list,
     distance_metric: str = "cosine",
     temp: float = 0.05,
-    cross_video: bool = True,
+    cross_encounter: bool = True,
     exclude_self: bool = True
 ) -> torch.Tensor:
     """Computes a differentiable proxy for a k-NN classifier's confidence.
@@ -586,21 +582,17 @@ def compute_knn_proxy_soft(
     # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
     similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
 
-    if exclude_self and query_filename in db_filenames:
-        try:
-            query_idx = db_filenames.index(query_filename)
-            similarities[query_idx] = -1e9
-        except ValueError:
-            pass
+    filter_mode = "none"
+    if cross_encounter:
+        filter_mode = "cross_encounter"
+    elif exclude_self:
+        filter_mode = "exclude_self_only"
 
-    # cross video
-    if query_video_id and db_video_ids and cross_video:
-        same_video_mask = torch.tensor(
-            [vid == query_video_id for vid in db_video_ids], 
-            device=similarities.device, 
-            dtype=torch.bool
-        )
-        similarities[same_video_mask] = -1e9
+    exclusion_mask = create_exclusion_mask(
+        query_filename, query_video_id, db_filenames, db_video_ids,
+        filter_mode=filter_mode, device=similarities.device
+    )
+    similarities[exclusion_mask] = -1e9
 
     # Differentiable soft neighbor weights via softmax. `temp` controls sharpness.
     # Low temp -> focuses on the very nearest neighbors.
@@ -630,7 +622,7 @@ def compute_similarity_score(
         db_labels: list, 
         db_filenames: list,
         db_video_ids: list,
-        cross_video: bool = True,
+        cross_encounter: bool = True,
         reference_embedding: torch.Tensor = None
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """Computes the cosine similarity between two embeddings of the same class.
@@ -653,25 +645,37 @@ def compute_similarity_score(
     """
     ref_idx = -1
     if reference_embedding is None:
-        label_to_indices = {} 
-        for idx, label in enumerate(db_labels):
-            if label not in label_to_indices:
-                label_to_indices[label] = []
-            label_to_indices[label].append(idx)
-        # Find a positive reference embedding from the database that is not itself
-        positive_indices = [idx for idx in label_to_indices.get(query_label, []) if db_filenames[idx] != query_filename]
-        # cross videos
-        if query_video_id and db_video_ids and cross_video:
-            positive_indices = [
-                idx for idx in positive_indices 
-                if db_video_ids[idx] != query_video_id
-            ]
+        
+        positive_indices = [
+            idx for idx, label in enumerate(db_labels) if label == query_label
+        ]
+        
         if not positive_indices:
-            print(f"Warning: No other positive samples found for {query_label} ({query_filename}). Skipping.")
+            print(f"Warning: No positive samples found for label {query_label}. Returning zero score.")
             return query_embedding.sum() * 0, None, -1
 
-        ref_idx = positive_indices[0] 
+        filter_mode = "none"
+        if cross_encounter:
+            filter_mode = "cross_encounter"
+        elif exclude_self:
+            filter_mode = "exclude_self_only"
+
         device = query_embedding.device
+        exclusion_mask = create_exclusion_mask(
+            query_filename, query_video_id, db_filenames, db_video_ids,
+            filter_mode=filter_mode, device=device
+        )
+        
+        # Filter the positive indices to find valid ones
+        valid_positive_indices = [
+            idx for idx in positive_indices if not exclusion_mask[idx].item()
+        ]
+
+        if not valid_positive_indices:
+            print(f"Warning: No valid positive samples found for {query_label} ({query_filename}) after applying filter '{filter_mode}'. Returning zero score.")
+            return query_embedding.sum() * 0, None, -1
+
+        ref_idx = valid_positive_indices[0]
         reference_embedding = db_embeddings[ref_idx].unsqueeze(0).to(device)
 
     assert reference_embedding.ndim == 2 and reference_embedding.shape[0] == 1, \
@@ -681,3 +685,62 @@ def compute_similarity_score(
     # The similarity score is the dot product of the normalized vectors
     similarity_score = (query_embedding_norm * reference_embedding_norm).sum()
     return similarity_score, reference_embedding_norm, ref_idx
+
+
+def create_exclusion_mask(
+    query_filename: str,
+    query_video_id: str,
+    db_filenames: List[str],
+    db_video_ids: List[str],
+    filter_mode: str,
+    device: torch.device
+) -> torch.Tensor:
+    """
+    Creates a boolean mask to exclude items from the database based on a filter mode.
+
+    Args:
+        query_filename: Filename of the query item.
+        query_video_id: Video ID of the query item.
+        db_filenames: List of all database filenames.
+        db_video_ids: List of all database video IDs.
+        filter_mode: Strategy for exclusion. Options:
+            - 'cross_encounter': Exclude self and items from the same camera on the same day.
+            - 'cross_video': Exclude self and items from the exact same video_id.
+            - 'exclude_self_only': Only exclude the query item itself.
+            - 'none': No exclusion.
+        device: The torch device to create the mask on.
+
+    Returns:
+        A boolean tensor where True indicates an item should be excluded.
+    """
+    n_db = len(db_filenames)
+    exclusion_mask = torch.zeros(n_db, dtype=torch.bool, device=device)
+
+    # 1. Self-exclusion
+    if filter_mode == 'self':
+        try:
+            q_idx = db_filenames.index(query_filename)
+            exclusion_mask[q_idx] = True
+        except ValueError:
+            pass # Query not in DB, no self-exclusion needed
+
+    # 2. Video/Encounter-based exclusion
+    if filter_mode == 'cross_video':
+        if query_video_id and db_video_ids:
+            same_video_mask = torch.tensor(
+                [vid == query_video_id for vid in db_video_ids],
+                dtype=torch.bool, device=device
+            )
+            exclusion_mask |= same_video_mask
+
+    if filter_mode == 'cross_encounter':
+        if query_video_id and db_video_ids:
+            q_cam, q_date = parse_video_id(query_video_id)
+            if q_cam and q_date:
+                same_encounter_mask = torch.tensor([
+                    (cam == q_cam and date == q_date)
+                    for cam, date in (parse_video_id(vid) for vid in db_video_ids)
+                ], dtype=torch.bool, device=device)
+                exclusion_mask |= same_encounter_mask
+    
+    return exclusion_mask

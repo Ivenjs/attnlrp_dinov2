@@ -65,7 +65,7 @@ def run_masking_experiment(
             "db_video_ids": db_video_ids,
             "distance_metric": cfg["knn"]["distance_metric"],
             "temp": cfg["knn"]["temp"],
-            "cross_video": cfg["lrp"]["cross_video"]
+            "cross_encounter": cfg["lrp"]["cross_encounter"]
         }
     elif decision_metric == "proto_margin":
         score_fn = compute_knn_proto_margin
@@ -77,7 +77,7 @@ def run_masking_experiment(
             "distance_metric": cfg["knn"]["distance_metric"],
             "temp": cfg["knn"]["temp"],
             "topk_neg": cfg["knn"]["topk_neg"],
-            "cross_video": cfg["lrp"]["cross_video"]
+            "cross_encounter": cfg["lrp"]["cross_encounter"]
         }
     elif decision_metric == "similarity":
         score_fn = compute_similarity_score
@@ -86,7 +86,7 @@ def run_masking_experiment(
             "db_labels": db_labels,
             "db_filenames": db_filenames,
             "db_video_ids": db_video_ids,
-            "cross_video": cfg["lrp"]["cross_video"]
+            "cross_encounter": cfg["lrp"]["cross_encounter"]
         }
     else:
         raise ValueError(f"Unsupported evaluation decision metric: '{decision_metric}'")
@@ -584,7 +584,7 @@ def main(cfg: Dict):
         db_filenames=db_filenames,
         db_labels=db_labels,
         db_video_ids=db_video_ids,
-        cross_video=cfg["lrp"]["cross_video"]
+        cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
     #for the graphs and stuff, filter out all relevance tensors that have no valid relevance
