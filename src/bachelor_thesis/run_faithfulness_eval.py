@@ -46,13 +46,15 @@ def main(cfg):
 
     # --- 3. Prepare Datasets ---
     split_name = cfg["data"]["analysis_split"]
-    val_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
-    val_files = [f for f in os.listdir(val_dir) if f.lower().endswith((".jpg", ".png"))]
+    split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
+    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
     
-    val_dataset = GorillaReIDDataset(
-        image_dir=val_dir,
-        filenames=val_files,
+    split_dataset = GorillaReIDDataset(
+        image_dir=split_dir,
+        filenames=split_files,
         transform=image_transforms,
+        base_mask_dir=cfg["data"]["base_mask_dir"],
+        mask_transform=mask_transform,
         k=cfg["knn"]["k"],
     )
     
@@ -64,7 +66,7 @@ def main(cfg):
 
     # The full database (gallery) for KNN search includes both training and validation sets.
     # This database remains constant throughout the experiment.
-    full_db_dataset = ConcatDataset([train_dataset, val_dataset])
+    full_db_dataset = ConcatDataset([train_dataset, split_dataset])
 
     # --- 4. Create the KNN Search Database (Gallery) ---
     print("Preparing the main KNN database (gallery)...")
@@ -74,7 +76,7 @@ def main(cfg):
         split_name=f"train+{split_name}",
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    db_embeddings, db_labels, db_filenames, db_videos = get_knn_db(
+    all_db_embeddings, all_db_labels, _, all_db_videos = get_knn_db(
         db_path=db_path,
         dataset=full_db_dataset,
         model_wrapper=model_wrapper,
@@ -82,33 +84,39 @@ def main(cfg):
         device=DEVICE
     )
 
-    # --- 5. Generate or Load Relevance Maps (for validation images only) ---
-    print("Generating/Loading relevance maps for validation images...")
-    # Note: For relevance generation, we need embeddings of the validation set *only*
+    # --- 5. Generate or Load Relevance Maps (for test images only) ---
+    print("Generating/Loading relevance maps for test images...")
+    # Note: For relevance generation, we need embeddings of the test set *only*
     # to find nearest neighbors within that set if required by the LRP mode.
-    val_db_path_knn = get_db_path(
+    split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=val_dataset.dataset_name, split_name=split_name, db_dir=cfg["knn"]["db_embeddings_dir"]
+        dataset_name=split_dataset.dataset_name, split_name=split_name, db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    val_embeddings, val_labels, val_filenames, val_video_ids = get_knn_db(
-        db_path=val_db_path_knn, dataset=val_dataset, model_wrapper=model_wrapper,
+    split_embeddings, split_labels, split_filenames, split_video_ids = get_knn_db(
+        db_path=split_db_path_knn, dataset=split_dataset, model_wrapper=model_wrapper,
         batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
 
-    val_dataloader = DataLoader(val_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
+    split_dataloader = DataLoader(split_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
     
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=val_dataset.dataset_name, split_name=split_name, db_dir=cfg["lrp"]["db_relevances_dir"],
-        decision_metric=MODE
+        dataset_name=split_dataset.dataset_name, split_name=split_name, db_dir=cfg["lrp"]["db_relevances_dir"],
+        decision_metric=MODE,
+        lrp_params={
+            "conv_gamma": cfg["lrp"]["conv_gamma"],
+            "lin_gamma": cfg["lrp"]["lin_gamma"],
+            "proxy_temp": cfg["lrp"]["temp"],
+            "topk": cfg["lrp"]["topk"],
+        }
     )
     
     relevances_all = get_relevances(
-        db_path=db_path_relevances, model_wrapper=model_wrapper, dataloader=val_dataloader,
+        db_path=db_path_relevances, model_wrapper=model_wrapper, dataloader=split_dataloader,
         device=DEVICE, recompute=False, conv_gamma=cfg["lrp"]["conv_gamma"], lin_gamma=cfg["lrp"]["lin_gamma"],
-        proxy_temp=cfg["knn"]["temp"], distance_metric=cfg["knn"]["distance_metric"], mode=cfg["lrp"]["mode"],
-        topk_neg=cfg["knn"]["topk_neg"], db_embeddings=val_embeddings, db_filenames=val_filenames,
-        db_labels=val_labels, db_video_ids=val_video_ids, cross_encounter=cfg["lrp"]["cross_encounter"]
+        proxy_temp=cfg["lrp"]["temp"], distance_metric=cfg["lrp"]["distance_metric"], mode=cfg["lrp"]["mode"],
+        topk=cfg["lrp"]["topk"], db_embeddings=split_embeddings, db_filenames=split_filenames,
+        db_labels=split_labels, db_video_ids=split_video_ids, cross_encounter=cfg["lrp"]["cross_encounter"]
     )
     relevance_dict = {item['filename']: item['relevance'] for item in relevances_all}
 
@@ -116,8 +124,8 @@ def main(cfg):
     # First, establish the baseline accuracy on unperturbed data.
     print("\n--- Evaluating Baseline Accuracy (0% Perturbation) ---")
     base_accuracy = evaluate_model(
-        model_wrapper=model_wrapper, dataset=val_dataset, cfg=cfg, device=DEVICE,
-        db_embeddings=db_embeddings, db_labels=db_labels, db_videos=db_videos
+        model_wrapper=model_wrapper, dataset=split_dataset, cfg=cfg, device=DEVICE,
+        db_embeddings=all_db_embeddings, db_labels=all_db_labels, db_videos=all_db_videos
     )
     print(f"Baseline Balanced Accuracy: {base_accuracy:.4f}")
 
@@ -131,7 +139,7 @@ def main(cfg):
             print(f"--- Perturbation Fraction: {frac*100:.1f}% ---")
             
             perturbed_dataset = PerturbedGorillaReIDDataset(
-                base_dataset=val_dataset,
+                base_dataset=split_dataset,
                 relevance_maps=relevance_dict,
                 perturbation_mode=mode,
                 perturbation_fraction=frac,
@@ -143,12 +151,12 @@ def main(cfg):
             # Evaluate using the perturbed images as queries against the original, full database
             accuracy = evaluate_model(
                 model_wrapper=model_wrapper,
-                dataset=val_dataset, # Base dataset info, not strictly used
+                dataset=split_dataset, # Base dataset info, not strictly used
                 cfg=cfg,
                 device=DEVICE,
-                db_embeddings=db_embeddings, # The consistent, full database
-                db_labels=db_labels,
-                db_videos=db_videos,
+                db_embeddings=all_db_embeddings, # The consistent, full database
+                db_labels=all_db_labels,
+                db_videos=all_db_videos,
                 query_dataset=perturbed_dataset # This triggers on-the-fly embedding generation
             )
             print(f"Accuracy for {mode.upper()} at {frac*100:.1f}% perturbation: {accuracy:.4f}")
@@ -198,8 +206,6 @@ if __name__ == "__main__":
     args, unknown_args = parser.parse_known_args()
     cfg = load_config(args.config_name, unknown_args)
 
-    # Ensure masks are generated before running the main script
-    print("Running mask generation script first...")
     command = [
         "python",
         "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py",

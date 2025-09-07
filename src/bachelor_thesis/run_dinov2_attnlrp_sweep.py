@@ -17,7 +17,7 @@ from sweep_helpers import (
     )
 from knn_helpers import get_knn_db
 from dataset import GorillaReIDDataset, custom_collate_fn
-from utils import get_balanced_individual_splits, get_db_path, load_config
+from utils import get_balanced_individual_splits, get_db_path, load_config, get_balanced_individual_splits_cross_encounter
 from lrp_helpers import generate_relevances
 
 
@@ -58,7 +58,7 @@ def main(cfg: dict):
 
     train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
 
-    tune_query_files, tune_db_files, holdout_query_files, holdout_db_files = get_balanced_individual_splits(
+    tune_query_files, tune_db_files, holdout_query_files, holdout_db_files = get_balanced_individual_splits_cross_encounter(
         train_files=train_files,
         holdout_percentage=cfg["sweep"]["holdout_percentage"],
         queries_per_class=cfg["sweep"]["queries_per_class"]
@@ -71,16 +71,6 @@ def main(cfg: dict):
     holdout_query_dataset = GorillaReIDDataset(
         image_dir=train_dir, filenames=holdout_query_files, transform=image_transforms
     )
-
-    # temp temp temp temp temp temp
-    tune_db_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=tune_db_files, transform=image_transforms
-    )
-
-    holdout_db_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=holdout_db_files, transform=image_transforms
-    )
-    # temp temp temp temp temp temp
 
     train_db_dataset = GorillaReIDDataset(
         image_dir=train_dir, filenames=train_files, transform=image_transforms
@@ -98,6 +88,7 @@ def main(cfg: dict):
         split_name="train",
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
+
     train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos = get_knn_db(
         db_path=train_db_path,
         dataset=train_db_dataset,
@@ -105,39 +96,6 @@ def main(cfg: dict):
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE
     )
-
-    # temp temp temp temp temp temp
-    tune_db_path = get_db_path(
-        model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=tune_db_dataset.dataset_name,
-        split_name="train",
-        db_dir=cfg["knn"]["db_embeddings_dir"]
-    )
-
-    tune_db_embeddings, tune_db_labels, tune_db_filenames, tune_db_videos = get_knn_db(
-        db_path=tune_db_path,
-        dataset=tune_db_dataset,
-        model_wrapper=model_wrapper,
-        batch_size=cfg["data"]["batch_size"],
-        device=DEVICE
-    )
-
-    holdout_db_path = get_db_path(
-        model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=holdout_db_dataset.dataset_name,
-        split_name="train",
-        db_dir=cfg["knn"]["db_embeddings_dir"]
-    )
-
-    holdout_db_embeddings, holdout_db_labels, holdout_db_filenames, holdout_db_videos = get_knn_db(
-        db_path=holdout_db_path,
-        dataset=holdout_db_dataset,
-        model_wrapper=model_wrapper,
-        batch_size=cfg["data"]["batch_size"],
-        device=DEVICE
-    )
-
-    # temp temp temp temp temp temp
 
     tune_dataloader = DataLoader(tune_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn,shuffle=False)
     
@@ -150,7 +108,7 @@ def main(cfg: dict):
         mode=MODE,
         distance_metrics=cfg["sweep"]["distance_metrics"],
         proxy_temp_values=cfg["sweep"]["temp"],
-        topk_neg_values=cfg["sweep"]["topk_neg"],
+        topk_values=cfg["sweep"]["topk"],
         db_embeddings=train_db_embeddings,
         db_filenames=train_db_filenames,
         db_labels=train_db_labels,
@@ -179,7 +137,7 @@ def main(cfg: dict):
         mode=MODE,
         distance_metrics=cfg["sweep"]["distance_metrics"],
         proxy_temp_values=cfg["sweep"]["temp"],
-        topk_neg_values=cfg["sweep"]["topk_neg"],
+        topk_values=cfg["sweep"]["topk"],
         db_embeddings=train_db_embeddings,
         db_filenames=train_db_filenames,
         db_labels=train_db_labels,

@@ -216,7 +216,7 @@ class AttentionVisualizer:
         
         # Create the relevance heatmap image using logic from plot_heatmap
         relevance_norm = relevance_map.squeeze() / torch.abs(relevance_map).max()
-        #relevance_norm = torch.sign(relevance_norm ) * torch.abs(relevance_norm )**0.7
+
         if intensify:
             relevance_norm = torch.tanh(3 * relevance_norm)
 
@@ -301,7 +301,13 @@ def main(cfg):
         dataset_name=dataset.dataset_name,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
-        decision_metric=DECISION_METRIC
+        decision_metric=DECISION_METRIC,
+        lrp_params={
+            "conv_gamma": cfg["lrp"]["conv_gamma"],
+            "lin_gamma": cfg["lrp"]["lin_gamma"],
+            "proxy_temp": cfg["lrp"]["temp"],
+            "topk": cfg["lrp"]["topk"],
+        }
     )
 
     relevances_all = get_relevances(
@@ -313,9 +319,9 @@ def main(cfg):
         # All of these will be caught by **kwargs and passed to generate_relevances
         conv_gamma=cfg["lrp"]["conv_gamma"],           # Pass as single value (will be converted to list)
         lin_gamma=cfg["lrp"]["lin_gamma"],             # Pass as single value
-        proxy_temp=cfg["knn"]["temp"],          # Pass as single value 
-        distance_metric=cfg["knn"]["distance_metric"], #pass as single value
-        topk_neg=cfg["knn"]["topk_neg"],  # Pass as single value
+        proxy_temp=cfg["lrp"]["temp"],          # Pass as single value 
+        distance_metric=cfg["lrp"]["distance_metric"], #pass as single value
+        topk=cfg["lrp"]["topk"],  # Pass as single value
         mode=cfg["lrp"]["mode"],
         db_embeddings=db_embeddings,
         db_filenames=db_filenames,

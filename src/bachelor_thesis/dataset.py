@@ -9,7 +9,7 @@ from collections import defaultdict
 import numpy as np
 import torch.nn.functional as F
 import hashlib
-from utils import deterministic_randperm
+from utils import deterministic_randperm, parse_encounter_id
 
 class GorillaReIDDataset(Dataset):
     """
@@ -48,6 +48,7 @@ class GorillaReIDDataset(Dataset):
         self.image_paths = [os.path.join(image_dir, f) for f in self.filenames]
         self.labels = [self.label_extractor(f) for f in self.filenames]
         self.videos = [self.video_extractor(f) for f in self.filenames]
+        self.encounters = [parse_encounter_id(v) for v in self.videos]
 
         if base_mask_dir:
             # Construct the full path to the specific mask directory
@@ -64,51 +65,55 @@ class GorillaReIDDataset(Dataset):
     def _filter_images_for_knn(self):
         """
         Pre-computes lists of image indices that are suitable for
-        Cross-Video and Standard KNN evaluation based on label distribution.
+        Cross-Encounter and Standard KNN evaluation based on label distribution.
+        An encounter is defined as a unique (camera, date) pair.
         """
         print(f"Filtering images for KNN evaluation with k={self.k}...")
-        #TODO: Data has been filtered cross video. here we need to filter for cross encounter, which is a bit more strict. remove classes that only have same camera on same day
         
-        # 1. Build a map of labels to their videos and image counts
-        data_by_label = defaultdict(lambda: {"videos": defaultdict(list)})
-        for i, (label, video) in enumerate(zip(self.labels, self.videos)):
-            data_by_label[label]["videos"][video].append(i)
+        # 1. Build a map of labels to their encounters and image indices
+        data_by_label_and_encounter = defaultdict(lambda: defaultdict(list))
+        for i, (label, encounter) in enumerate(zip(self.labels, self.encounters)):
+            if encounter[0] is not None:  # Ensure encounter was parsed correctly
+                data_by_label_and_encounter[label][encounter].append(i)
 
-        self.images_for_cv_knn = [] #TODO: This is outdated. To aggressive
+        self.images_for_ce_knn = []  # CE: Cross-Encounter
         self.images_for_standard_knn = []
         
-        # 2. Iterate through each image and apply the filtering logic
-        for idx, (label, video) in enumerate(zip(self.labels, self.videos)):
+        # 2. Iterate through each image and apply filtering logic
+        for idx, (label, current_encounter) in enumerate(zip(self.labels, self.encounters)):
+            if current_encounter[0] is None:
+                continue # Skip images that couldn't be parsed
+
+            encounters_with_label = data_by_label_and_encounter[label]
             
-            # --- Cross-Video KNN Filter ---
-            videos_with_label = data_by_label[label]["videos"]
-            # Count how many images with the same label exist in OTHER videos
-            other_videos_count = sum(
-                len(images) for vid, images in videos_with_label.items() if vid != video
+            # --- Cross-Encounter KNN Filter ---
+            # Count how many images with the same label exist in OTHER encounters
+            other_encounters_count = sum(
+                len(images) for enc, images in encounters_with_label.items() if enc != current_encounter
             )
-            # If count is sufficient, this is a valid query image
-            if other_videos_count >= self.k // 2 + 1:
-                self.images_for_cv_knn.append(idx)
-            
+            # To have a valid positive match, we need enough images in other encounters.
+            # The k//2 + 1 heuristic ensures a majority vote is possible in KNN.
+            if other_encounters_count >= self.k // 2 + 1:
+                self.images_for_ce_knn.append(idx)
+
             # --- Standard KNN Filter ---
-            total_images_with_label = sum(len(images) for images in videos_with_label.values())
-            # If total count (including self) is sufficient
-            if total_images_with_label >= self.k // 2 + 2:
+            # Total images for this label, minus the query image itself.
+            total_images_with_label = sum(len(images) for images in encounters_with_label.values())
+            # We need at least k//2 + 1 other images for a majority vote.
+            if total_images_with_label - 1 >= self.k // 2 + 1:
                 self.images_for_standard_knn.append(idx)
-                
-        print(f"Found {len(self.images_for_cv_knn)} / {len(self)} images suitable for Cross-Video KNN.")
+
+
+        print(f"Found {len(self.images_for_ce_knn)} / {len(self)} images suitable for Cross-Encounter KNN.")
         print(f"Found {len(self.images_for_standard_knn)} / {len(self)} images suitable for Standard KNN.")
 
-        if len(self.images_for_standard_knn) == 0:
+        # Fallback: if no eligible images are found, use all images to avoid crashing.
+        if not self.images_for_standard_knn:
             print("Warning: No images were found suitable for Standard KNN evaluation. Using all images instead.")
             self.images_for_standard_knn = list(range(len(self)))
-        if len(self.images_for_cv_knn) == 0:
-            print("Warning: No images were found suitable for Cross-Video KNN evaluation. Using all images instead.")
-            self.images_for_cv_knn = list(range(len(self)))
-
-        
-        self.images_for_cv_knn = list(range(len(self))) # This is a temporary fix to use all images for CV-KNN
-        self.images_for_standard_knn = list(range(len(self))) # This is a temporary fix to use all images for Standard KNN
+        if not self.images_for_ce_knn:
+            print("Warning: No images were found suitable for Cross-Encounter KNN evaluation. Using all images instead.")
+            self.images_for_ce_knn = list(range(len(self)))
 
     def __len__(self) -> int:
         return len(self.filenames)
@@ -212,9 +217,9 @@ class PerturbedGorillaReIDDataset(Dataset):
         self.labels = [self.base_dataset.labels[i] for i in self.valid_indices]
         
         # Correctly re-map the k-NN index lists
-        self.images_for_cv_knn = [
+        self.images_for_ce_knn = [
             self.original_to_new_idx_map[original_knn_idx]
-            for original_knn_idx in self.base_dataset.images_for_cv_knn
+            for original_knn_idx in self.base_dataset.images_for_ce_knn
             if original_knn_idx in self.original_to_new_idx_map
         ]
         
@@ -223,8 +228,7 @@ class PerturbedGorillaReIDDataset(Dataset):
             for original_knn_idx in self.base_dataset.images_for_standard_knn
             if original_knn_idx in self.original_to_new_idx_map
         ]
-        
-        print(f"Re-mapped k-NN lists. CV-KNN valid queries: {len(self.images_for_cv_knn)}. Standard-KNN valid queries: {len(self.images_for_standard_knn)}")
+        print(f"Re-mapped k-NN lists. CE-KNN valid queries: {len(self.images_for_ce_knn)}. Standard-KNN valid queries: {len(self.images_for_standard_knn)}")
 
 
     def __len__(self) -> int:

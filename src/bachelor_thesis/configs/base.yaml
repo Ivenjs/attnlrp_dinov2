@@ -1,6 +1,6 @@
 data:
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data2/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated" #TODO change to data 3
+  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data3/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated" #TODO change to data3
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/body_renamed"
   #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
   batch_size: 8
@@ -20,7 +20,7 @@ eval:
   baseline_value: "mean" #mean or black
 
 knn:
-  distance_metric: "cosine"
+  distance_metric: "euclidean" # "cosine" or "euclidean"
   k: 5
   db_embeddings_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/knn_db"
 
@@ -42,9 +42,10 @@ wandb:
   entity: "gorillawatch"
 
 lrp:
-  mode: "soft_knn_margin"
+  mode: "soft_knn_margin_all"
+  distance_metric: "cosine" # so far, all of the scores work with cosine similarity
   cross_encounter: True
-  # "soft_knn_margin" or "proto_margin" or "similarity"
+  # "soft_knn_margin_all" or "proto_margin" or "similarity" or "soft_knn_margin_all_topk"
   db_relevances_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db"
 
 
@@ -55,14 +56,15 @@ sweep:
   temp: [0.01, 0.03]
   #0.01, 0.03, 0.07, 0.15
   queries_per_class: 2
-  topk_neg: [5, 50]
+  topk: [5, 50]
+  # maybe pass in diff values for proto_margin and soft_knn_margin_topk
   # 5, 10, 50
-  conv_gammas: [0.001, 0.05, 0.1, 0.25]
+  conv_gammas: [0.05, 0.1, 0.25, 0.5, 0.75]
   #0.001, 0.05, 0.1, 0.25
   # in paper: 0.05, 0.1, 0.25
   #0.1, 0.15,0.25, 0.7, 1.0
   #[0.1, 0.15,0.25, 0.4, 0.7, 1.0] 
-  lin_gammas: [0.001, 0.05, 0.1, 0.25]
+  lin_gammas: [0.0001, 0.001, 0.05, 0.1, 0.25]
   #0.001, 0.05, 0.1, 0.25
     # in paper: 0.05, 0.1, 0.25
   #0.001, 0.025, 0.05, 0.075, 0.1

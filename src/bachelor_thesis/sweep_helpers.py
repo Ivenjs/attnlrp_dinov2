@@ -80,7 +80,7 @@ def evaluate_gamma_sweep(
                 "cross_encounter": cross_encounter,
             }
             if mode == "proto_margin":
-                eval_kwargs["topk_neg"] = params["topk_neg"]
+                eval_kwargs["topk"] = params["topk"]
 
             if mode == "similarity":
                 eval_kwargs["reference_embedding"] = relevance_data["reference_embedding"].to(device) if relevance_data["reference_embedding"] is not None else None
@@ -125,7 +125,7 @@ def evaluate_gamma_sweep(
                                 "lin_gamma": params["lin_gamma"],
                                 "distance_metric": params["distance_metric"],
                                 "proxy_temp": params["proxy_temp"],
-                                "topk_neg": params["topk_neg"],
+                                "topk": params["topk"],
                                 "metric_name": metric_name,
                                 "curve_label": curve_label,
                                 "step": step,
@@ -148,10 +148,10 @@ def find_robust_hyperparameters(
     df = df.fillna("NA") # For the None's
     
     # Group by gamma parameters
-    parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp','metric_name', 'topk_neg'])    
+    parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp','metric_name', 'topk'])    
     analysis_data = []
 
-    for (conv_gamma, lin_gamma, distance_metric, proxy_temp, metric_name, topk_neg), group in parameter_groups:
+    for (conv_gamma, lin_gamma, distance_metric, proxy_temp, metric_name, topk), group in parameter_groups:
         scores = group['faithfulness_score'].values #can potentially include NaN's
         num_valid = np.sum(~np.isnan(scores))
         num_invalid = np.sum(np.isnan(scores))
@@ -178,7 +178,7 @@ def find_robust_hyperparameters(
             'lin_gamma': lin_gamma,
             'distance_metric': distance_metric,
             'proxy_temp': proxy_temp,
-            'topk_neg': topk_neg,
+            'topk': topk,
             'metric_name': metric_name, 
             
             'raw_mean': mean_score,
@@ -208,7 +208,7 @@ def find_robust_hyperparameters(
         'lin_gamma': best_row['lin_gamma'],
         'distance_metric': best_row['distance_metric'],
         'proxy_temp': best_row['proxy_temp'],
-        'topk_neg': best_row['topk_neg'],
+        'topk': best_row['topk'],
         'metric_name': best_row['metric_name'], # The metric used for this decision
         'robustness_score': best_row['robustness_score'],
         'mean_score': best_row['raw_mean'],
@@ -221,7 +221,7 @@ def find_robust_hyperparameters(
         'lin_gamma': worst_row['lin_gamma'],
         'distance_metric': worst_row['distance_metric'],
         'proxy_temp': worst_row['proxy_temp'],
-        'topk_neg': worst_row['topk_neg'],
+        'topk': worst_row['topk'],
         'metric_name': worst_row['metric_name'], # The metric used for this decision
         'robustness_score': worst_row['robustness_score'],
         'mean_score': worst_row['raw_mean'],
@@ -254,19 +254,19 @@ def visualize_robustness_analysis(
     metric_names = analysis_df['metric_name'].dropna().unique()
     dist_metrics = analysis_df['distance_metric'].dropna().unique() if 'distance_metric' in analysis_df else [None]
     proxy_temps = analysis_df['proxy_temp'].dropna().unique() if 'proxy_temp' in analysis_df else [None]
-    topk_negs = analysis_df['topk_neg'].dropna().unique() if 'topk_neg' in analysis_df else [None]
+    topks = analysis_df['topk'].dropna().unique() if 'topk' in analysis_df else [None]
 
     custom_cmap = sns.blend_palette([hpi_colors.get("yellow"), hpi_colors.get("orange"),hpi_colors.get("red")], as_cmap=True)
 
     for eval_metric in metric_names:
         for dist_metric in dist_metrics:
             for proxy_temp in proxy_temps:
-                for topk_neg in topk_negs:
+                for topk in topks:
                     df_subset = analysis_df[
                         (analysis_df['metric_name'] == eval_metric) &
                         (analysis_df['distance_metric'] == dist_metric) &
                         (analysis_df['proxy_temp'] == proxy_temp) &
-                        (analysis_df['topk_neg'] == topk_neg)
+                        (analysis_df['topk'] == topk)
                     ]
                     if df_subset.empty:
                         continue
@@ -274,7 +274,7 @@ def visualize_robustness_analysis(
                     fig, axes = plt.subplots(1, 3, figsize=(22, 6))
                     fig.suptitle(
                         f"Robustness Analysis (Eval: {eval_metric}, "
-                        f"Distance: {dist_metric}, Proxy Temp: {proxy_temp}, TopK: {topk_neg})",
+                        f"Distance: {dist_metric}, Proxy Temp: {proxy_temp}, TopK: {topk})",
                         fontsize=20, y=1.05
                     )
 
@@ -288,7 +288,7 @@ def visualize_robustness_analysis(
                         ax.set_title(title)
 
                     plt.tight_layout(rect=[0, 0, 1, 0.98])
-                    metric_save_path = f"{path_root}_{eval_metric}_{dist_metric}_proxy{proxy_temp}_topk{topk_neg}{path_ext}"
+                    metric_save_path = f"{path_root}_{eval_metric}_{dist_metric}_proxy{proxy_temp}_topk{topk}{path_ext}"
                     plt.savefig(metric_save_path, dpi=300, bbox_inches='tight')
                     plt.close(fig)
                     saved_paths.append(metric_save_path)
@@ -414,7 +414,7 @@ def log_nested_validation_to_wandb(
     wandb.summary["approved_lin_gamma"] = approved_params['lin_gamma']
     wandb.summary["approved_distance_metric"] = approved_params['distance_metric']
     wandb.summary["approved_proxy_temp"] = approved_params['proxy_temp']
-    wandb.summary["approved_topk_neg"] = approved_params['topk_neg']
+    wandb.summary["approved_topk"] = approved_params['topk']
 
     wandb.summary[f"tune_set_mean_faithfulness ({cfg['lrp']['mode']})"] = tune_performance['mean_faithfulness']
     wandb.summary[f"holdout_set_mean_faithfulness ({cfg['lrp']['mode']})"] = holdout_performance['mean_faithfulness']
@@ -443,7 +443,7 @@ def log_nested_validation_to_wandb(
     # --- 4. Log Curves ---
     print("\n--- Logging Faithfulness Curves for Approved Parameters (All Metrics) ---")
 
-    needed_cols = ["conv_gamma", "lin_gamma", "proxy_temp", "distance_metric", "topk_neg"]
+    needed_cols = ["conv_gamma", "lin_gamma", "proxy_temp", "distance_metric", "topk"]
 
     tune_curves_df = pd.DataFrame(tune_curves_list)
     holdout_curves_df = pd.DataFrame(holdout_curves_list)

@@ -1,40 +1,40 @@
 model:
   finetuned: True
-  checkpoint_path: /workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth
+  checkpoint_path: /workspaces/bachelor_thesis_code/src/bachelor_thesis/20250905_125209for_me.pth
+  #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250904_223641.pth
+  #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250905_200756.pth
+  #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250905_125209for_me.pth
+  #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250905_142140for_me.pth
   #/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth
   #/workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth
 
 lrp:
-  mode: "soft_knn_margin"  # default
-  conv_gamma: ${lrp_params.${lrp.mode}.lrp.conv_gamma}
-  lin_gamma:  ${lrp_params.${lrp.mode}.lrp.lin_gamma}
-
-knn:
-  temp:       ${lrp_params.${lrp.mode}.knn.temp}
-  topk_neg:   ${lrp_params.${lrp.mode}.knn.topk_neg}
+  mode: "soft_knn_margin_all"  # default
+  conv_gamma: ${lrp_params.${lrp.mode}.conv_gamma}
+  lin_gamma:  ${lrp_params.${lrp.mode}.lin_gamma}
+  temp:   ${lrp_params.${lrp.mode}.temp}
+  topk:   ${lrp_params.${lrp.mode}.topk}
 
 
 lrp_params:
-  soft_knn_margin:
-    knn:
-      temp: 0.01
-      topk_neg: null
-    lrp:
-      conv_gamma: 0.25
-      lin_gamma: 0.001
-
+  soft_knn_margin_all:
+    temp: 0.01
+    topk: null
+    conv_gamma: 0.25
+    lin_gamma: 0.001
+  soft_knn_margin_topk:
+    temp: 0.01
+    topk: 5
+    conv_gamma: 0.25
+    lin_gamma: 0.001
   proto_margin:
-    knn:
-      temp: 0.03
-      topk_neg: 50
-    lrp:
-      conv_gamma: 0.1
-      lin_gamma: 0.05
+    temp: 0.03
+    topk: 50
+    conv_gamma: 0.1
+    lin_gamma: 0.05
   
   similarity:
-    knn:
-      temp: null
-      topk_neg: null
-    lrp:
-      conv_gamma: 0.25
-      lin_gamma: 0.05
+    temp: null
+    topk: null
+    conv_gamma: 0.25
+    lin_gamma: 0.05

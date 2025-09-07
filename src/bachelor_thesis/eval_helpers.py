@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
 from typing import Any, Tuple, List, Dict, Callable
 from knn_helpers import calculate_distance
-from lrp_helpers import compute_knn_proxy_soft, compute_knn_proto_margin, compute_similarity_score
+from lrp_helpers import compute_knn_proxy_soft_all, compute_knn_proto_margin, compute_similarity_score, compute_knn_proxy_soft_topk
 from utils import deterministic_randperm
 
 
@@ -145,8 +145,8 @@ def srg_eval(
     lerf_order = torch.argsort(patch_relevance_flat, descending=False)
     morf_order = torch.argsort(patch_relevance_flat, descending=True)
 
-    if mode == "soft_knn_margin":
-        score_fn = compute_knn_proxy_soft
+    if mode == "soft_knn_margin_all":
+        score_fn = compute_knn_proxy_soft_all
         score_fn_kwargs = {
             "query_label": kwargs["query_label"],
             "query_filename": kwargs["query_filename"],
@@ -157,6 +157,21 @@ def srg_eval(
             "db_video_ids": kwargs["db_video_ids"],
             "distance_metric": kwargs["distance_metric"],
             "temp": kwargs["proxy_temp"],
+            "cross_encounter": kwargs["cross_encounter"]
+        }
+    elif mode == "soft_knn_margin_topk":
+        score_fn = compute_knn_proxy_soft_topk
+        score_fn_kwargs = {
+            "query_label": kwargs["query_label"],
+            "query_filename": kwargs["query_filename"],
+            "query_video_id": kwargs["query_video_id"],
+            "db_embeddings": kwargs["db_embeddings"],
+            "db_labels": kwargs["db_labels"],
+            "db_filenames": kwargs["db_filenames"],
+            "db_video_ids": kwargs["db_video_ids"],
+            "distance_metric": kwargs["distance_metric"],
+            "temp": kwargs["proxy_temp"],
+            "topk": kwargs.get("topk", 5),
             "cross_encounter": kwargs["cross_encounter"]
         }
     elif mode == "proto_margin":
@@ -171,7 +186,7 @@ def srg_eval(
             "db_video_ids": kwargs["db_video_ids"],
             "distance_metric": kwargs["distance_metric"],
             "temp": kwargs["proxy_temp"],
-            "topk_neg": kwargs.get("topk_neg", 50),
+            "topk_neg": kwargs.get("topk", 50),
             "cross_encounter": kwargs["cross_encounter"]
         }
     elif mode == "similarity":

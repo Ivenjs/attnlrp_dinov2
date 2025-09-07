@@ -5,7 +5,7 @@ from torchvision import transforms
 from basemodel import get_model_wrapper
 from knn_helpers import get_knn_db
 from eval_helpers import attention_inside_mask, get_query_performance_metrics
-from lrp_helpers import compute_knn_proto_margin, compute_knn_proxy_soft, compute_similarity_score
+from lrp_helpers import compute_knn_proto_margin, compute_knn_proxy_soft_all, compute_similarity_score, compute_knn_proxy_soft_topk
 from tqdm import tqdm
 from typing import Dict, Tuple, List
 from lrp_helpers import get_relevances
@@ -56,15 +56,27 @@ def run_masking_experiment(
     score_fn = None
     score_fn_kwargs = {}
 
-    if decision_metric == "soft_knn_margin":
-        score_fn = compute_knn_proxy_soft
+    if decision_metric == "soft_knn_margin_all":
+        score_fn = compute_knn_proxy_soft_all
         score_fn_kwargs = {
             "db_embeddings": db_embeddings,
             "db_labels": db_labels,
             "db_filenames": db_filenames,
             "db_video_ids": db_video_ids,
-            "distance_metric": cfg["knn"]["distance_metric"],
-            "temp": cfg["knn"]["temp"],
+            "distance_metric": cfg["lrp"]["distance_metric"],
+            "temp": cfg["lrp"]["temp"],
+            "cross_encounter": cfg["lrp"]["cross_encounter"]
+        }
+    elif decision_metric == "soft_knn_margin_topk":
+        score_fn = compute_knn_proxy_soft_topk
+        score_fn_kwargs = {
+            "db_embeddings": db_embeddings,
+            "db_labels": db_labels,
+            "db_filenames": db_filenames,
+            "db_video_ids": db_video_ids,
+            "distance_metric": cfg["lrp"]["distance_metric"],
+            "temp": cfg["lrp"]["temp"],
+            "topk": cfg["lrp"]["topk"],
             "cross_encounter": cfg["lrp"]["cross_encounter"]
         }
     elif decision_metric == "proto_margin":
@@ -74,9 +86,9 @@ def run_masking_experiment(
             "db_labels": db_labels,
             "db_filenames": db_filenames,
             "db_video_ids": db_video_ids,
-            "distance_metric": cfg["knn"]["distance_metric"],
-            "temp": cfg["knn"]["temp"],
-            "topk_neg": cfg["knn"]["topk_neg"],
+            "distance_metric": cfg["lrp"]["distance_metric"],
+            "temp": cfg["lrp"]["temp"],
+            "topk": cfg["lrp"]["topk"],
             "cross_encounter": cfg["lrp"]["cross_encounter"]
         }
     elif decision_metric == "similarity":
@@ -564,7 +576,13 @@ def main(cfg: Dict):
         dataset_name=dataset.dataset_name,
         split_name=split_name,
         db_dir=cfg["lrp"]["db_relevances_dir"],
-        decision_metric=DECISION_METRIC
+        decision_metric=DECISION_METRIC,
+        lrp_params={
+            "conv_gamma": cfg["lrp"]["conv_gamma"],
+            "lin_gamma": cfg["lrp"]["lin_gamma"],
+            "proxy_temp": cfg["lrp"]["temp"],
+            "topk": cfg["lrp"]["topk"],
+        }
     )
 
     relevances_all = get_relevances(
@@ -576,9 +594,9 @@ def main(cfg: Dict):
         # All of these will be caught by **kwargs and passed to generate_relevances
         conv_gamma=cfg["lrp"]["conv_gamma"],           # Pass as single value (will be converted to list)
         lin_gamma=cfg["lrp"]["lin_gamma"],             # Pass as single value
-        proxy_temp=cfg["knn"]["temp"],          # Pass as single value 
-        distance_metric=cfg["knn"]["distance_metric"], #pass as single value
-        topk_neg=cfg["knn"]["topk_neg"],  # Pass as single value
+        proxy_temp=cfg["lrp"]["temp"],          # Pass as single value 
+        distance_metric=cfg["lrp"]["distance_metric"], #pass as single value
+        topk=cfg["lrp"]["topk"],  # Pass as single value
         mode=cfg["lrp"]["mode"],
         db_embeddings=db_embeddings,
         db_filenames=db_filenames,

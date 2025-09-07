@@ -12,7 +12,7 @@ from dino_patcher import DINOPatcher
 from lxt.efficient.rules import identity_rule_implicit
 from tqdm import tqdm
 from typing import Tuple
-from utils import parse_video_id
+from utils import parse_encounter_id
             
 def compute_similarity_proto_margin_pass(
     conv_gamma: float,
@@ -144,8 +144,7 @@ def compute_similarity_lrp_pass(
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance, reference_embedding, ref_idx
 
-
-def compute_knn_attnlrp_pass(
+def compute_knn_topk_attnlrp_pass(
     conv_gamma: float, 
     lin_gamma: float, 
     model_wrapper: nn.Module, 
@@ -160,12 +159,10 @@ def compute_knn_attnlrp_pass(
     db_video_ids: list,
     distance_metric: str = "cosine",
     proxy_temp: float = 0.1,
+    topk: int = 50,
     cross_encounter: bool = True,
     verbose: bool = False
 ) -> torch.Tensor:    
-    # kNN-Proxy (Retrieval Explanation): This method is more faithful to the downstream task. Since Re-ID is ultimately used 
-    # for retrieval (finding nearest neighbors), this method directly explains the outcome of that retrieval process. 
-    # It's a very task-centric view. It's like explaining the retrieval and voting mechanism of a soft k-NN classifier.
     """
     Computes a single LRP pass explaining a k-NN classification decision.
 
@@ -187,7 +184,81 @@ def compute_knn_attnlrp_pass(
         zennit_comp.register(model_wrapper)
 
         query_embedding = model_wrapper(input_tensor.requires_grad_())
-        knn_score = compute_knn_proxy_soft(
+        knn_score = compute_knn_proxy_soft_topk(
+            query_embedding=query_embedding,
+            query_label=query_label,
+            query_filename=query_filename,
+            query_video_id=query_video_id,
+            db_embeddings=db_embeddings,
+            db_labels=db_labels,
+            db_filenames=db_filenames,
+            db_video_ids=db_video_ids,
+            distance_metric=distance_metric,
+            temp=proxy_temp,
+            topk=topk,
+            cross_encounter=cross_encounter
+        )
+        if verbose:
+            print(f"Explaining k-NN proxy score: {knn_score.item():.4f} for Gammas (Conv: {conv_gamma}, Lin: {lin_gamma})")
+
+        knn_score.backward()
+        
+        if input_tensor.grad is None:
+            if verbose:
+                print(f"WARNING: No gradient for LRP on '{query_filename}'. "
+                      "Producing a zero relevance map.")
+            relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+        else:
+            # Standard LRP relevance calculation when gradients are present
+            relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
+
+    finally:
+        zennit_comp.remove()
+
+    if relevance is None:
+        relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+    return relevance
+
+def compute_knn_all_attnlrp_pass(
+    conv_gamma: float, 
+    lin_gamma: float, 
+    model_wrapper: nn.Module, 
+    input_tensor: torch.Tensor,
+    # parameters required for the k-NN score
+    query_label: str,         
+    query_filename: str,      
+    query_video_id: str,
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    db_filenames: list,
+    db_video_ids: list,
+    distance_metric: str = "cosine",
+    proxy_temp: float = 0.1,
+    cross_encounter: bool = True,
+    verbose: bool = False
+) -> torch.Tensor:    
+    """
+    Computes a single LRP pass explaining a k-NN classification decision.
+
+    This function calculates a differentiable proxy score based on the k-NN
+    outcome and backpropagates from it to generate the relevance map.
+    """
+    # Reset gradients for this specific pass
+    input_tensor.grad = None
+
+    # Zennit rules MUST be set and removed for each pass
+    zennit_comp = LayerMapComposite( #TODO: patch with this the rest of the model
+        [
+            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
+            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+        ]
+    )
+    
+    try:
+        zennit_comp.register(model_wrapper)
+
+        query_embedding = model_wrapper(input_tensor.requires_grad_())
+        knn_score = compute_knn_proxy_soft_all(
             query_embedding=query_embedding,
             query_label=query_label,
             query_filename=query_filename,
@@ -232,7 +303,7 @@ def generate_relevances(
     mode: str,
     distance_metrics: List[str] = ["cosine"],
     proxy_temp_values: List[float] = [0.1],
-    topk_neg_values: List[int] = [50],
+    topk_values: List[int] = [50],
     # --- Control flags ---
     verbose: bool = False,
     # --- Database arguments for relevant modes ---
@@ -256,7 +327,7 @@ def generate_relevances(
         lin_gamma_values: List of linear layer gamma values for LRP.
         distance_metrics: List[str] = ["cosine"],
         proxy_temp_values: List[float] = [0.1],
-        topk_neg_values: List[int] = [50],
+        topk_values: List[int] = [50],
         mode: str,
         include_masks: bool = False,
         verbose: bool = False,
@@ -280,11 +351,11 @@ def generate_relevances(
     # Create all combinations of parameters to iterate over.
     # This works even if lists have only one element.
     base_params = list(itertools.product(conv_gamma_values, lin_gamma_values))
-    if mode == "soft_knn_margin":
+    if mode == "soft_knn_margin_all":
         mode_specific_params = list(itertools.product(distance_metrics, proxy_temp_values))
         param_combinations = list(itertools.product(base_params, mode_specific_params))
-    elif mode == "proto_margin":
-        mode_specific_params = list(itertools.product(distance_metrics, proxy_temp_values, topk_neg_values))
+    elif mode == "proto_margin" or mode == "soft_knn_margin_topk":
+        mode_specific_params = list(itertools.product(distance_metrics, proxy_temp_values, topk_values))
         param_combinations = list(itertools.product(base_params, mode_specific_params))
     else: # similarity or other future modes
         param_combinations = base_params
@@ -292,14 +363,14 @@ def generate_relevances(
 
     with DINOPatcher(model_wrapper):
         for params in param_combinations:
-            if mode=="soft_knn_margin":
+            if mode=="soft_knn_margin_all":
                 (conv_gamma, lin_gamma), (distance_metric, proxy_temp) = params
-                topk_neg = None
-            elif mode=="proto_margin":
-                (conv_gamma, lin_gamma), (distance_metric, proxy_temp, topk_neg) = params
+                topk = None
+            elif mode=="proto_margin" or mode == "soft_knn_margin_topk":
+                (conv_gamma, lin_gamma), (distance_metric, proxy_temp, topk) = params
             else: # similarity
                 conv_gamma, lin_gamma = params
-                distance_metric, proxy_temp, topk_neg = None, None, None 
+                distance_metric, proxy_temp, topk = None, None, None
 
             for batch in tqdm(dataloader, desc="Processing batches"):
                 input_batch = batch["image"].to(device)
@@ -319,14 +390,23 @@ def generate_relevances(
 
                     relevance_single = None
                     extra_info = {} # To store mode-specific data like reference_embedding
-                    if mode == "soft_knn_margin":
-                        relevance_single = compute_knn_attnlrp_pass(
+                    if mode == "soft_knn_margin_all":
+                        relevance_single = compute_knn_all_attnlrp_pass(
                             model_wrapper=model_wrapper, input_tensor=input_tensor_single,
                             query_label=label_single, query_filename=filename, query_video_id=video_id,
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                             db_video_ids=db_video_ids,
                             conv_gamma=conv_gamma, lin_gamma=lin_gamma,
                             distance_metric=distance_metric, proxy_temp=proxy_temp, cross_encounter=cross_encounter, verbose=verbose
+                        )
+                    elif mode == "soft_knn_margin_topk":
+                        relevance_single = compute_knn_topk_attnlrp_pass(
+                            model_wrapper=model_wrapper, input_tensor=input_tensor_single,
+                            query_label=label_single, query_filename=filename, query_video_id=video_id,
+                            db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
+                            db_video_ids=db_video_ids,
+                            conv_gamma=conv_gamma, lin_gamma=lin_gamma,
+                            distance_metric=distance_metric, proxy_temp=proxy_temp, topk=topk, cross_encounter=cross_encounter, verbose=verbose
                         )
                     elif mode == "proto_margin":
                         relevance_single = compute_similarity_proto_margin_pass(
@@ -335,7 +415,7 @@ def generate_relevances(
                              db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                              db_video_ids=db_video_ids,
                              conv_gamma=conv_gamma, lin_gamma=lin_gamma,
-                             distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk_neg, cross_encounter=cross_encounter, verbose=verbose
+                             distance_metric=distance_metric, temp=proxy_temp, topk_neg=topk, cross_encounter=cross_encounter, verbose=verbose
                         )
                     elif mode == "similarity":
                         relevance_single, reference_embedding, ref_idx = compute_similarity_lrp_pass(
@@ -361,7 +441,7 @@ def generate_relevances(
                             "lin_gamma": lin_gamma,
                             "distance_metric": distance_metric,
                             "proxy_temp": proxy_temp,
-                            "topk_neg": topk_neg
+                            "topk": topk
                         },
                         "mode": mode,
                         "relevance": relevance_single.detach().cpu(),
@@ -387,20 +467,20 @@ def get_relevances(
         return torch.load(db_path, map_location="cpu", weights_only=False)
 
     # 2. If no cache, perform the computation
-    print(f"Relevance db not found. Computing relevances...")
+    print(f"Relevance db at {db_path} not found. Computing relevances...")
 
     conv_gamma = kwargs.pop('conv_gamma')
     lin_gamma = kwargs.pop('lin_gamma')
     distance_metric = kwargs.pop('distance_metric', 'cosine')
     proxy_temp = kwargs.pop('proxy_temp')
-    topk_neg = kwargs.pop('topk_neg')
+    topk = kwargs.pop('topk')
 
     # Convert single values to the list format required by generate_relevances
     kwargs['conv_gamma_values'] = [conv_gamma]
     kwargs['lin_gamma_values'] = [lin_gamma]
     kwargs['distance_metrics'] = [distance_metric]
     kwargs['proxy_temp_values'] = [proxy_temp]
-    kwargs['topk_neg_values'] = [topk_neg]
+    kwargs['topk_values'] = [topk]
 
     results_list = generate_relevances(
         model_wrapper=model_wrapper,
@@ -415,7 +495,6 @@ def get_relevances(
     
     return results_list
 
-#TODO optimize masking with integer indices
 def compute_knn_proto_margin(
     query_embedding: torch.Tensor,
     query_label: str,
@@ -523,7 +602,7 @@ def compute_knn_proto_margin(
     sim_neg = (qn * proto_neg).sum()
     return sim_pos - sim_neg
 
-def compute_knn_proxy_soft(
+def compute_knn_proxy_soft_all(
     query_embedding: torch.Tensor,
     query_label: str,
     query_filename: str,
@@ -610,6 +689,103 @@ def compute_knn_proxy_soft(
     # The margin score is the most faithful proxy for a contrastive decision.
     # Maximizing this score means maximizing friend probability and minimizing foe probability.
     score_prob = prob_friends 
+    score_margin = prob_friends - prob_foes
+
+    return score_margin
+
+def compute_knn_proxy_soft_topk(
+    query_embedding: torch.Tensor,
+    query_label: str,
+    query_filename: str,
+    query_video_id: str,
+    db_embeddings: torch.Tensor,
+    db_labels: list,
+    db_filenames: list,
+    db_video_ids: list,
+    distance_metric: str = "cosine",
+    temp: float = 0.05,
+    topk: int = 5,
+    cross_encounter: bool = True,
+    exclude_self: bool = True
+) -> torch.Tensor:
+    """Computes a differentiable proxy for a k-NN classifier's confidence.
+
+    This function provides a "soft" version of a k-NN decision. It first
+    performs a hard selection of the top-k nearest neighbors and then uses a
+    softmax over their similarities to create a probability-like distribution.
+    The final score is a margin between the total weight assigned to "friends"
+    (same label) and "foes" (different labels) within that top-k set.
+    Maximizing this score encourages the query's true matches to be among its
+    closest neighbors.
+
+    Interpretation of the score:
+      - +1.0: Maximum confidence. All top-k neighbors are friends.
+      -  0.0: Maximum confusion. Friend/foe weights are balanced in the top-k.
+      - -1.0: Catastrophically wrong. All top-k neighbors are foes.
+
+    Args:
+        query_embedding: The embedding for the query item.
+        query_label: The label of the query item.
+        query_filename: The filename of the query, for self-exclusion.
+        query_video_id: The video ID of the query, for cross-encounter setting.
+        db_embeddings: A tensor of all embeddings in the database.
+        db_labels: A list of all labels in the database.
+        db_filenames: A list of all filenames, for self-exclusion.
+        db_video_ids: A list of all video IDs, for cross-encounter setting.
+        k: The number of nearest neighbors to consider.
+        distance_metric: The metric used; only 'cosine' is supported.
+        temp: Temperature for the softmax. Lower values create a "harder" vote
+              by focusing on the single nearest neighbor.
+        cross_encounter: If True, excludes all items from the same video as the query.
+        exclude_self: If True, the query is excluded from its own neighborhood
+                      (has no effect if cross_encounter is True).
+
+    Returns:
+        torch.Tensor: A scalar tensor representing the soft k-NN margin score,
+                      with a value in the range [-1, 1].
+    """
+    if distance_metric != "cosine":
+        raise NotImplementedError("This soft proxy is optimized for cosine similarity.")
+
+    q_emb = query_embedding.view(1, -1) if query_embedding.dim() == 1 else query_embedding
+    q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
+    db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
+    all_similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
+
+    filter_mode = "none"
+    if cross_encounter:
+        filter_mode = "cross_encounter"
+    elif exclude_self:
+        filter_mode = "exclude_self_only"
+
+    exclusion_mask = create_exclusion_mask(
+        query_filename, query_video_id, db_filenames, db_video_ids,
+        filter_mode=filter_mode, device=all_similarities.device
+    )
+    all_similarities[exclusion_mask] = -1e9
+
+    num_valid_db_items = (~exclusion_mask).sum().item()
+    effective_k = min(topk, num_valid_db_items)
+
+    if effective_k == 0:
+        return torch.tensor(0.0, device=query_embedding.device)
+
+    top_k_similarities, top_k_indices = torch.topk(
+        all_similarities, k=effective_k, dim=0
+    )
+
+    top_k_weights = F.softmax(top_k_similarities / temp, dim=0)
+
+    device = top_k_weights.device
+    friend_mask_full = torch.tensor(
+        [1.0 if label == query_label else 0.0 for label in db_labels],
+        device=device
+    )
+    top_k_friend_mask = friend_mask_full[top_k_indices]
+
+    prob_friends = (top_k_weights * top_k_friend_mask).sum()
+    prob_foes = (top_k_weights * (1.0 - top_k_friend_mask)).sum()
+
     score_margin = prob_friends - prob_foes
 
     return score_margin
@@ -735,11 +911,11 @@ def create_exclusion_mask(
 
     if filter_mode == 'cross_encounter':
         if query_video_id and db_video_ids:
-            q_cam, q_date = parse_video_id(query_video_id)
+            q_cam, q_date = parse_encounter_id(query_video_id)
             if q_cam and q_date:
                 same_encounter_mask = torch.tensor([
                     (cam == q_cam and date == q_date)
-                    for cam, date in (parse_video_id(vid) for vid in db_video_ids)
+                    for cam, date in (parse_encounter_id(vid) for vid in db_video_ids)
                 ], dtype=torch.bool, device=device)
                 exclusion_mask |= same_encounter_mask
     
