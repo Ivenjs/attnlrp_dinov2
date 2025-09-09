@@ -63,17 +63,36 @@ def main(cfg):
     train_dataset = GorillaReIDDataset(
         image_dir=train_dir, filenames=train_files, transform=image_transforms
     )
+    
 
-    # The full database (gallery) for KNN search includes both training and validation sets.
-    # This database remains constant throughout the experiment.
-    full_db_dataset = ConcatDataset([train_dataset, split_dataset])
+    datasets = [split_dataset, train_dataset]
+    full_db_dataset = ConcatDataset(datasets)
+    full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
+
+
+    query_dataset_offset = 0
+    found = False
+    for d in datasets:
+        if d is split_dataset:
+            found = True
+            break
+        query_dataset_offset += len(d)
+
+    print("Query dataset offset in DB:", query_dataset_offset)
+
+    if not found:
+        raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+
+    local_query_indices = split_dataset.images_for_ce_knn
+
+    global_query_indices = [idx + query_dataset_offset for idx in local_query_indices]
 
     # --- 4. Create the KNN Search Database (Gallery) ---
     print("Preparing the main KNN database (gallery)...")
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name="all_dataset",
-        split_name=f"train+{split_name}",
+        dataset_name=train_dataset.dataset_name,
+        split_name=full_dataset_splits,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     all_db_embeddings, all_db_labels, _, all_db_videos = get_knn_db(
@@ -124,7 +143,7 @@ def main(cfg):
     # First, establish the baseline accuracy on unperturbed data.
     print("\n--- Evaluating Baseline Accuracy (0% Perturbation) ---")
     base_accuracy = evaluate_model(
-        model_wrapper=model_wrapper, dataset=split_dataset, cfg=cfg, device=DEVICE,
+        model_wrapper=model_wrapper, query_indices_in_db=global_query_indices, cfg=cfg, device=DEVICE,
         db_embeddings=all_db_embeddings, db_labels=all_db_labels, db_videos=all_db_videos
     )
     print(f"Baseline Balanced Accuracy: {base_accuracy:.4f}")
@@ -151,10 +170,10 @@ def main(cfg):
             # Evaluate using the perturbed images as queries against the original, full database
             accuracy = evaluate_model(
                 model_wrapper=model_wrapper,
-                dataset=split_dataset, # Base dataset info, not strictly used
+                query_indices_in_db=global_query_indices,
                 cfg=cfg,
                 device=DEVICE,
-                db_embeddings=all_db_embeddings, # The consistent, full database
+                db_embeddings=all_db_embeddings,
                 db_labels=all_db_labels,
                 db_videos=all_db_videos,
                 query_dataset=perturbed_dataset # This triggers on-the-fly embedding generation

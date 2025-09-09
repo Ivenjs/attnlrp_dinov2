@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=faithfulness_eval
+#SBATCH --job-name=model_eval
 #SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

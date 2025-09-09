@@ -8,7 +8,6 @@ from torch.utils.data.dataloader import default_collate
 from collections import defaultdict
 import numpy as np
 import torch.nn.functional as F
-import hashlib
 from utils import deterministic_randperm, parse_encounter_id
 
 class GorillaReIDDataset(Dataset):

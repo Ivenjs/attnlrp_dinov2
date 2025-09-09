@@ -14,61 +14,68 @@ import numpy as np
 from dataset import GorillaReIDDataset, custom_collate_fn
 
 def fill_knn_db(
-    dataset: GorillaReIDDataset, 
-    model_wrapper: TimmWrapper, 
+    dataset: GorillaReIDDataset,
+    model_wrapper: TimmWrapper,
     output_path: str,
-    device: torch.device, 
-    batch_size: int = 64, 
-) -> Tuple[torch.Tensor, list]:
+    device: torch.device,
+    batch_size: int = 64,
+    num_workers: int = 4,
+    use_amp: bool = True,
+) -> Tuple[torch.Tensor, list, list, list]:
     """
-    Generates and saves embeddings for a given dataset.
+    Generates and saves embeddings for a given dataset using performance optimizations.
     Saves embeddings, labels, and filenames.
     """
     dataloader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
+        dataset,
+        batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=custom_collate_fn
+        num_workers=num_workers,
+        pin_memory=True, 
+        collate_fn=custom_collate_fn,
     )
     print(f"Generating embeddings for {len(dataloader.dataset)} images...")
-        
+
     all_embeddings_list = []
     all_labels = []
     all_filenames = []
     all_videos = []
 
-    with torch.no_grad():
+    model_wrapper.model.eval()
+    
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
         for batch in tqdm(dataloader, desc=f"Generating embeddings for {os.path.basename(output_path)}"):
             images = batch["image"]
             labels = batch["label"]
             filenames = batch["filename"]
             videos = batch["video"]
 
-            images = images.to(device)
+            images = images.to(device, non_blocking=True, memory_format=torch.channels_last)
+
             embeddings = model_wrapper(images)
-            
-            all_embeddings_list.append(embeddings.cpu())
+
+            all_embeddings_list.append(embeddings)
+
             all_labels.extend(labels)
             all_filenames.extend(filenames)
             all_videos.extend(videos)
 
-    final_embeddings = torch.cat(all_embeddings_list, dim=0)
+    final_embeddings_gpu = torch.cat(all_embeddings_list, dim=0)
 
     db_data = {
-        "embeddings": final_embeddings,
+        "embeddings": final_embeddings_gpu.cpu(),
         "labels": all_labels,
         "filenames": all_filenames,
-        "videos": all_videos
+        "videos": all_videos,
     }
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     torch.save(db_data, output_path)
-    
+
     print(f"Saved {len(all_filenames)} embeddings to {output_path}")
 
-    return final_embeddings.to(device), all_labels, all_filenames, all_videos
+    # Return the GPU tensor and CPU lists, as per the original function's intent
+    return final_embeddings_gpu, all_labels, all_filenames, all_videos
 
 def get_knn_db(
     db_path: str,

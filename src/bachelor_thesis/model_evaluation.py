@@ -10,7 +10,7 @@ from knn_helpers import get_knn_db, calculate_distance_batched
 from sklearn.metrics import balanced_accuracy_score, accuracy_score
 import os
 
-def _perform_knn_ce_evaluation(
+def perform_knn_ce_evaluation(
     query_embeddings,
     query_labels_int,
     query_encounter_ids_int,
@@ -34,35 +34,29 @@ def _perform_knn_ce_evaluation(
 
     # Process queries in batches to manage memory
     for i in tqdm(range(0, num_queries, batch_size), desc="Running Batched KNN-CV"):
-        # --- 1. Select Batch ---
         batch_end = min(i + batch_size, num_queries)
         query_embeddings_batch = query_embeddings[i:batch_end]
         query_encounter_ids_batch = query_encounter_ids_int[i:batch_end]
         query_indices_batch = query_original_indices[i:batch_end] if query_original_indices is not None else None
 
-        # --- 2. Calculate Distances ---
-        # Shape: [batch_size, db_size]
+        # --- Calculate Distances ---
         distance_matrix = calculate_distance_batched(db_embeddings, query_embeddings_batch, distance_metric)
 
-        # --- 3. Apply Cross-Encounter Mask ---
-        # Create a [batch_size, db_size] mask where True means a DB item is from the same encounter
+        # --- Apply Cross-Encounter Mask ---
         same_encounter_mask = (query_encounter_ids_batch.view(-1, 1) == db_encounter_ids_int)
         distance_matrix[same_encounter_mask] = float('inf')
 
-        # --- 4. Apply Self-Match Mask (if query is subset of db) ---
+        # --- Apply Self-Match Mask (if query is subset of db) ---
         if query_indices_batch is not None:
             batch_indices = torch.arange(len(query_indices_batch), device=device)
             distance_matrix[batch_indices, query_indices_batch] = float('inf')
 
-        # --- 5. Find K-Nearest Neighbors and Predict ---
         num_neighbors = min(k, distance_matrix.shape[1] - 1)
         if num_neighbors <= 0:
             continue  # Skip if no valid neighbors exist
 
-        # Find top K for each row (dim=1) of the distance matrix
         _, top_k_db_indices = torch.topk(distance_matrix, k=num_neighbors, largest=False, dim=1)
 
-        # Get labels of the top k neighbors and find the most frequent one
         neighbor_labels = db_labels_int[top_k_db_indices]
         predicted_labels_batch = torch.mode(neighbor_labels, dim=1)[0]
 
@@ -87,13 +81,13 @@ def _perform_knn_ce_evaluation(
     return balanced_accuracy
 
 
-def evaluate_model(model_wrapper, dataset, cfg, device, db_embeddings, db_labels, db_videos, query_dataset=None):
+def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embeddings, db_labels, db_videos, query_dataset=None):
     """
     Evaluates a model using Cross-Video KNN, supporting both pre-computed and on-the-fly embeddings.
 
     Args:
         model_wrapper: The model to evaluate.
-        dataset: The source dataset for standard evaluation (e.g., test set).
+        query_indices_in_db: List of indices in the DB that correspond to the query set. Needed to make order of concat dataset not matter
         cfg: The configuration dictionary.
         device: The torch device to use.
         db_embeddings (torch.Tensor): Embeddings for the entire search database (gallery).
@@ -114,7 +108,6 @@ def evaluate_model(model_wrapper, dataset, cfg, device, db_embeddings, db_labels
 
     
     db_encounters = [parse_encounter_id(v) for v in db_videos]
-    
     # Map string encounters to integer IDs for efficient processing
     unique_encounters = sorted(list(set(db_encounters)))
     encounter_to_id = {enc: i for i, enc in enumerate(unique_encounters)}
@@ -135,24 +128,24 @@ def evaluate_model(model_wrapper, dataset, cfg, device, db_embeddings, db_labels
         # --- 2. Prepare Query Tensors ---
         if query_dataset is None:
             print("Mode: Standard evaluation. Using pre-computed embeddings for queries.")
-            query_indices = dataset.images_for_ce_knn
-            if not query_indices:
-                print("Warning: No images selected for Cross-Encounter KNN. Returning 0 accuracy.")
-                return 0.0
-
-            query_original_indices = torch.tensor(query_indices, dtype=torch.long, device=device)
+            query_original_indices = torch.tensor(query_indices_in_db, dtype=torch.long, device=device)
             query_embeddings = db_embeddings_gpu[query_original_indices]
             query_labels_int = db_labels_int[query_original_indices]
-            #query_video_ids_int = db_video_ids_int[query_original_indices]
             query_encounter_ids_int = db_encounter_ids_int[query_original_indices]
         else:
             print("Mode: On-the-fly evaluation. Generating embeddings for the query dataset.")
-            query_indices = query_dataset.images_for_ce_knn
-            if not query_indices:
+            local_query_indices = query_dataset.images_for_ce_knn
+            if not local_query_indices:
                 print("Warning: No images found for Cross-Encounter KNN in the query dataset. Returning 0 accuracy.")
                 return 0.0
             
-            query_subset = Subset(query_dataset, query_indices)
+            # The on-the-fly mode also needs the global indices for self-masking.
+            if len(local_query_indices) != len(query_indices_in_db):
+                 raise ValueError("Mismatch between on-the-fly query indices and provided global indices.")
+            
+            query_original_indices = torch.tensor(query_indices_in_db, dtype=torch.long, device=device)
+
+            query_subset = Subset(query_dataset, local_query_indices)
             query_loader = DataLoader(
                 query_subset,
                 batch_size=cfg["data"]["batch_size"],
@@ -161,8 +154,7 @@ def evaluate_model(model_wrapper, dataset, cfg, device, db_embeddings, db_labels
                 collate_fn=custom_collate_fn
             )
 
-            # Generate embeddings and collect metadata for all queries
-            q_embeddings, q_labels, q_videos, q_indices = [], [], [], []
+            q_embeddings, q_labels, q_videos = [], [], []
             for batch in tqdm(query_loader, desc="Generating query embeddings"):
                 query_image_batch = batch["image"].to(device)
                 embeddings_batch = model_wrapper(query_image_batch)
@@ -170,22 +162,19 @@ def evaluate_model(model_wrapper, dataset, cfg, device, db_embeddings, db_labels
                 q_embeddings.append(embeddings_batch)
                 q_labels.extend(batch["label"])
                 q_videos.extend(batch["video"])
-                # The 'original_index' from the collate_fn gives us the position in the *original DB*
-                q_indices.append(batch["original_index"]) 
 
             query_embeddings = torch.cat(q_embeddings)
-            query_original_indices = torch.cat(q_indices).to(device)
-            # Map collected string labels/videos to the same integer IDs as the database
-            query_labels_int = torch.tensor([label_to_id[s] for s in q_labels], dtype=torch.long, device=device)
+            query_labels_int = torch.tensor([label_to_id.get(s) for s in q_labels], dtype=torch.long, device=device)
             q_encounters = [parse_encounter_id(v) for v in q_videos]
-            query_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in q_encounters], dtype=torch.long, device=device)
-            #query_video_ids_int = torch.tensor([video_to_id[s] for s in q_videos], dtype=torch.long, device=device)
+            query_encounter_ids_int = torch.tensor([encounter_to_id.get(s) for s in q_encounters], dtype=torch.long, device=device)
 
     # --- 3. Run Evaluation ---
     print(f"Number of queries: {query_embeddings.shape[0]}")
     print(f"Number of database embeddings: {db_embeddings.shape[0]}")
-    
-    mean_accuracy = _perform_knn_ce_evaluation( # Renamed for clarity
+    print("Unique db encounters (len):", len(torch.unique(db_encounter_ids_int, dim=0 if db_encounter_ids_int.dim()>1 else None)))
+    print("Unique query encounters (len):", len(torch.unique(query_encounter_ids_int, dim=0 if query_encounter_ids_int.dim()>1 else None)))
+
+    mean_accuracy = perform_knn_ce_evaluation( 
         query_embeddings=query_embeddings,
         query_labels_int=query_labels_int,
         query_encounter_ids_int=query_encounter_ids_int, # Pass ENCOUNTER IDs
@@ -222,13 +211,33 @@ def main(cfg):
     )
     
     # The database consists of both training and validation images
-    full_db_dataset = ConcatDataset([train_dataset, split_dataset])
+    datasets = [split_dataset, train_dataset]
+    full_db_dataset = ConcatDataset(datasets)
+    full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
+
+
+    query_dataset_offset = 0
+    found = False
+    for d in datasets:
+        if d is split_dataset:
+            found = True
+            break
+        query_dataset_offset += len(d)
+
+    print("Query dataset offset in DB:", query_dataset_offset)
+
+    if not found:
+        raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+
+    local_query_indices = split_dataset.images_for_ce_knn
+
+    global_query_indices = [idx + query_dataset_offset for idx in local_query_indices]
 
     # --- Get KNN Database Embeddings ---
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name="all_dataset", # Use a descriptive name
-        split_name=f"train+{split_name}",
+        dataset_name=train_dataset.dataset_name,
+        split_name=full_dataset_splits,
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     db_embeddings, db_labels, _, db_videos = get_knn_db(
@@ -244,7 +253,7 @@ def main(cfg):
     # and we use the fast path (query_dataset=None).
     evaluate_model(
         model_wrapper=model_wrapper,
-        dataset=split_dataset,
+        query_indices_in_db=global_query_indices, # Pass the new global indices
         cfg=cfg,
         device=DEVICE,
         db_embeddings=db_embeddings,

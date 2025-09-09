@@ -287,7 +287,7 @@ def get_model_wrapper(device, cfg):
     if device.type == "cuda" and not torch.cuda.is_bf16_supported():
         model_dtype = torch.bfloat32
 
-
+    print(f"Using model dtype: {model_dtype}")
     model_wrapper, transforms, data_config = load_timm_wrapper(
         checkpoint_path=cfg["checkpoint_path"],
         backbone_name=cfg["backbone"],

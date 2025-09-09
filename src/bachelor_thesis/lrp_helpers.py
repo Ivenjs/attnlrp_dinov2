@@ -555,6 +555,9 @@ def compute_knn_proto_margin(
     qn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
     dbn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
+    if dbn.dtype != qn.dtype:
+        dbn = dbn.to(qn.dtype)
+
     sims = F.linear(dbn, qn).squeeze(1)  # (N,)
 
     filter_mode = "none"
@@ -656,7 +659,8 @@ def compute_knn_proxy_soft_all(
     q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
     db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
-
+    if db_norm.dtype != q_norm.dtype:
+        db_norm = db_norm.to(q_norm.dtype)
     # Calculate cosine similarity (higher is better)
     # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
     similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
@@ -750,6 +754,10 @@ def compute_knn_proxy_soft_topk(
     q_emb = query_embedding.view(1, -1) if query_embedding.dim() == 1 else query_embedding
     q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
     db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
+
+    if db_norm.dtype != q_norm.dtype:
+        db_norm = db_norm.to(q_norm.dtype)
+    
     all_similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
 
     filter_mode = "none"

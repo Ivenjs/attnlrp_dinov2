@@ -3,7 +3,7 @@ data:
   dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data3/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated" #TODO change to data3
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/body_renamed"
   #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
-  batch_size: 8
+  batch_size: 32
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
   output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
   analysis_split: "test"
@@ -29,7 +29,7 @@ model:
   backbone: "vit_giant_patch14_dinov2.lvd142m"
   embedding_dim: 256
   patch_size: 14
-  model_dtype: "float16"
+  model_dtype: "bfloat16"
 
 plots:
   red: [162, 41, 64]
