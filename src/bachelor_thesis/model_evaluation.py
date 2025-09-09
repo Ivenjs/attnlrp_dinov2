@@ -124,7 +124,7 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
     query_encounter_ids_int = None
     query_original_indices = None # Used to mask self-matches if queries are from the DB
 
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
         # --- 2. Prepare Query Tensors ---
         if query_dataset is None:
             print("Mode: Standard evaluation. Using pre-computed embeddings for queries.")

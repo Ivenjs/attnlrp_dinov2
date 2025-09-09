@@ -22,7 +22,6 @@ class TimmWrapper(nn.Module):
         self,
         backbone_name: str,
         embedding_size: int,
-        dtype: torch.dtype = torch.float32,
         embedding_id: Literal["linear", "mlp", "linear_norm_dropout", "mlp_norm_dropout"] = "linear",
         dropout_p: float = 0.0,
         pool_mode: Literal["gem", "gap", "gem_c", "none"] = "none",
@@ -39,8 +38,6 @@ class TimmWrapper(nn.Module):
             self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0, img_size=img_size)
         else:
             self.model = timm.create_model(backbone_name, pretrained=True, drop_rate=0.0)
-
-        self.model = self.model.to(dtype=dtype)
 
         self.num_features = self.model.num_features
 
@@ -262,14 +259,15 @@ def load_timm_wrapper(
 
 
     print(f"Building model architecture with backbone '{backbone_name}' and embedding size {embedding_size}...")
-    model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, model_dtype=model_dtype,img_size=image_size)
+    model_wrapper = TimmWrapper(backbone_name=backbone_name, embedding_size=embedding_size, img_size=image_size)
 
     if finetuned:
         checkpoint_best = torch.load(checkpoint_path, map_location=device, weights_only=False)
         cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
         msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
         #print(f"State dict loading message: {msg}")
-
+    
+    model_wrapper.to(device=device, dtype=model_dtype)
     model_wrapper.to(device)
     model_wrapper.eval()
 

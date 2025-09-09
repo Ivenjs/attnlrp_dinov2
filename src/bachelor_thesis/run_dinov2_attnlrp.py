@@ -104,7 +104,7 @@ def run_masking_experiment(
         raise ValueError(f"Unsupported evaluation decision metric: '{decision_metric}'")
 
     
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
         for batch in tqdm(dataloader, desc="Running masking experiment"):
             # --- ROBUST BATCH HANDLING START ---
             

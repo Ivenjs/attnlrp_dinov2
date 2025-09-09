@@ -37,6 +37,7 @@ def compute_similarity_proto_margin_pass(
     score = sim(query, proto_pos) - sim(query, proto_neg)
     """
     input_tensor.grad = None
+
     zennit_comp = LayerMapComposite([
         (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
         (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
@@ -99,7 +100,7 @@ def compute_similarity_lrp_pass(
     """
         
     input_tensor.grad = None
-    
+
     zennit_comp = LayerMapComposite(
         [
             (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
@@ -258,6 +259,7 @@ def compute_knn_all_attnlrp_pass(
         zennit_comp.register(model_wrapper)
 
         query_embedding = model_wrapper(input_tensor.requires_grad_())
+        
         knn_score = compute_knn_proxy_soft_all(
             query_embedding=query_embedding,
             query_label=query_label,
@@ -555,6 +557,7 @@ def compute_knn_proto_margin(
     qn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
     dbn = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
+    # convert to input dtype, which is float32 for lrp
     if dbn.dtype != qn.dtype:
         dbn = dbn.to(qn.dtype)
 
@@ -659,6 +662,7 @@ def compute_knn_proxy_soft_all(
     q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
     db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
+    # convert to input dtype, which is float32 for lrp
     if db_norm.dtype != q_norm.dtype:
         db_norm = db_norm.to(q_norm.dtype)
     # Calculate cosine similarity (higher is better)
@@ -755,6 +759,7 @@ def compute_knn_proxy_soft_topk(
     q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
     db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
+    # convert to input dtype, which is float32 for lrp
     if db_norm.dtype != q_norm.dtype:
         db_norm = db_norm.to(q_norm.dtype)
     

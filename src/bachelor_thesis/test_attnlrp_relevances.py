@@ -22,6 +22,7 @@ def compute_conservation_pass(
     """
 
     input_tensor.grad = None
+    input_tensor = input_tensor.to(torch.bfloat16)
     
     output = model_wrapper(input_tensor.requires_grad_())
     most_active_feature_idx = torch.argmax(output, dim=1).item()

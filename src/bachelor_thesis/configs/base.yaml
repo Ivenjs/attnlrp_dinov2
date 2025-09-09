@@ -29,7 +29,7 @@ model:
   backbone: "vit_giant_patch14_dinov2.lvd142m"
   embedding_dim: 256
   patch_size: 14
-  model_dtype: "bfloat16"
+  model_dtype: "float32"
 
 plots:
   red: [162, 41, 64]

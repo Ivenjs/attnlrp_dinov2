@@ -42,8 +42,8 @@ def fill_knn_db(
     all_videos = []
 
     model_wrapper.model.eval()
-    
-    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
         for batch in tqdm(dataloader, desc=f"Generating embeddings for {os.path.basename(output_path)}"):
             images = batch["image"]
             labels = batch["label"]

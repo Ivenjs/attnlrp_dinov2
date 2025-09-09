@@ -59,7 +59,7 @@ def _run_perturbation_experiment(
         raise ValueError(f"Unknown baseline type: {baseline_value}")
 
     # Calculate the initial, unperturbed k-NN proxy score
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type, dtype=torch.bfloat16):
         initial_embedding = model(input_tensor)
         result = score_fn(initial_embedding, **score_fn_kwargs)
         if isinstance(result, tuple):
@@ -101,7 +101,7 @@ def _run_perturbation_experiment(
                 perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = original_patch
 
         # After perturbing the chunk, run the model and get the score
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type, dtype=torch.bfloat16):
             current_embedding = model(perturbed_tensor)
             result = score_fn(current_embedding, **score_fn_kwargs)
             if isinstance(result, tuple):
@@ -315,7 +315,7 @@ def _run_downstream_perturbation_sweep(
     }
 
     # --- 1. Get Baseline (0% perturbation) Accuracy ---
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
         original_query_embeddings = []
         # Use a simple TensorDataset for efficient batching
         temp_dataset = torch.utils.data.TensorDataset(query_images_tensor)
@@ -331,6 +331,7 @@ def _run_downstream_perturbation_sweep(
     )
     
     accuracy_curve = [baseline_accuracy]
+    print(f"  Baseline Balanced Accuracy: {baseline_accuracy:.4f}")
     
     # --- 2. Iteratively Perturb and Evaluate ---
     perturbed_images = query_images_tensor.clone().to(device)
@@ -344,8 +345,8 @@ def _run_downstream_perturbation_sweep(
         perturbed_images = apply_perturbation_to_batch(
             perturbed_images, all_patch_orders, start_idx, end_idx, patch_size, baseline_value
         )
-        
-        with torch.no_grad():
+
+        with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
             current_query_embeddings = []
             temp_dataset = torch.utils.data.TensorDataset(perturbed_images)
             temp_loader = torch.utils.data.DataLoader(temp_dataset, batch_size=cfg["data"]["batch_size"])
@@ -723,7 +724,7 @@ def get_query_performance_metrics(
     db_labels_np = np.array(db_labels)
     db_filenames_np = np.array(db_filenames)
 
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
         distances = calculate_distance(query_embedding, db_embeddings, distance_metric)
         try:
             query_idx = db_filenames.index(query_filename)

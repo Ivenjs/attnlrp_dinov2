@@ -33,6 +33,8 @@ def main(cfg):
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
     mask_transform = get_mask_transform(cfg["model"]["img_size"])
 
+    print(f"the dtype of the model is: {next(model_wrapper.model.parameters()).dtype}")
+
     # --- 2. WandB Initialization ---
     model_type_str = "finetuned" if cfg["model"]["finetuned"] else "base"
     run_name = f"faithfulness_eval_{model_type_str}_{MODE}"
