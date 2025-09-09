@@ -447,7 +447,7 @@ def log_nested_validation_to_wandb(
 
     tune_curves_df = pd.DataFrame(tune_curves_list)
     holdout_curves_df = pd.DataFrame(holdout_curves_list)
-
+    print(f"Total tune curves: {len(tune_curves_df)}, holdout curves: {len(holdout_curves_df)}")
     for col in needed_cols:
         if col not in tune_curves_df.columns:
             tune_curves_df[col] = np.nan
@@ -462,6 +462,8 @@ def log_nested_validation_to_wandb(
     # --- Approved ---
     approved_tune_curves_df = tune_curves_df[_build_filter(tune_curves_df, approved_params)].copy()
     approved_holdout_curves_df = holdout_curves_df[_build_filter(holdout_curves_df, approved_params)].copy()
+
+    print(f"Found {len(approved_tune_curves_df)} tune curves and {len(approved_holdout_curves_df)} holdout curves for approved parameters.")
 
     approved_tune_curves_df['split'] = 'tune'
     approved_holdout_curves_df['split'] = 'holdout'
@@ -559,6 +561,7 @@ def plot_and_log_mean_curve(
     Calculates and plots mean curves with std deviation bands from a dataframe.
     Logs the resulting plot to Weights & Biases as a static image.
     """
+    print(f"Plotting mean curve for {log_key} with {len(df)} data points...")
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(10, 6))
     colors = {

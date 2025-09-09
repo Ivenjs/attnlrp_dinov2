@@ -19,6 +19,7 @@ from knn_helpers import get_knn_db
 from dataset import GorillaReIDDataset, custom_collate_fn
 from utils import get_balanced_individual_splits, get_db_path, load_config, get_balanced_individual_splits_cross_encounter
 from lrp_helpers import generate_relevances
+from eval_helpers import run_downstream_sweep_and_log
 
 
 
@@ -58,11 +59,18 @@ def main(cfg: dict):
 
     train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
 
-    tune_query_files, tune_db_files, holdout_query_files, holdout_db_files = get_balanced_individual_splits_cross_encounter(
-        train_files=train_files,
-        holdout_percentage=cfg["sweep"]["holdout_percentage"],
-        queries_per_class=cfg["sweep"]["queries_per_class"]
-    )
+    if cfg["lrp"]["cross_encounter"]:
+        tune_query_files, tune_db_files, holdout_query_files, holdout_db_files = get_balanced_individual_splits_cross_encounter(
+            train_files=train_files,
+            holdout_percentage=cfg["sweep"]["holdout_percentage"],
+            queries_per_class=cfg["sweep"]["queries_per_class"]
+        )
+    else:
+        tune_query_files, tune_db_files, holdout_query_files, holdout_db_files = get_balanced_individual_splits(
+            train_files=train_files,
+            holdout_percentage=cfg["sweep"]["holdout_percentage"],
+            queries_per_class=cfg["sweep"]["queries_per_class"]
+        )
     
     tune_query_dataset = GorillaReIDDataset(
         image_dir=train_dir, filenames=tune_query_files, transform=image_transforms
@@ -117,10 +125,23 @@ def main(cfg: dict):
     )
 
     tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
-    tune_results_list, tune_curves_list = evaluate_gamma_sweep(
-        tune_relevances_all, tune_eval_dataloader, model_wrapper,
-        train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
-        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"],False, cfg["seed"]
+    #tune_results_list, tune_curves_list = evaluate_gamma_sweep(
+    #    tune_relevances_all, tune_eval_dataloader, model_wrapper,
+    #    train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
+    #    cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"],False, cfg["seed"]
+    #)
+
+    tune_results_list, tune_curves_list = run_downstream_sweep_and_log(
+        all_relevance_results=tune_relevances_all,
+        query_dataset=tune_query_dataset,
+        model=model_wrapper,
+        db_embeddings=train_db_embeddings,
+        db_labels=train_db_labels,
+        db_videos=train_db_videos,
+        cfg=cfg,
+        patch_size=cfg["model"]["patch_size"],
+        patches_per_step=cfg["eval"]["patches_per_step"],
+        baseline_value=cfg["eval"]["baseline_value"]
     )
 
     # --- GENERATE RESULTS FOR HOLDOUT SET ---
@@ -146,10 +167,22 @@ def main(cfg: dict):
     )
 
     holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
-    holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
-        holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
-        train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
-        cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"], False, cfg["seed"]
+    #holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
+    #    holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
+    #    train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
+    #    cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"], False, cfg["seed"]
+    #)
+    holdout_results_list, holdout_curves_list = run_downstream_sweep_and_log(
+        all_relevance_results=holdout_relevances_all,
+        query_dataset=holdout_query_dataset,
+        model=model_wrapper,
+        db_embeddings=train_db_embeddings,
+        db_labels=train_db_labels,
+        db_videos=train_db_videos,
+        cfg=cfg,
+        patch_size=cfg["model"]["patch_size"],
+        patches_per_step=cfg["eval"]["patches_per_step"],
+        baseline_value=cfg["eval"]["baseline_value"]
     )
 
     # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---
