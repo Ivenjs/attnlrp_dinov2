@@ -1,6 +1,6 @@
 model:
   finetuned: True
-  checkpoint_path: /workspaces/vast-gorilla/gorillawatch/models/20250905_125209for_me.pth
+  checkpoint_path: /workspaces/bachelor_thesis_code/src/bachelor_thesis/20250905_125209for_me.pth
   #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250908_014924hard.pth
   #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250908_014504simple.pth
   #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250904_223641.pth
@@ -9,6 +9,7 @@ model:
   #/workspaces/bachelor_thesis_code/src/bachelor_thesis/20250905_142140for_me.pth
   #/workspaces/bachelor_thesis_code/giantbodybest74ens82.pth
   #/workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth
+  #/workspaces/vast-gorilla/gorillawatch/models/20250909_135105_array-1227346-1.pth
 
 lrp:
   mode: "soft_knn_margin_all"  # default

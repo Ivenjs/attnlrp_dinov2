@@ -8,6 +8,8 @@ from dataset import GorillaReIDDataset, custom_collate_fn
 from torch.utils.data import DataLoader, Subset, ConcatDataset
 from knn_helpers import get_knn_db, calculate_distance_batched
 from sklearn.metrics import balanced_accuracy_score, accuracy_score
+from torchvision import transforms
+from torchvision.transforms import RandAugment
 import os
 
 def perform_knn_ce_evaluation(
@@ -33,7 +35,7 @@ def perform_knn_ce_evaluation(
     all_actuals = []
 
     # Process queries in batches to manage memory
-    for i in tqdm(range(0, num_queries, batch_size), desc="Running Batched KNN-CV"):
+    for i in tqdm(range(0, num_queries, batch_size), desc="Running Batched KNN-CE"):
         batch_end = min(i + batch_size, num_queries)
         query_embeddings_batch = query_embeddings[i:batch_end]
         query_encounter_ids_batch = query_encounter_ids_int[i:batch_end]
@@ -124,7 +126,7 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
     query_encounter_ids_int = None
     query_original_indices = None # Used to mask self-matches if queries are from the DB
 
-    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type):
         # --- 2. Prepare Query Tensors ---
         if query_dataset is None:
             print("Mode: Standard evaluation. Using pre-computed embeddings for queries.")
@@ -196,6 +198,13 @@ def main(cfg):
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
 
+    """image_transforms = transforms.Compose([
+        transforms.Resize((cfg["model"]["img_size"], cfg["model"]["img_size"])),
+        RandAugment(num_ops=0, magnitude=8), 
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])"""
+
     # --- Setup Datasets ---
     split_name = cfg["data"]["analysis_split"]
     split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
@@ -238,6 +247,7 @@ def main(cfg):
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=train_dataset.dataset_name,
         split_name=full_dataset_splits,
+        bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     db_embeddings, db_labels, _, db_videos = get_knn_db(
@@ -258,7 +268,8 @@ def main(cfg):
         device=DEVICE,
         db_embeddings=db_embeddings,
         db_labels=db_labels,
-        db_videos=db_videos
+        db_videos=db_videos,
+        #query_dataset=split_dataset
     )
 
 if __name__ == "__main__":

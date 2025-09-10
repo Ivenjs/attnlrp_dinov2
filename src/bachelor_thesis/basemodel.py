@@ -8,7 +8,8 @@ import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as T
+from torchvision import transforms
+from torchvision.transforms import RandAugment
 from timm.data import create_transform, resolve_model_data_config
 from timm.layers.classifier import ClassifierHead, NormMlpClassifierHead
 from torchvision.models import vision_transformer
@@ -16,6 +17,15 @@ from torchvision.models import vision_transformer
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_transform(image_size):
+    mean = [0.5, 0.5, 0.5]
+    std = [0.5, 0.5, 0.5]
+    return transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        RandAugment(num_ops=0, magnitude=8), 
+        transforms.ToTensor(),
+        transforms.Normalize(mean=mean, std=std)
+    ]), mean, std
 
 class TimmWrapper(nn.Module):
     def __init__(
@@ -238,6 +248,7 @@ def load_timm_wrapper(
     image_size: int,
     finetuned: bool = True,
     device: str = "cuda",
+    bp_transforms: bool = False,
     model_dtype: torch.dtype = torch.float32
 ) -> Tuple[TimmWrapper, Any]:
     """
@@ -272,9 +283,15 @@ def load_timm_wrapper(
     model_wrapper.eval()
 
     # 5. Get the correct preprocessing transforms for the timm backbone.
-    data_config = resolve_model_data_config(model_wrapper.model)
-    transforms = create_transform(**data_config, is_training=False)
-    print("Associated model transforms created successfully.")
+    if not bp_transforms:
+        data_config = resolve_model_data_config(model_wrapper.model)
+        transforms = create_transform(**data_config, is_training=False)
+        print("Associated model transforms created successfully.")
+    else:
+        transforms, mean, std = get_transform(image_size)
+        # we need mean and std in data config for visualizations
+        data_config = {"mean": mean, "std": std}
+        print("Using transforms as we did in the bachelor project")
 
     print("--- Model loading complete ---")
     return model_wrapper, transforms, data_config
@@ -293,6 +310,7 @@ def get_model_wrapper(device, cfg):
         image_size=cfg["img_size"],
         finetuned=cfg["finetuned"],
         device=device,
+        bp_transforms=cfg["bp_transforms"],
         model_dtype=model_dtype,
     )
 

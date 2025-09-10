@@ -43,7 +43,7 @@ def fill_knn_db(
 
     model_wrapper.model.eval()
 
-    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type, enabled=use_amp):
         for batch in tqdm(dataloader, desc=f"Generating embeddings for {os.path.basename(output_path)}"):
             images = batch["image"]
             labels = batch["label"]
@@ -134,7 +134,7 @@ def calculate_distance(embeddings, test_embedding, metric):
         distance = torch.norm(embeddings - test_embedding, dim=1)
     elif metric == "cosine":
         normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
-        normalized_test_embedding = F.normalize(test_embedding, p=2, dim=0)
+        normalized_test_embedding = F.normalize(test_embedding, p=2, dim=1)
         cosine_similarity = torch.matmul(normalized_embeddings, normalized_test_embedding.transpose(0, 1)).squeeze()
         distance = 1 - cosine_similarity
     else:

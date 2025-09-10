@@ -104,7 +104,7 @@ def run_masking_experiment(
         raise ValueError(f"Unsupported evaluation decision metric: '{decision_metric}'")
 
     
-    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type):
         for batch in tqdm(dataloader, desc="Running masking experiment"):
             # --- ROBUST BATCH HANDLING START ---
             
@@ -560,6 +560,7 @@ def main(cfg: Dict):
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=dataset.dataset_name,
         split_name=split_name,
+        bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     db_embeddings, db_labels, db_filenames, db_video_ids = get_knn_db(
@@ -570,11 +571,14 @@ def main(cfg: Dict):
         device=DEVICE
     )
 
+    #TODO: What about train dataset here for database?
+
     # --- 4. Compute Relevances ---
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=dataset.dataset_name,
         split_name=split_name,
+        bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=DECISION_METRIC,
         lrp_params={

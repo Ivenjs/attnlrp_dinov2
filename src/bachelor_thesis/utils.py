@@ -63,6 +63,41 @@ def parse_encounter_id(video_id: str) -> Tuple[str, str]:
         pass
     return None, None
 
+def get_disjunct_individuals(
+    train_files: List[str],
+    holdout_percentage: float
+):
+    """
+    Splits individuals into disjunct tune/holdout sets.
+    """
+    individuals_to_encounters = defaultdict(lambda: defaultdict(list))
+    for f in train_files:
+        label = get_class_label(f)
+        video_id = f.split('_')[1] + "_" + f.split('_')[2] + "_" + f.split('_')[3]
+        encounter_id = parse_encounter_id(video_id)
+        if label and encounter_id[0] is not None:
+            individuals_to_encounters[label][encounter_id].append(f)
+
+    # 2. Get a list of all unique individuals and shuffle for a random split
+    all_individuals = list(individuals_to_encounters.keys())
+    random.shuffle(all_individuals)
+
+    split_idx = int(len(all_individuals) * holdout_percentage)
+
+    # Edge case handling: ensure both sets are non-empty if possible
+    if len(all_individuals) > 1 and split_idx == 0:
+        split_idx = 1
+    if len(all_individuals) > 1 and split_idx == len(all_individuals):
+        split_idx = len(all_individuals) - 1
+
+    holdout_inds = set(all_individuals[:split_idx])
+    tune_inds = set(all_individuals[split_idx:])
+
+    assert tune_inds.isdisjoint(holdout_inds), "Individuals must be disjunct"
+    print(f"Split complete: {len(tune_inds)} individuals for TUNE, {len(holdout_inds)} for HOLDOUT.")
+    return tune_inds, holdout_inds
+
+
 def get_balanced_individual_splits_cross_encounter(
     train_files: List[str],
     holdout_percentage: float,
@@ -290,15 +325,20 @@ def load_config(config_name: str, cli_overrides: list):
     
     return config
 
-def get_db_path(model_checkpoint_path: str, dataset_name: str, split_name: str, db_dir: str, decision_metric: str=None, lrp_params: Dict= {}) -> str:
+def get_db_path(model_checkpoint_path: str, dataset_name: str, split_name: str, bp_transforms: str,db_dir: str, decision_metric: str=None, lrp_params: Dict= {}) -> str:
     checkpoint_name = os.path.splitext(os.path.basename(model_checkpoint_path))[0]
+
+    if bp_transforms:
+        transforms_origin = "bp_transforms"
+    else:
+        transforms_origin = "dinov2_transforms"
 
     lrp_str = "_".join(
         f"{param}_{str(value).replace('.', 'p')}"
         for param, value in lrp_params.items()
         if value is not None
     )
-    db_filename = f"{checkpoint_name}_{dataset_name}_{split_name}{'_' + decision_metric if decision_metric else ''}{'_' + lrp_str if lrp_params else ''}_db.pt"
+    db_filename = f"{checkpoint_name}_{transforms_origin}_{dataset_name}_{split_name}{'_' + decision_metric if decision_metric else ''}{'_' + lrp_str if lrp_params else ''}_db.pt"
 
     db_path = os.path.join(db_dir, db_filename)
     return db_path

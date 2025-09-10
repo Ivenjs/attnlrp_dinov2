@@ -285,6 +285,7 @@ def main(cfg):
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=dataset.dataset_name,
         split_name=split_name,
+        bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     db_embeddings, db_labels, db_filenames, db_video_ids = get_knn_db(
@@ -300,6 +301,7 @@ def main(cfg):
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=dataset.dataset_name,
         split_name=split_name,
+        bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=DECISION_METRIC,
         lrp_params={

@@ -67,6 +67,7 @@ def compute_similarity_proto_margin_pass(
 
         if input_tensor.grad is None:
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
         else:
             relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
 
@@ -74,6 +75,7 @@ def compute_similarity_proto_margin_pass(
         zennit_comp.remove()
     if relevance is None:
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
     return relevance
 
 
@@ -131,9 +133,7 @@ def compute_similarity_lrp_pass(
         similarity_score.backward()
 
         if input_tensor.grad is None:
-            if verbose:
-                print(f"WARNING: No gradient for LRP on '{query_filename}'. "
-                      "Producing a zero relevance map.")
+            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
             # Standard LRP relevance calculation when gradients are present
@@ -143,6 +143,7 @@ def compute_similarity_lrp_pass(
         zennit_comp.remove()
     if relevance is None:
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
+        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
     return relevance, reference_embedding, ref_idx
 
 def compute_knn_topk_attnlrp_pass(
@@ -205,9 +206,7 @@ def compute_knn_topk_attnlrp_pass(
         knn_score.backward()
         
         if input_tensor.grad is None:
-            if verbose:
-                print(f"WARNING: No gradient for LRP on '{query_filename}'. "
-                      "Producing a zero relevance map.")
+            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
             # Standard LRP relevance calculation when gradients are present
@@ -217,6 +216,7 @@ def compute_knn_topk_attnlrp_pass(
         zennit_comp.remove()
 
     if relevance is None:
+        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance
 
@@ -279,9 +279,7 @@ def compute_knn_all_attnlrp_pass(
         knn_score.backward()
         
         if input_tensor.grad is None:
-            if verbose:
-                print(f"WARNING: No gradient for LRP on '{query_filename}'. "
-                      "Producing a zero relevance map.")
+            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
             # Standard LRP relevance calculation when gradients are present
@@ -291,6 +289,7 @@ def compute_knn_all_attnlrp_pass(
         zennit_comp.remove()
 
     if relevance is None:
+        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance
 
@@ -696,7 +695,6 @@ def compute_knn_proxy_soft_all(
 
     # The margin score is the most faithful proxy for a contrastive decision.
     # Maximizing this score means maximizing friend probability and minimizing foe probability.
-    score_prob = prob_friends 
     score_margin = prob_friends - prob_foes
 
     return score_margin

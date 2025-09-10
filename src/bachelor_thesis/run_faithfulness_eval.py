@@ -9,7 +9,8 @@ import argparse
 from lxt.efficient import monkey_patch_zennit
 import wandb
 
-from utils import get_db_path, get_mask_transform, load_config, get_hpi_colors
+from eval_helpers import run_faithfulness_evaluation
+from utils import get_db_path, get_mask_transform, load_config, get_hpi_colors, parse_encounter_id
 from basemodel import get_model_wrapper
 from dataset import GorillaReIDDataset, PerturbedGorillaReIDDataset, custom_collate_fn
 from model_evaluation import evaluate_model
@@ -95,6 +96,7 @@ def main(cfg):
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=train_dataset.dataset_name,
         split_name=full_dataset_splits,
+        bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     all_db_embeddings, all_db_labels, _, all_db_videos = get_knn_db(
@@ -105,24 +107,34 @@ def main(cfg):
         device=DEVICE
     )
 
+    unique_labels = sorted(list(set(all_db_labels)))
+    label_to_id = {label: i for i, label in enumerate(unique_labels)}
+    all_db_labels_int = torch.tensor([label_to_id[s] for s in all_db_labels], dtype=torch.long, device=DEVICE)
+
+    db_encounters = [parse_encounter_id(v) for v in all_db_videos]
+    unique_encounters = sorted(list(set(db_encounters)))
+    encounter_to_id = {enc: i for i, enc in enumerate(unique_encounters)}
+    all_db_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in db_encounters], dtype=torch.long, device=DEVICE)
+
     # --- 5. Generate or Load Relevance Maps (for test images only) ---
     print("Generating/Loading relevance maps for test images...")
-    # Note: For relevance generation, we need embeddings of the test set *only*
-    # to find nearest neighbors within that set if required by the LRP mode.
     split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=split_dataset.dataset_name, split_name=split_name, db_dir=cfg["knn"]["db_embeddings_dir"]
+        dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]
     )
     split_embeddings, split_labels, split_filenames, split_video_ids = get_knn_db(
         db_path=split_db_path_knn, dataset=split_dataset, model_wrapper=model_wrapper,
         batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
 
-    split_dataloader = DataLoader(split_dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
-    
+    # this loader only contains the subset of images that are used as queries for cross-encounter knn
+    split_query_subset = torch.utils.data.Subset(split_dataset, local_query_indices)
+
+    split_dataloader = DataLoader(split_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
+
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=split_dataset.dataset_name, split_name=split_name, db_dir=cfg["lrp"]["db_relevances_dir"],
+        dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=MODE,
         lrp_params={
             "conv_gamma": cfg["lrp"]["conv_gamma"],
@@ -150,64 +162,67 @@ def main(cfg):
     )
     print(f"Baseline Balanced Accuracy: {base_accuracy:.4f}")
 
-    perturbation_fractions = [0.25, 0.5, 0.75, 0.99]
-    perturbation_modes = ['lerf', 'random', 'morf']
-    results = {mode: [base_accuracy] for mode in perturbation_modes}
+    perturbation_fractions = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1]#[0.25, 0.5, 0.75, 0.99]
 
-    for mode in perturbation_modes:
-        print(f"\n===== Evaluating Perturbation Mode: {mode.upper()} =====")
-        for frac in perturbation_fractions:
-            print(f"--- Perturbation Fraction: {frac*100:.1f}% ---")
-            
-            perturbed_dataset = PerturbedGorillaReIDDataset(
-                base_dataset=split_dataset,
-                relevance_maps=relevance_dict,
-                perturbation_mode=mode,
-                perturbation_fraction=frac,
-                patch_size=cfg["model"]["patch_size"],
-                seed=cfg["seed"],
-                baseline_value=cfg["eval"]["baseline_value"],
-            )
 
-            # Evaluate using the perturbed images as queries against the original, full database
-            accuracy = evaluate_model(
-                model_wrapper=model_wrapper,
-                query_indices_in_db=global_query_indices,
-                cfg=cfg,
-                device=DEVICE,
-                db_embeddings=all_db_embeddings,
-                db_labels=all_db_labels,
-                db_videos=all_db_videos,
-                query_dataset=perturbed_dataset # This triggers on-the-fly embedding generation
-            )
-            print(f"Accuracy for {mode.upper()} at {frac*100:.1f}% perturbation: {accuracy:.4f}")
-            results[mode].append(accuracy)
+    eval_results = run_faithfulness_evaluation(
+        relevance_maps_dict=relevance_dict,
+        query_dataset=split_query_subset, 
+        global_query_indices=global_query_indices,
+        model=model_wrapper, 
+        db_embeddings=all_db_embeddings,
+        db_labels_int=all_db_labels_int,
+        db_encounter_ids_int=all_db_encounter_ids_int,
+        label_to_id=label_to_id,
+        encounter_to_id=encounter_to_id,
+        cfg=cfg,
+        patch_size=cfg["model"]["patch_size"],
+        patches_per_step=cfg["eval"]["patches_per_step"],
+        baseline_value=cfg["eval"]["baseline_value"],
+        seed=cfg["seed"],
+        fractions_to_record=perturbation_fractions # this basically overrides the patches_per_step
+    )
 
-    # --- 7. Plot and Log Results ---
-    print("\nFinal Results:", results)
-    
-    plot_fractions = [0.0] + perturbation_fractions
+    curves = {
+        'lerf': eval_results["fraction_accuracies_lerf"],
+        'morf': eval_results["fraction_accuracies_morf"],
+        'random': eval_results["fraction_accuracies_random"]
+    }
+    print("\nEvaluation Results:")
+    print(eval_results)
+
     hpi_colors = get_hpi_colors(cfg=cfg)
     colors = {'morf': hpi_colors["red"], 'lerf': hpi_colors["yellow"], 'random': hpi_colors["gray"]}
 
+
     plt.figure(figsize=(10, 6))
-    for mode in perturbation_modes:
-        plt.plot(plot_fractions, results[mode], marker='o', linestyle='-', label=mode.upper(), color=colors.get(mode, 'black'))
+    for curve_name, frac_acc_dict in curves.items():
+        # sortieren nach Fraction
+        fractions, accuracies = zip(*sorted(frac_acc_dict.items()))
+        
+        plt.plot(
+            fractions, accuracies,
+            marker='o', linestyle='-',
+            label=curve_name.upper(),
+            color=colors.get(curve_name, 'black')
+        )
 
     plt.title(f'Impact of Patch Perturbation on Re-ID Accuracy ({model_type_str} model, LRP mode: {MODE})')
     plt.xlabel('Fraction of Patches Perturbed')
-    plt.ylabel(f"Balanced Cross-Video k-NN@{cfg['knn']['k']} Accuracy")
+    plt.ylabel(f"Balanced Cross-Encounter k-NN@{cfg['knn']['k']} Accuracy")
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.legend()
     plt.ylim(bottom=0)
-    plt.xticks(plot_fractions, [f'{int(p*100)}%' for p in plot_fractions])
+
+    # xticks: fractions in % anzeigen
+    plt.xticks(fractions, [f'{int(f*100)}%' for f in fractions])
 
     save_path = f"knn_perturbation_impact_{model_type_str}_{MODE}.png"
     plt.savefig(save_path, bbox_inches='tight', dpi=300)
     plt.show()
 
     try:
-        wandb.log({"perturbation_results": results})
+        wandb.log({"perturbation_results": eval_results})
         wandb.log({"perturbation_impact_plot": wandb.Image(save_path, caption=f"Perturbation analysis for {run_name}")})
         print("Successfully logged results and plot to WandB.")
     except Exception as e:
