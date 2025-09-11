@@ -39,6 +39,6 @@ srun --container-image=/sc/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatc
      --container-mounts=/sc/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/sc/projects/sci-aisc/gorilla/:/workspaces/vast-gorilla \
      --container-writable \
      bash -c "cd /workspaces/bachelor_thesis_code && \
-              /opt/conda/envs/research/bin/python src/bachelor_thesis/run_dinov2_attnlrp.py \
+              /opt/conda/envs/research/bin/python src/bachelor_thesis/run_mask_analysis.py \
               --config_name ${EXPERIMENT_NAME} \
               ${CONFIG_OVERRIDES}"

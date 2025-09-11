@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=gamma_sweep
+#SBATCH --job-name=attnlrp_sweep
 #SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -39,6 +39,6 @@ srun --container-image=/sc/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatc
      --container-mounts=/sc/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/sc/projects/sci-aisc/gorilla/:/workspaces/vast-gorilla \
      --container-writable \
      bash -c "cd /workspaces/bachelor_thesis_code && \
-              /opt/conda/envs/research/bin/python src/bachelor_thesis/run_dinov2_attnlrp_sweep.py \
+              /opt/conda/envs/research/bin/python src/bachelor_thesis/run_sweep.py \
               --config_name ${EXPERIMENT_NAME} \
               ${CONFIG_OVERRIDES}"

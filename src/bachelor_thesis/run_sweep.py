@@ -10,22 +10,21 @@ import wandb
 
 from basemodel import get_model_wrapper
 from sweep_helpers import (
-    evaluate_gamma_sweep, 
+    evaluate_gamma_sweep_proxy_score, 
+    evaluate_gamma_sweep_acc,
     print_robustness_summary, 
     find_robust_hyperparameters,
-    log_nested_validation_to_wandb
+    log_sweep
     )
 from knn_helpers import get_knn_db
 from dataset import GorillaReIDDataset, custom_collate_fn
-from utils import get_balanced_individual_splits, get_db_path, load_config, get_balanced_individual_splits_cross_encounter
+from utils import get_db_path, load_config, get_disjunct_individuals
 from lrp_helpers import generate_relevances
-from eval_helpers import run_downstream_sweep_and_log
 
 
 
 def main(cfg: dict):
     monkey_patch_zennit(verbose=True)  
-    #TODO: Container zerschossen mit sam?
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     VERBOSE = False  
@@ -36,7 +35,6 @@ def main(cfg: dict):
     MODE = cfg["lrp"]["mode"]
     DECISION_METRIC = MODE
     print(f"\n--- RUNNING WITH MODE: {MODE} ---")
-    FINETUNED = cfg["model"]["finetuned"]    
 
 
     is_finetuned = cfg["model"]["finetuned"]
@@ -59,33 +57,46 @@ def main(cfg: dict):
 
     train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
 
-    if cfg["lrp"]["cross_encounter"]:
-        tune_query_files, tune_db_files, holdout_query_files, holdout_db_files = get_balanced_individual_splits_cross_encounter(
-            train_files=train_files,
-            holdout_percentage=cfg["sweep"]["holdout_percentage"],
-            queries_per_class=cfg["sweep"]["queries_per_class"]
-        )
-    else:
-        tune_query_files, tune_db_files, holdout_query_files, holdout_db_files = get_balanced_individual_splits(
-            train_files=train_files,
-            holdout_percentage=cfg["sweep"]["holdout_percentage"],
-            queries_per_class=cfg["sweep"]["queries_per_class"]
-        )
-    
-    tune_query_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=tune_query_files, transform=image_transforms
-    )
-
-    holdout_query_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=holdout_query_files, transform=image_transforms
-    )
 
     train_db_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=train_files, transform=image_transforms
+        image_dir=train_dir, 
+        filenames=train_files, 
+        transform=image_transforms, 
+        k=cfg["knn"]["k"]
     )
 
-    print(f"Tune query size: {len(tune_query_dataset)}, Holdout query size: {len(holdout_query_dataset)}")
-    print(f"DB size: {len(train_db_dataset)}")
+    tune_individuals, holdout_individuals = get_disjunct_individuals(
+        train_files=train_files,
+        holdout_percentage=cfg["sweep"]["holdout_percentage"]
+    )
+
+    tune_query_indices = []
+    holdout_query_indices = []
+
+    print("Filtering eligible queries into tune/holdout sets...")
+    queries_per_class_counter = defaultdict(int)
+
+    for idx in train_db_dataset.images_for_ce_knn:
+        label = train_db_dataset.labels[idx]
+        
+        if label in tune_individuals:
+            if queries_per_class_counter[label] < cfg["sweep"]["queries_per_class"]:
+                tune_query_indices.append(idx)
+                queries_per_class_counter[label] += 1
+
+        elif label in holdout_individuals:
+            if queries_per_class_counter[label] < cfg["sweep"]["queries_per_class"]:
+                holdout_query_indices.append(idx)
+                queries_per_class_counter[label] += 1
+
+    print(f"Selected {len(tune_query_indices)} tune queries and {len(holdout_query_indices)} holdout queries.")
+
+    tune_query_subset = torch.utils.data.Subset(train_db_dataset, tune_query_indices)
+    holdout_query_subset = torch.utils.data.Subset(train_db_dataset, holdout_query_indices)
+
+    # The global_query_indices are simply the indices we just found.
+    global_tune_query_indices = tune_query_indices
+    global_holdout_query_indices = holdout_query_indices
 
     # This phase generates all necessary data for the 'tune' set.
     print("\n--- RUNNING FULL SWEEP ON TUNE SET ---")
@@ -94,6 +105,7 @@ def main(cfg: dict):
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=train_db_dataset.dataset_name,
         split_name="train",
+        bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
 
@@ -105,7 +117,7 @@ def main(cfg: dict):
         device=DEVICE
     )
 
-    tune_dataloader = DataLoader(tune_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn,shuffle=False)
+    tune_dataloader = DataLoader(tune_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn,shuffle=False)
     
     tune_relevances_all = generate_relevances(
         model_wrapper=model_wrapper,
@@ -124,31 +136,32 @@ def main(cfg: dict):
         cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
-    tune_eval_dataloader = DataLoader(tune_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
-    #tune_results_list, tune_curves_list = evaluate_gamma_sweep(
-    #    tune_relevances_all, tune_eval_dataloader, model_wrapper,
-    #    train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
-    #    cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"],False, cfg["seed"]
-    #)
+    if cfg["sweep"]["sweep_evaluation"] == "proxy_score":
+        tune_eval_dataloader = DataLoader(tune_query_subset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
+        tune_results_list, tune_curves_list = evaluate_gamma_sweep_proxy_score(
+            tune_relevances_all, tune_eval_dataloader, model_wrapper,
+            train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
+            cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"],False, cfg["seed"]
+        )
+    elif cfg["sweep"]["sweep_evaluation"] == "accuracy":
+        tune_results_list, tune_curves_list = evaluate_gamma_sweep_acc(
+            all_relevance_results=tune_relevances_all,
+            query_dataset=tune_query_subset,
+            global_query_indices=global_tune_query_indices,
+            model=model_wrapper,
+            db_embeddings=train_db_embeddings,
+            db_labels=train_db_labels,
+            db_videos=train_db_videos,
+            cfg=cfg,
+            patch_size=cfg["model"]["patch_size"],
+            patches_per_step=cfg["eval"]["patches_per_step"],
+            baseline_value=cfg["eval"]["baseline_value"]
+        )
 
-    tune_results_list, tune_curves_list = run_downstream_sweep_and_log(
-        all_relevance_results=tune_relevances_all,
-        query_dataset=tune_query_dataset,
-        model=model_wrapper,
-        db_embeddings=train_db_embeddings,
-        db_labels=train_db_labels,
-        db_videos=train_db_videos,
-        cfg=cfg,
-        patch_size=cfg["model"]["patch_size"],
-        patches_per_step=cfg["eval"]["patches_per_step"],
-        baseline_value=cfg["eval"]["baseline_value"]
-    )
 
-    # --- GENERATE RESULTS FOR HOLDOUT SET ---
-    # This phase generates all necessary data for the 'holdout' set.
-    print("\n--- RUNNING FULL SWEEP ON HOLDOUT SET ---")
+    print("\n--- EVALUATING SWEEP ON HOLDOUT SET ---")
 
-    holdout_dataloader = DataLoader(holdout_query_dataset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
+    holdout_dataloader = DataLoader(holdout_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
     holdout_relevances_all = generate_relevances(
         model_wrapper=model_wrapper,
         dataloader=holdout_dataloader,
@@ -166,31 +179,28 @@ def main(cfg: dict):
         cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
-    holdout_eval_dataloader = DataLoader(holdout_query_dataset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
-    #holdout_results_list, holdout_curves_list = evaluate_gamma_sweep(
-    #    holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
-    #    train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
-    #    cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"], False, cfg["seed"]
-    #)
-    holdout_results_list, holdout_curves_list = run_downstream_sweep_and_log(
-        all_relevance_results=holdout_relevances_all,
-        query_dataset=holdout_query_dataset,
-        model=model_wrapper,
-        db_embeddings=train_db_embeddings,
-        db_labels=train_db_labels,
-        db_videos=train_db_videos,
-        cfg=cfg,
-        patch_size=cfg["model"]["patch_size"],
-        patches_per_step=cfg["eval"]["patches_per_step"],
-        baseline_value=cfg["eval"]["baseline_value"]
-    )
+    if cfg["sweep"]["sweep_evaluation"] == "proxy_score":
+        holdout_eval_dataloader = DataLoader(holdout_query_subset, batch_size=1, num_workers=4, collate_fn=custom_collate_fn)
+        holdout_results_list, holdout_curves_list = evaluate_gamma_sweep_proxy_score(
+            holdout_relevances_all, holdout_eval_dataloader, model_wrapper,
+            train_db_embeddings, train_db_labels, train_db_filenames, train_db_videos, cfg["model"]["patch_size"], DEVICE,
+            cfg["eval"]["patches_per_step"], cfg["eval"]["baseline_value"], cfg["lrp"]["cross_encounter"], False, cfg["seed"]
+        )
+    elif cfg["sweep"]["sweep_evaluation"] == "accuracy":
+        holdout_results_list, holdout_curves_list = evaluate_gamma_sweep_acc(
+            all_relevance_results=holdout_relevances_all,
+            query_dataset=holdout_query_subset,
+            global_query_indices=global_holdout_query_indices,
+            model=model_wrapper,
+            db_embeddings=train_db_embeddings,
+            db_labels=train_db_labels,
+            db_videos=train_db_videos,
+            cfg=cfg,
+            patch_size=cfg["model"]["patch_size"],
+            patches_per_step=cfg["eval"]["patches_per_step"],
+            baseline_value=cfg["eval"]["baseline_value"]
+        )
 
-    # --- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---
-    print("\n" + "="*80)
-    print("--- PHASE 3: SEQUENTIAL ANALYSIS & DECISION MAKING ---")
-    print("="*80)
-
-    # Step 3a: Select BEST parameters using ONLY the TUNE set results.
     print("\nFinding best parameters on TUNE set...")
     best_params_raw_tune, analysis_df_tune, worst_params_raw_tune = find_robust_hyperparameters(
         results=tune_results_list,
@@ -199,13 +209,11 @@ def main(cfg: dict):
     
     print_robustness_summary(best_params_raw_tune, analysis_df_tune, DECISION_METRIC)
 
-    # Step 3b: Evaluate these BEST parameters on the HOLDOUT set for an unbiased performance estimate.
     _, analysis_df_holdout, _ = find_robust_hyperparameters(
         results=holdout_results_list,
         decision_metric=DECISION_METRIC
     )
 
-    # Step 3c: Analyze the generalization gap.
     print(f"\nLooking up performance of TUNE-selected parameters on the HOLDOUT set for metric '{DECISION_METRIC}'...")
     holdout_performance_row = analysis_df_holdout[
         (analysis_df_holdout['conv_gamma'] == best_params_raw_tune['conv_gamma']) &
@@ -215,7 +223,6 @@ def main(cfg: dict):
         (analysis_df_holdout['metric_name'] == DECISION_METRIC) 
     ].iloc[0]
 
-    # Extract performance stats from this row
     tune_performance = {
         'mean_faithfulness': best_params_raw_tune['mean_score'],
         'min_faithfulness': best_params_raw_tune['min_score'],
@@ -227,7 +234,6 @@ def main(cfg: dict):
         'std_faithfulness': holdout_performance_row['raw_std'],
     }
 
-    # Step 3d: Analyze the generalization gap and make the final decision.
     # robustness score is only the decision metric (which params to choose), while the performance metrics are used for the final acceptance decision.
     print("\n" + "="*80)
     print("--- FINAL VALIDATION & DECISION ---")
@@ -249,7 +255,6 @@ def main(cfg: dict):
         print(f"DECISION: APPROVE. Generalization is within acceptable limits.")
         FINAL_DECISION = "APPROVED"
         
-        # --- PHASE 4: REPORTING & LOGGING ---
         print("\n" + "="*80)
         print("--- PHASE 4: FINAL REPORTING ---")
         print("="*80)
@@ -260,7 +265,7 @@ def main(cfg: dict):
         print(holdout_performance)
 
 
-    log_nested_validation_to_wandb (
+    log_sweep (
         cfg=cfg, 
         final_decision=FINAL_DECISION,
         approved_params=best_params_raw_tune,

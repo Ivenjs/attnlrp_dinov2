@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
-from typing import Any, Tuple, List, Dict, Callable
+from typing import Any, Optional, Tuple, List, Dict, Callable
 from knn_helpers import calculate_distance
 from lrp_helpers import compute_knn_proxy_soft_all, compute_knn_proto_margin, compute_similarity_score, compute_knn_proxy_soft_topk
 from utils import deterministic_randperm, parse_encounter_id
@@ -22,8 +22,8 @@ def calculate_auc(curve: torch.Tensor) -> float:
     return torch.mean(curve).item()
 
 
-def _run_perturbation_experiment(
-    model: torch.nn.Module, # UN-PATCHED model
+def _run_perturbation_experiment_proxy_score(
+    model: TimmWrapper,
     input_tensor: torch.Tensor,
     patch_order: torch.Tensor,
     perturbation_type: str,
@@ -59,7 +59,7 @@ def _run_perturbation_experiment(
         raise ValueError(f"Unknown baseline type: {baseline_value}")
 
     # Calculate the initial, unperturbed k-NN proxy score
-    with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type, dtype=torch.bfloat16):
+    with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type):
         initial_embedding = model(input_tensor)
         result = score_fn(initial_embedding, **score_fn_kwargs)
         if isinstance(result, tuple):
@@ -101,7 +101,7 @@ def _run_perturbation_experiment(
                 perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = original_patch
 
         # After perturbing the chunk, run the model and get the score
-        with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type, dtype=torch.bfloat16):
+        with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type):
             current_embedding = model(perturbed_tensor)
             result = score_fn(current_embedding, **score_fn_kwargs)
             if isinstance(result, tuple):
@@ -121,7 +121,7 @@ def _run_perturbation_experiment(
     return torch.tensor(output_scores, device=input_tensor.device)
 
 
-def srg_eval(
+def faithfulness_eval_proxy_score(
     relevance_map: torch.Tensor,
     input_tensor: torch.Tensor,
     model: TimmWrapper, # UN-PATCHED model
@@ -217,9 +217,9 @@ def srg_eval(
 
     order = deterministic_randperm(len(morf_order), input_filename, seed)
 
-    morf_curve = _run_perturbation_experiment(model, input_tensor, morf_order, 'deletion', **perturb_args)
-    lerf_curve = _run_perturbation_experiment(model, input_tensor, lerf_order, 'deletion', **perturb_args)
-    random_curve = _run_perturbation_experiment(
+    morf_curve = _run_perturbation_experiment_proxy_score(model, input_tensor, morf_order, 'deletion', **perturb_args)
+    lerf_curve = _run_perturbation_experiment_proxy_score(model, input_tensor, lerf_order, 'deletion', **perturb_args)
+    random_curve = _run_perturbation_experiment_proxy_score(
         model, input_tensor, order, 'deletion', **perturb_args
     )
 
@@ -275,24 +275,23 @@ def srg_eval(
 
     return {mode: results}
 
-def _run_downstream_perturbation_sweep(
-    model: torch.nn.Module,
+def _run_perturbation_experiment_acc(
+    model: TimmWrapper,
     query_images_tensor: torch.Tensor,
-    # ### MODIFIED ###: Now accepts pre-processed query metadata
     query_labels_int: torch.Tensor,
     query_encounter_ids_int: torch.Tensor,
     query_original_indices: torch.Tensor,
     all_patch_orders: torch.Tensor,
-    # ### MODIFIED ###: Now accepts pre-processed DB metadata and config
     db_embeddings: torch.Tensor,
     db_labels_int: torch.Tensor,
     db_encounter_ids_int: torch.Tensor,
-    cfg: Dict[str, Any], # Pass the config dict for knn params
+    cfg: Dict[str, Any], 
     patch_size: int,
     patches_per_step: int,
     baseline_value: str,
     device: torch.device,
-) -> torch.Tensor:
+    fractions_to_record: Optional[List[float]] = None,
+) -> Tuple[torch.Tensor, Dict[float, float]]:
     """
     Runs a perturbation sweep and evaluates downstream k-NN accuracy at each step.
     This version is adapted to use the specific `perform_knn_ce_evaluation` function.
@@ -300,7 +299,6 @@ def _run_downstream_perturbation_sweep(
     model.eval()
     num_patches = all_patch_orders.shape[1]
     
-    # ### MODIFIED ###: Collect all common arguments for the evaluation function
     eval_kwargs = {
         "db_embeddings": db_embeddings,
         "db_labels_int": db_labels_int,
@@ -314,65 +312,105 @@ def _run_downstream_perturbation_sweep(
         "query_original_indices": query_original_indices,
     }
 
-    # --- 1. Get Baseline (0% perturbation) Accuracy ---
-    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
-        original_query_embeddings = []
-        # Use a simple TensorDataset for efficient batching
-        temp_dataset = torch.utils.data.TensorDataset(query_images_tensor)
-        temp_loader = torch.utils.data.DataLoader(temp_dataset, batch_size=cfg["data"]["batch_size"])
-        for batch in temp_loader:
-             original_query_embeddings.append(model(batch[0].to(device)))
-        original_query_embeddings = torch.cat(original_query_embeddings)
+    # --- 1. Get Baseline Accuracy ---
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type):
+        # Batching for potentially large query sets
+        temp_loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(query_images_tensor),
+            batch_size=cfg["data"]["batch_size"]
+        )
+        original_query_embeddings = torch.cat([model(batch[0].to(device)) for batch in temp_loader])
 
     print("  Calculating baseline accuracy (0% perturbation)...")
     baseline_accuracy = perform_knn_ce_evaluation(
         query_embeddings=original_query_embeddings,
         **eval_kwargs
     )
-    
-    accuracy_curve = [baseline_accuracy]
     print(f"  Baseline Balanced Accuracy: {baseline_accuracy:.4f}")
     
-    # --- 2. Iteratively Perturb and Evaluate ---
-    perturbed_images = query_images_tensor.clone().to(device)
-    pbar = tqdm(total=num_patches, desc="Running Downstream Perturbation Sweep", leave=False)
+    # --- 2. Determine all evaluation points (steps) ---
+    steps = set()
     
+    # Add specific fraction-based steps
+    fraction_accuracies = {0.0: baseline_accuracy}
+    patches_at_fraction = {}
+    
+    if fractions_to_record and any(0 < f <= 1.0 for f in fractions_to_record):
+        print(f"  Optimized Mode: Evaluation will ONLY be performed at specified fractions: {fractions_to_record}")
+        for f in sorted(fractions_to_record):
+            if 0 < f <= 1.0:
+                patch_count = int(f * num_patches)
+                steps.add(patch_count)
+                patches_at_fraction[patch_count] = f 
+    else:
+        if fractions_to_record:
+            print("  Warning: fractions_to_record was empty or invalid. Falling back to default step-based evaluation.")
+        print(f"  Default Mode: Evaluating every {patches_per_step} patches.")
+        for i in range(patches_per_step, num_patches, patches_per_step):
+            steps.add(i)
+
+    # Always include the final step
+    steps.add(num_patches)
+    
+    sorted_steps = sorted(list(steps))
+    print(f"  Total evaluation steps: {len(sorted_steps)} (including baseline and final step)")
+    
+    # The accuracy curve will now store tuples of (patches_perturbed, accuracy)
+    accuracy_curve = [(0, baseline_accuracy)]
+
+    # --- 3. Run the perturbation sweep loop ---
+    perturbed_images = query_images_tensor.clone().to(device)
     patches_processed_so_far = 0
-    while patches_processed_so_far < num_patches:
-        start_idx = patches_processed_so_far
-        end_idx = min(start_idx + patches_per_step, num_patches)
-        
+    
+    pbar = tqdm(sorted_steps, desc="Running Downstream Perturbation Sweep", leave=False)
+    for end_idx in pbar:
+        if end_idx <= patches_processed_so_far:
+            continue
+        # Apply perturbation from the last stopping point to the current step
         perturbed_images = apply_perturbation_to_batch(
-            perturbed_images, all_patch_orders, start_idx, end_idx, patch_size, baseline_value
+            image_batch=perturbed_images,
+            patch_orders=all_patch_orders,
+            step_start_idx=patches_processed_so_far,
+            step_end_idx=end_idx,
+            patch_size=patch_size,
+            baseline_value=baseline_value
         )
 
-        with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
-            current_query_embeddings = []
-            temp_dataset = torch.utils.data.TensorDataset(perturbed_images)
-            temp_loader = torch.utils.data.DataLoader(temp_dataset, batch_size=cfg["data"]["batch_size"])
-            for batch in temp_loader:
-                current_query_embeddings.append(model(batch[0]))
-            current_query_embeddings = torch.cat(current_query_embeddings)
+        # Re-calculate embeddings for the newly perturbed batch
+        with torch.no_grad(), torch.amp.autocast(device_type=device.type):
+            temp_loader = torch.utils.data.DataLoader(
+                torch.utils.data.TensorDataset(perturbed_images),
+                batch_size=cfg["data"]["batch_size"]
+            )
+            current_query_embeddings = torch.cat([model(batch[0]) for batch in temp_loader])
 
+        # Evaluate accuracy at this milestone
         current_accuracy = perform_knn_ce_evaluation(
             query_embeddings=current_query_embeddings,
             **eval_kwargs
         )
-        accuracy_curve.append(current_accuracy)
         
-        num_in_chunk = end_idx - start_idx
-        patches_processed_so_far += num_in_chunk
-        pbar.update(num_in_chunk)
+        accuracy_curve.append((end_idx, current_accuracy))
+
+        frac = patches_at_fraction.get(end_idx)  
+        if frac is not None and frac not in fraction_accuracies:
+            fraction_accuracies[frac] = current_accuracy
+            print(f"  Recorded accuracy at {frac*100:.1f}% perturbation ({end_idx} patches): {current_accuracy:.4f}")
+
+
+        # Update the starting point for the next chunk of perturbations
+        patches_processed_so_far = end_idx
         
     pbar.close()
-    
-    return torch.tensor(accuracy_curve, device=device)
 
-def evaluate_faithfulness_downstream(
+    final_accuracy_curve = torch.tensor([acc for step, acc in accuracy_curve], device=device)
+    return final_accuracy_curve, fraction_accuracies
+
+def faithfulness_eval_acc(
     relevance_maps_dict: Dict[str, torch.Tensor],
     query_dataset: torch.utils.data.Dataset,
-    model: torch.nn.Module,
-    # ### MODIFIED ###: Accepts pre-processed data and config
+    global_query_indices: List[int],
+    model: TimmWrapper,
     db_embeddings: torch.Tensor,
     db_labels_int: torch.Tensor,
     db_encounter_ids_int: torch.Tensor,
@@ -381,33 +419,44 @@ def evaluate_faithfulness_downstream(
     cfg: Dict[str, Any],
     patch_size: int,
     patches_per_step: int,
-    baseline_value: str = "black",
-    plot_curves: bool = True,
+    baseline_value: str = "mean",
     seed=161,
+    fractions_to_record: Optional[List[float]] = None,
 ) -> Dict:
     device = db_embeddings.device
     model.to(device)
 
-    # --- 1. Prepare ALL Query Data and Relevance Orders ---
     print("Pre-computing perturbation orders and preparing query metadata...")
     query_images_list, query_labels_list, query_videos_list = [], [], []
-    query_original_indices_list = [] # ### MODIFIED ###: Collect original indices
     morf_orders, lerf_orders, random_orders = [], [], []
 
-    # Filter query_dataset to only include images with relevance maps
-    valid_indices = [
-        i for i, sample in enumerate(query_dataset) 
-        if sample['filename'] in relevance_maps_dict
-    ]
-    query_subset = torch.utils.data.Subset(query_dataset, valid_indices)
+    filename_to_global_idx = {
+        query_dataset[i]['filename']: global_query_indices[i]
+        for i in range(len(query_dataset))
+    }
 
-    for sample in tqdm(query_subset, desc="Preparing Queries", leave=False):
+    valid_filenames = set(relevance_maps_dict.keys())
+    
+    # Filter the original dataset to get the items we need, maintaining order
+    query_items = [
+        sample for sample in query_dataset 
+        if sample['filename'] in valid_filenames
+    ]
+    
+    final_global_indices = []
+
+    for sample in tqdm(query_items, desc="Preparing Queries"):
         filename_no_ext = sample['filename']
+        #hotfix. should not be needed after regenerating relevance maps
+        if not filename_no_ext in filename_to_global_idx:
+            continue
+        
         
         query_images_list.append(sample['image'])
         query_labels_list.append(sample['label'])
         query_videos_list.append(sample['video'])
-        query_original_indices_list.append(sample['original_index']) # ### MODIFIED ###
+
+        final_global_indices.append(filename_to_global_idx[filename_no_ext])
 
         relevance_map = relevance_maps_dict[filename_no_ext]
         patch_relevance = F.avg_pool2d(relevance_map, kernel_size=patch_size, stride=patch_size)
@@ -422,11 +471,10 @@ def evaluate_faithfulness_downstream(
     lerf_orders_tensor = torch.stack(lerf_orders).to(device)
     random_orders_tensor = torch.stack(random_orders).to(device)
     
-    # ### MODIFIED ###: Convert query metadata to integer tensors
     query_labels_int = torch.tensor([label_to_id[s] for s in query_labels_list], dtype=torch.long, device=device)
     query_encounters = [parse_encounter_id(v) for v in query_videos_list]
     query_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in query_encounters], dtype=torch.long, device=device)
-    query_original_indices_tensor = torch.tensor(query_original_indices_list, dtype=torch.long, device=device)
+    query_original_indices_tensor = torch.tensor(final_global_indices, dtype=torch.long, device=device)
 
     print(f"Prepared {len(query_images_list)} images for evaluation.")
 
@@ -444,22 +492,17 @@ def evaluate_faithfulness_downstream(
         "patches_per_step": patches_per_step,
         "baseline_value": baseline_value,
         "device": device,
+        "fractions_to_record": fractions_to_record
     }
 
-    morf_curve = _run_downstream_perturbation_sweep(all_patch_orders=morf_orders_tensor, **sweep_args)
-    lerf_curve = _run_downstream_perturbation_sweep(all_patch_orders=lerf_orders_tensor, **sweep_args)
-    random_curve = _run_downstream_perturbation_sweep(all_patch_orders=random_orders_tensor, **sweep_args)
-    
-    # --- 3. Calculate Final Metrics ---
-    # The paper's AUC definition is the mean. Here, for accuracy curves,
-    # a proper trapezoidal AUC is more standard.
-    # Let's stick to your definition for consistency.
+    morf_curve, fraction_accuracies_morf = _run_perturbation_experiment_acc(all_patch_orders=morf_orders_tensor, **sweep_args)
+    lerf_curve, fraction_accuracies_lerf = _run_perturbation_experiment_acc(all_patch_orders=lerf_orders_tensor, **sweep_args)
+    random_curve, fraction_accuracies_random = _run_perturbation_experiment_acc(all_patch_orders=random_orders_tensor, **sweep_args)
+
     auc_morf = calculate_auc(morf_curve)
     auc_lerf = calculate_auc(lerf_curve)
     auc_random = calculate_auc(random_curve)
 
-    # Note: For accuracy, MoRF should drop fastest (lowest AUC), LeRF slowest (highest AUC)
-    # The "faithfulness" score could be defined as AUC(LeRF) - AUC(MoRF)
     faithfulness_score = auc_lerf - auc_morf
     morf_vs_random = auc_random - auc_morf
     lerf_vs_random = auc_lerf - auc_random
@@ -481,128 +524,13 @@ def evaluate_faithfulness_downstream(
         'auc_random': auc_random,
         'morf_curve': morf_curve.cpu().numpy(),
         'lerf_curve': lerf_curve.cpu().numpy(),
-        'random_curve': random_curve.cpu().numpy()
+        'random_curve': random_curve.cpu().numpy(),
+        'fraction_accuracies_morf': fraction_accuracies_morf,
+        'fraction_accuracies_lerf': fraction_accuracies_lerf,
+        'fraction_accuracies_random': fraction_accuracies_random
     }
 
-    if plot_curves:
-        pass
     return results
-    #return {"downstream_accuracy": results}
-    
-def run_downstream_sweep_and_log(
-    all_relevance_results: List[Dict], # The same input as before
-    query_dataset: torch.utils.data.Dataset,
-    model: torch.nn.Module,
-    db_embeddings: torch.Tensor,
-    db_labels: List[str],
-    db_videos: List[str],
-    cfg: Dict[str, Any],
-    patch_size: int,
-    patches_per_step: int,
-    baseline_value: str = "black",
-    plot_curves: bool = False, # Set to False to avoid plotting in a loop
-    seed=161
-) -> tuple[list[dict], list[dict]]:
-    """
-    Evaluates downstream faithfulness for multiple sets of relevance maps (e.g., a gamma sweep).
-    
-    This function groups relevance maps by their generation parameters, runs the batched
-    downstream evaluation for each group, and formats the results into flat and long-form
-    dataframes for easy analysis and logging.
-
-    Returns:
-        - A pandas DataFrame with summary statistics (AUCs, faithfulness) for each param set.
-        - A pandas DataFrame with the raw curve data (step, score) for each param set.
-    """
-    device = db_embeddings.device
-    unique_labels = sorted(list(set(db_labels)))
-    label_to_id = {label: i for i, label in enumerate(unique_labels)}
-    db_labels_int = torch.tensor([label_to_id[s] for s in db_labels], dtype=torch.long, device=device)
-
-    db_encounters = [parse_encounter_id(v) for v in db_videos]
-    unique_encounters = sorted(list(set(db_encounters)))
-    encounter_to_id = {enc: i for i, enc in enumerate(unique_encounters)}
-    db_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in db_encounters], dtype=torch.long, device=device)
-
-    summary_results_list = []
-    all_curves_data_list = []
-
-    # --- 1. Group relevance maps by their generation parameters ---
-    # The key will be a tuple of sorted parameter items to ensure uniqueness
-    # The value will be a dictionary of {filename: relevance_map}
-    relevances_by_params = defaultdict(dict)
-    
-    for res in all_relevance_results:
-        # Create a stable, hashable key from the parameters dictionary
-        params_key = tuple(sorted(res['params'].items()))
-        filename = res['filename'] # Assuming filename now has no extension
-        relevances_by_params[params_key][filename] = res['relevance']
-
-    print(f"Found {len(relevances_by_params)} unique parameter combinations to evaluate.")
-
-    # --- 2. Iterate over each parameter set and run the full downstream evaluation ---
-    for params_key, relevance_maps_dict in tqdm(relevances_by_params.items(), desc="Evaluating Parameter Sets"):
-        params_dict = dict(params_key)
-        print(f"\n--- Evaluating parameters: {params_dict} ---")
-
-        # Run the full downstream evaluation for this set of relevance maps
-        srg_results = evaluate_faithfulness_downstream(
-            relevance_maps_dict=relevance_maps_dict,
-            query_dataset=query_dataset,
-            model=model,
-            db_embeddings=db_embeddings,
-            # ### MODIFIED ###: Pass all the pre-computed data
-            db_labels_int=db_labels_int,
-            db_encounter_ids_int=db_encounter_ids_int,
-            label_to_id=label_to_id,
-            encounter_to_id=encounter_to_id,
-            cfg=cfg,
-            patch_size=patch_size,
-            patches_per_step=patches_per_step,
-            baseline_value=baseline_value,
-            plot_curves=plot_curves,
-            seed=seed,
-        )
-
-        # --- 3. Format and store the results for this parameter set ---
-        
-        # a) Create the flat summary row
-        summary_row = {
-            **params_dict,  # Unpack conv_gamma, lin_gamma, etc.
-            "metric_name": cfg["lrp"]["mode"],
-            "faithfulness_score": srg_results["faithfulness_score"],
-            "morf_vs_random": srg_results["morf_vs_random"],
-            "lerf_vs_random": srg_results["lerf_vs_random"],
-            "auc_morf": srg_results["auc_morf"],
-            "auc_lerf": srg_results["auc_lerf"],
-            "auc_random": srg_results["auc_random"],
-        }
-        summary_results_list.append(summary_row)
-
-        # b) Create the long-form curve data
-        all_curve_sets = [
-            ("morf_raw", srg_results["morf_curve"]),
-            ("lerf_raw", srg_results["lerf_curve"]),
-            ("random_raw", srg_results["random_curve"])
-        ]
-
-        for curve_label, curve in all_curve_sets:
-            # The x-axis represents the percentage of patches perturbed
-            num_steps = len(curve)
-            x_axis = np.linspace(0, 100, num_steps)
-
-            for step_idx, score in enumerate(curve):
-                curve_point_row = {
-                    **params_dict,
-                    "metric_name": cfg["lrp"]["mode"],
-                    "curve_label": curve_label,
-                    "step": step_idx,
-                    "percent_perturbed": x_axis[step_idx],
-                    "score": score
-                }
-                all_curves_data_list.append(curve_point_row)
-    
-    return summary_results_list, all_curves_data_list
 
 def apply_perturbation_to_batch(
     image_batch: torch.Tensor,
@@ -724,7 +652,7 @@ def get_query_performance_metrics(
     db_labels_np = np.array(db_labels)
     db_filenames_np = np.array(db_filenames)
 
-    with torch.no_grad(), torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16):
+    with torch.no_grad(), torch.amp.autocast(device_type=device.type):
         distances = calculate_distance(query_embedding, db_embeddings, distance_metric)
         try:
             query_idx = db_filenames.index(query_filename)

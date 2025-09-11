@@ -10,7 +10,7 @@ from tqdm import tqdm
 from typing import Dict, Tuple, List
 from lrp_helpers import get_relevances
 from basemodel import TimmWrapper
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 from visualize import AttentionVisualizer 
 import matplotlib.pyplot as plt
 from scipy.stats import spearmanr
@@ -26,8 +26,6 @@ import wandb
 from relevance_metrics import compute_all_relevance_metrics
 import seaborn as sns
 
-# 4) save worst performing images and mask their background. How does the knn score change? can I also recompute accuracy with only these few images?
-
 
 def run_masking_experiment(
     model_wrapper: TimmWrapper,
@@ -36,7 +34,7 @@ def run_masking_experiment(
     db_labels: List[str],
     db_filenames: List[str],
     db_video_ids: List[str],
-    mask_scores: Dict[str, Tuple], # The output from attention_inside_mask
+    mask_scores: Dict[str, Tuple],
     batch_size: int,
     device: torch.device,
     decision_metric: str,
@@ -106,25 +104,19 @@ def run_masking_experiment(
     
     with torch.no_grad(), torch.amp.autocast(device_type=device.type):
         for batch in tqdm(dataloader, desc="Running masking experiment"):
-            # --- ROBUST BATCH HANDLING START ---
-            
-            # Move the entire batch of images to the device at once
             images_orig_batch = batch["image"].to(device)
-            masks_batch = batch["mask"] # This is a list of tensors/Nones
+            masks_batch = batch["mask"] 
             labels_batch = batch["label"]
             filenames_batch = batch["filename"]
             video_ids_batch = batch["video"]
 
-            # --- Process each item within the batch individually ---
             for i in range(len(filenames_batch)):
-                # Isolate the data for the i-th sample
-                image_orig = images_orig_batch[i].unsqueeze(0) # Keep batch dim -> [1, C, H, W]
+                image_orig = images_orig_batch[i].unsqueeze(0)
                 mask_tensor = masks_batch[i]
                 label = labels_batch[i]
                 filename = filenames_batch[i]
                 video_id = video_ids_batch[i]
 
-                # The experiment cannot proceed without a valid mask.
                 if mask_tensor is None:
                     print(f"Warning: Skipping {filename} in masking experiment, no mask available.")
                     continue
@@ -139,7 +131,6 @@ def run_masking_experiment(
                     db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                     distance_metric=cfg["knn"]["distance_metric"], k=cfg["knn"]["k"]
                 )
-                #change plot colors to hpi
                 result_base = score_fn(
                     query_embedding=embedding_orig, query_label=label, query_filename=filename, query_video_id=video_id,
                     **score_fn_kwargs
@@ -154,7 +145,7 @@ def run_masking_experiment(
                 if cfg["eval"]["baseline_value"] == "black":
                     image_masked = image_orig * mask
                 elif cfg["eval"]["baseline_value"] == "mean":
-                    mean_color = image_orig.mean(dim=[2, 3], keepdim=True) # Shape: [1, C, 1, 1]
+                    mean_color = image_orig.mean(dim=[2, 3], keepdim=True) 
                     background_fill = mean_color.expand_as(image_orig)
                     image_masked = image_orig * mask + background_fill * (1 - mask)
 
@@ -175,7 +166,6 @@ def run_masking_experiment(
                     masked_proxy_score = result_mask.item()
 
 
-                # --- 3. Aggregate Results ---
                 #TODO this is not very good, investigate:
                 if filename in mask_scores:
                     AoGR_total = mask_scores[filename][0] 
@@ -216,15 +206,12 @@ def analyze_masking_exp_and_metrics(results_df: pd.DataFrame, output_dir: str, c
     primary_color = colors.get("yellow")
     saved_plot_paths = []
 
-    # --- 1. Correlation Heatmap ---
-    # Select key metrics for the heatmap
     corr_cols = [
         'delta_proxy_score', 'delta_rank',
         'total_aogr', 'total_gini', 'total_sparsity', 'total_entropy', 'total_auroc',
         'pos_aogr', 'pos_gini', 'pos_auroc',
         'neg_aogr', 'neg_gini', 'neg_auroc'
     ]
-    # Filter out columns that might not exist or are all NaN
     corr_cols = [col for col in corr_cols if col in results_df.columns]
     
     correlation_matrix = results_df[corr_cols].corr()
@@ -238,8 +225,6 @@ def analyze_masking_exp_and_metrics(results_df: pd.DataFrame, output_dir: str, c
     plt.close()
     saved_plot_paths.append(heatmap_path)
 
-    # --- 2. Scatter Plots for Key Relationships ---
-    # Define relationships to plot: (x_axis_metric, y_axis_metric)
     plots_to_make = [
         ('total_background_attention', 'delta_proxy_score'),
         ('total_gini', 'delta_proxy_score'),
@@ -255,12 +240,10 @@ def analyze_masking_exp_and_metrics(results_df: pd.DataFrame, output_dir: str, c
             
         plt.figure(figsize=(8, 6))
         
-        # Drop NaNs for plotting
         plot_df = results_df[[x_col, y_col]].dropna()
 
         plt.scatter(plot_df[x_col], plot_df[y_col], alpha=0.6, color=primary_color)
         
-        # Add spearman correlation to the plot title
         corr, p_val = spearmanr(plot_df[x_col], plot_df[y_col])
         plt.title(f'{y_col} vs. {x_col}\nSpearman R = {corr:.3f} (p = {p_val:.3f})')
         plt.xlabel(x_col.replace("_", " ").title())
@@ -286,7 +269,6 @@ def create_binned_plot(
     Creates and saves a binned bar plot of a metric vs. an attention score.
     """
     try:
-        # Define bins for the attention score (0 to 1)
         bins = np.linspace(0.0, 1.0, 11)
         df_copy = df.copy() 
         df_copy['bin_labels'] = pd.cut(df_copy[attention_col], bins=bins, include_lowest=True)
@@ -298,7 +280,6 @@ def create_binned_plot(
             print(f"Skipping plot: No data for {metric_col} vs {attention_col}")
             return
 
-        # Plotting
         fig, ax = plt.subplots(figsize=(10, 6))
         binned_stats.plot(
             kind='bar', y='mean', yerr='sem', ax=ax, capsize=4, 
@@ -313,7 +294,6 @@ def create_binned_plot(
         ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
         plt.tight_layout()
 
-        # Save and close
         plt.savefig(output_path)
         plt.close(fig)
 
@@ -339,18 +319,15 @@ def generate_heatmaps(
         seed=seed
     )
     
-    # Create a mapping from filename to its index in the dataset for quick lookup
     fname_to_idx = {
         os.path.splitext(f)[0]: i for i, f in enumerate(val_dataset.filenames)
     }
 
     for reason, filename in samples_to_plot.items():
 
-        # Get stats for this image from the dataframe
         image_stats = masking_results_df[masking_results_df['filename'] == filename].iloc[0]
 
 
-        # Get the necessary data for plotting
         if os.path.splitext(filename)[0] not in fname_to_idx:
             print(f"Warning: Filename '{filename}' not found in dataset. Skipping.")
             continue
@@ -360,8 +337,6 @@ def generate_heatmaps(
         
         relevance, mask = relevance_mask_dict[filename]
 
-        # Normalize relevance map for consistent visualization
-        # This makes heatmaps comparable by scaling them to the [-1, 1] range
         relevance = relevance / torch.abs(relevance).max()
         
         save_path = visualizer.plot_heatmap( 
@@ -499,11 +474,7 @@ def compute_and_log_relevance_metrics(relevances_all: List[Dict]) -> pd.DataFram
     return pd.DataFrame(metrics_list)
 
 def main(cfg: Dict):
-    """
-    Main function to run the LRP and masking experiment for a single model configuration.
-    """
     monkey_patch_zennit(verbose=True)
-
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     random.seed(cfg["seed"])
@@ -520,13 +491,12 @@ def main(cfg: Dict):
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     wandb.init(
         project="Thesis-Iven", 
-        entity="gorillawatch", # Or your entity
+        entity="gorillawatch", 
         name=f"dinov2_attnlrp_analysis_{model_type_str}_{MODE}",
         config=cfg_dict,
         job_type="analysis"
     )
 
-    # Create a model-specific output directory
     base_output_dir = cfg["data"]["output_base_dir"]
     experiment_output_dir = os.path.join(base_output_dir, model_type_str)
     visualization_dir = os.path.join(experiment_output_dir, "visualizations")
@@ -534,53 +504,71 @@ def main(cfg: Dict):
     print(f"All outputs will be saved in: {experiment_output_dir}")
 
 
-    # --- 2. Load Model and Data ---
     model_wrapper, image_transforms, model_data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
-
-    root_dir = cfg["data"]["dataset_dir"]
-    split_name = cfg["data"]["analysis_split"] 
-    split_dir = os.path.join(root_dir, split_name)
-    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
-
-
     mask_transform = get_mask_transform(cfg["model"]["img_size"])
 
-    dataset = GorillaReIDDataset(
+    # --- Prepare Datasets ---
+    split_name = cfg["data"]["analysis_split"]
+    split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
+    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
+    
+    split_dataset = GorillaReIDDataset(
         image_dir=split_dir,
         filenames=split_files,
         transform=image_transforms,
         base_mask_dir=cfg["data"]["base_mask_dir"],
-        mask_transform=mask_transform
+        mask_transform=mask_transform,
+        k=cfg["knn"]["k"],
     )
+    
+    train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
+    train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
+    train_dataset = GorillaReIDDataset(
+        image_dir=train_dir, filenames=train_files, transform=image_transforms
+    )
+    
 
-    dataloader = DataLoader(dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, collate_fn=custom_collate_fn, shuffle=False)
+    datasets = [split_dataset, train_dataset]
+    full_db_dataset = ConcatDataset(datasets)
+    full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
 
-    # --- 3. Compute k-NN Database ---
-    db_path_knn = get_db_path(
+
+    query_dataset_offset = 0
+    found = False
+    for d in datasets:
+        if d is split_dataset:
+            found = True
+            break
+        query_dataset_offset += len(d)
+
+    print("Query dataset offset in DB:", query_dataset_offset)
+
+    if not found:
+        raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+
+    local_query_indices = split_dataset.images_for_ce_knn
+
+
+    # --- Generate or Load Relevance Maps (for test images only) ---
+    print("Generating/Loading relevance maps for test images...")
+    split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=dataset.dataset_name,
-        split_name=split_name,
-        bp_transforms=cfg["model"]["bp_transforms"],
-        db_dir=cfg["knn"]["db_embeddings_dir"]
+        dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    db_embeddings, db_labels, db_filenames, db_video_ids = get_knn_db(
-        db_path=db_path_knn,
-        dataset=dataset,
-        model_wrapper=model_wrapper,
-        batch_size=cfg["data"]["batch_size"],
-        device=DEVICE
+    split_embeddings, split_labels, split_filenames, split_video_ids = get_knn_db(
+        db_path=split_db_path_knn, dataset=split_dataset, model_wrapper=model_wrapper,
+        batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
 
-    #TODO: What about train dataset here for database?
+    # this loader only contains the subset of images that are used as queries for cross-encounter knn
+    split_query_subset = torch.utils.data.Subset(split_dataset, local_query_indices)
 
-    # --- 4. Compute Relevances ---
+    split_dataloader = DataLoader(split_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
+
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=dataset.dataset_name,
-        split_name=split_name,
-        bp_transforms=cfg["model"]["bp_transforms"],
-        db_dir=cfg["lrp"]["db_relevances_dir"],
-        decision_metric=DECISION_METRIC,
+        dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["lrp"]["db_relevances_dir"],
+        decision_metric=MODE,
         lrp_params={
             "conv_gamma": cfg["lrp"]["conv_gamma"],
             "lin_gamma": cfg["lrp"]["lin_gamma"],
@@ -588,28 +576,15 @@ def main(cfg: Dict):
             "topk": cfg["lrp"]["topk"],
         }
     )
-
+    
     relevances_all = get_relevances(
-        db_path=db_path_relevances,
-        model_wrapper=model_wrapper,
-        dataloader=dataloader,
-        device=DEVICE,
-        recompute=False,
-        # All of these will be caught by **kwargs and passed to generate_relevances
-        conv_gamma=cfg["lrp"]["conv_gamma"],           # Pass as single value (will be converted to list)
-        lin_gamma=cfg["lrp"]["lin_gamma"],             # Pass as single value
-        proxy_temp=cfg["lrp"]["temp"],          # Pass as single value 
-        distance_metric=cfg["lrp"]["distance_metric"], #pass as single value
-        topk=cfg["lrp"]["topk"],  # Pass as single value
-        mode=cfg["lrp"]["mode"],
-        db_embeddings=db_embeddings,
-        db_filenames=db_filenames,
-        db_labels=db_labels,
-        db_video_ids=db_video_ids,
-        cross_encounter=cfg["lrp"]["cross_encounter"]
+        db_path=db_path_relevances, model_wrapper=model_wrapper, dataloader=split_dataloader,
+        device=DEVICE, recompute=False, conv_gamma=cfg["lrp"]["conv_gamma"], lin_gamma=cfg["lrp"]["lin_gamma"],
+        proxy_temp=cfg["lrp"]["temp"], distance_metric=cfg["lrp"]["distance_metric"], mode=cfg["lrp"]["mode"],
+        topk=cfg["lrp"]["topk"], db_embeddings=split_embeddings, db_filenames=split_filenames,
+        db_labels=split_labels, db_video_ids=split_video_ids, cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
-    #for the graphs and stuff, filter out all relevance tensors that have no valid relevance
     relevances_all = [
         item for item in relevances_all 
         if item['relevance'] is not None and not torch.all(item['relevance'] == 0)
@@ -619,20 +594,18 @@ def main(cfg: Dict):
     
     scores_for_masking_exp = {}
     for _, row in relevance_metrics_df.iterrows():
-        # The masking experiment expects (total_aogr, pos_aogr, neg_aogr)
         scores_for_masking_exp[row['filename']] = (
             row['total_aogr'], row['pos_aogr'], row['neg_aogr']
         )
 
-    #TODO: FILTER OUT TENSOR 0 FOR WHEN NO RELEVANCE TO NOW SKEW STATISTICS (AND AVOID WEIRD PLOTS)
-    # --- 5. Run Masking Experiment ---
+    #TODO: FILTER OUT TENSOR 0 FOR WHEN NO RELEVANCE TO NOW SKEW STATISTICS (AND AVOID WEIRD PLOTS). Should not happen anymore with knn-ce filtered dataset
     masking_results_df = run_masking_experiment(
         model_wrapper=model_wrapper,
-        dataset=dataset,
-        db_embeddings=db_embeddings,
-        db_labels=db_labels,
-        db_filenames=db_filenames,
-        db_video_ids=db_video_ids,
+        dataset=split_dataset,
+        db_embeddings=split_embeddings,
+        db_labels=split_labels,
+        db_filenames=split_filenames,
+        db_video_ids=split_video_ids,
         mask_scores=scores_for_masking_exp,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE,
@@ -642,7 +615,6 @@ def main(cfg: Dict):
 
     final_results_df = pd.merge(masking_results_df, relevance_metrics_df, on='filename', how='inner')
 
-    # Use the dynamic experiment_output_dir for saving results
     results_path = os.path.join(experiment_output_dir, "final_experiment_results.csv")
     final_results_df.to_csv(results_path, index=False)
     print(f"\nSaved combined experiment results to: {results_path}")
@@ -651,7 +623,6 @@ def main(cfg: Dict):
         "final_experiment_results": wandb.Table(dataframe=final_results_df)
     })
 
-    # Log key overall metrics to the summary for easy comparison
     rank1_orig = (final_results_df['rank_orig'] == 1).mean()
     rank1_masked = (final_results_df['rank_masked'] == 1).mean()
     wandb.summary["rank1_orig"] = rank1_orig
@@ -693,7 +664,7 @@ def main(cfg: Dict):
     heatmap_paths = generate_heatmaps(
         samples_to_plot=samples_to_plot,
         masking_results_df=final_results_df,
-        val_dataset=dataset, 
+        val_dataset=split_dataset, 
         relevance_mask_dict=relevance_mask_dict, 
         model_data_config=model_data_config, 
         output_dir=os.path.join(visualization_dir, "heatmaps"),

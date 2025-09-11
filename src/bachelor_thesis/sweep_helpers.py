@@ -1,7 +1,7 @@
 import torch
 from typing import List
 import os
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Any
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -10,13 +10,13 @@ import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from omegaconf import OmegaConf
-
+from collections import defaultdict
 from basemodel import TimmWrapper
-from eval_helpers import srg_eval
-from utils import get_hpi_colors
+from eval_helpers import faithfulness_eval_proxy_score, faithfulness_eval_acc
+from utils import get_hpi_colors, parse_encounter_id
 
 
-def evaluate_gamma_sweep(
+def evaluate_gamma_sweep_proxy_score(
     all_relevance_results: List[Dict],
     evaluation_dataloader: DataLoader,
     model_wrapper: TimmWrapper,
@@ -27,7 +27,7 @@ def evaluate_gamma_sweep(
     patch_size: int,
     device: torch.device,
     patches_per_step: int = 20,
-    baseline_value: str = "black",
+    baseline_value: str = "mean",
     cross_encounter: bool = True,
     plot_curves: bool = False,
     seed=161
@@ -85,7 +85,7 @@ def evaluate_gamma_sweep(
             if mode == "similarity":
                 eval_kwargs["reference_embedding"] = relevance_data["reference_embedding"].to(device) if relevance_data["reference_embedding"] is not None else None
 
-            srg_results_by_metric = srg_eval(
+            srg_results_by_metric = faithfulness_eval_proxy_score(
                 relevance_map=relevance_data["relevance"],
                 input_tensor=input_tensor,
                 model=model_wrapper,
@@ -137,6 +137,109 @@ def evaluate_gamma_sweep(
 
 
 
+def evaluate_gamma_sweep_acc(
+    all_relevance_results: List[Dict], 
+    query_dataset: torch.utils.data.Dataset,
+    global_query_indices: List[int],
+    model: TimmWrapper,
+    db_embeddings: torch.Tensor,
+    db_labels: List[str],
+    db_videos: List[str],
+    cfg: Dict[str, Any],
+    patch_size: int,
+    patches_per_step: int,
+    baseline_value: str = "black",
+    seed=161
+) -> tuple[list[dict], list[dict]]:
+    """
+    Evaluates downstream faithfulness for multiple sets of relevance maps (e.g., a gamma sweep).
+    
+    This function groups relevance maps by their generation parameters, runs the batched
+    downstream evaluation for each group, and formats the results into flat and long-form
+    dataframes for easy analysis and logging.
+
+    Returns:
+        - A pandas DataFrame with summary statistics (AUCs, faithfulness) for each param set.
+        - A pandas DataFrame with the raw curve data (step, score) for each param set.
+    """
+    device = db_embeddings.device
+    unique_labels = sorted(list(set(db_labels)))
+    label_to_id = {label: i for i, label in enumerate(unique_labels)}
+    db_labels_int = torch.tensor([label_to_id[s] for s in db_labels], dtype=torch.long, device=device)
+
+    db_encounters = [parse_encounter_id(v) for v in db_videos]
+    unique_encounters = sorted(list(set(db_encounters)))
+    encounter_to_id = {enc: i for i, enc in enumerate(unique_encounters)}
+    db_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in db_encounters], dtype=torch.long, device=device)
+
+    summary_results_list = []
+    all_curves_data_list = []
+
+    relevances_by_params = defaultdict(dict)
+    
+    for res in all_relevance_results:
+        params_key = tuple(sorted(res['params'].items()))
+        filename = res['filename'] 
+        relevances_by_params[params_key][filename] = res['relevance']
+
+    print(f"Found {len(relevances_by_params)} unique parameter combinations to evaluate.")
+
+    for params_key, relevance_maps_dict in tqdm(relevances_by_params.items(), desc="Evaluating Parameter Sets"):
+        params_dict = dict(params_key)
+        print(f"\n--- Evaluating parameters: {params_dict} ---")
+
+        srg_results = faithfulness_eval_acc(
+            relevance_maps_dict=relevance_maps_dict,
+            query_dataset=query_dataset,
+            global_query_indices=global_query_indices,
+            model=model,
+            db_embeddings=db_embeddings,
+            db_labels_int=db_labels_int,
+            db_encounter_ids_int=db_encounter_ids_int,
+            label_to_id=label_to_id,
+            encounter_to_id=encounter_to_id,
+            cfg=cfg,
+            patch_size=patch_size,
+            patches_per_step=patches_per_step,
+            baseline_value=baseline_value,
+            seed=seed,
+        )
+
+        summary_row = {
+            **params_dict,  # Unpack conv_gamma, lin_gamma, etc.
+            "metric_name": cfg["lrp"]["mode"],
+            "faithfulness_score": srg_results["faithfulness_score"],
+            "morf_vs_random": srg_results["morf_vs_random"],
+            "lerf_vs_random": srg_results["lerf_vs_random"],
+            "auc_morf": srg_results["auc_morf"],
+            "auc_lerf": srg_results["auc_lerf"],
+            "auc_random": srg_results["auc_random"],
+        }
+        summary_results_list.append(summary_row)
+
+        all_curve_sets = [
+            ("morf_raw", srg_results["morf_curve"]),
+            ("lerf_raw", srg_results["lerf_curve"]),
+            ("random_raw", srg_results["random_curve"])
+        ]
+
+        for curve_label, curve in all_curve_sets:
+            num_steps = len(curve)
+            x_axis = np.linspace(0, 100, num_steps)
+
+            for step_idx, score in enumerate(curve):
+                curve_point_row = {
+                    **params_dict,
+                    "metric_name": cfg["lrp"]["mode"],
+                    "curve_label": curve_label,
+                    "step": step_idx,
+                    "percent_perturbed": x_axis[step_idx],
+                    "score": score
+                }
+                all_curves_data_list.append(curve_point_row)
+    
+    return summary_results_list, all_curves_data_list
+
 def find_robust_hyperparameters(
     results: List[Dict],
     decision_metric: str,
@@ -145,14 +248,14 @@ def find_robust_hyperparameters(
     Finds robust hyperparameters based on a specific decision metric, but analyzes all metrics.
     """
     df = pd.DataFrame(results)
-    df = df.fillna("NA") # For the None's
+    df = df.fillna("NA") 
     
     # Group by gamma parameters
     parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp','metric_name', 'topk'])    
     analysis_data = []
 
     for (conv_gamma, lin_gamma, distance_metric, proxy_temp, metric_name, topk), group in parameter_groups:
-        scores = group['faithfulness_score'].values #can potentially include NaN's
+        scores = group['faithfulness_score'].values 
         num_valid = np.sum(~np.isnan(scores))
         num_invalid = np.sum(np.isnan(scores))
 
@@ -192,7 +295,6 @@ def find_robust_hyperparameters(
     analysis_df = pd.DataFrame(analysis_data)
 
     
-    # Select the best parameters based on the specified decision_metric
     decision_df = analysis_df[analysis_df['metric_name'] == decision_metric].copy()
     if decision_df.empty:
         raise ValueError(f"Decision metric '{decision_metric}' not found in the results.")
@@ -209,7 +311,7 @@ def find_robust_hyperparameters(
         'distance_metric': best_row['distance_metric'],
         'proxy_temp': best_row['proxy_temp'],
         'topk': best_row['topk'],
-        'metric_name': best_row['metric_name'], # The metric used for this decision
+        'metric_name': best_row['metric_name'], 
         'robustness_score': best_row['robustness_score'],
         'mean_score': best_row['raw_mean'],
         'min_score': best_row['raw_min'],
@@ -222,7 +324,7 @@ def find_robust_hyperparameters(
         'distance_metric': worst_row['distance_metric'],
         'proxy_temp': worst_row['proxy_temp'],
         'topk': worst_row['topk'],
-        'metric_name': worst_row['metric_name'], # The metric used for this decision
+        'metric_name': worst_row['metric_name'], 
         'robustness_score': worst_row['robustness_score'],
         'mean_score': worst_row['raw_mean'],
         'min_score': worst_row['raw_min'],
@@ -349,26 +451,22 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
         'raw_q75': df['faithfulness_score'].quantile(0.75)
     }
     
-    # Combine all overall stats
     overall_stats = {**raw_stats}
     
-    # Statistics by gamma combination for both score types
     parameter_stats_raw = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp'])['faithfulness_score'].agg([
         'mean', 'median', 'std', 'min', 'max', 'count'
     ]).reset_index()
     parameter_stats_raw.columns = [f'raw_{col}' if col not in ['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp'] else col
                               for col in parameter_stats_raw.columns]
     
-    # Merge gamma statistics
     parameter_stats = pd.merge(parameter_stats_raw, on=['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp'])
 
     parameter_stats = pd.merge(parameter_stats, on=['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp'])
 
-    # Find best gamma combinations by different metrics
     best_by_raw_mean = parameter_stats.loc[parameter_stats['raw_mean'].idxmax()]
     best_by_raw_min = parameter_stats.loc[parameter_stats['raw_min'].idxmax()]
     
-    # Statistics by image (aggregated across gamma combinations)
+    # Statistics by image (aggregated across gamma combinations), only really makes sense with proxy score evaluation
     image_stats_raw = df.groupby(['image'])['faithfulness_score'].agg([
         'mean', 'median', 'std', 'min', 'max', 'count'
     ]).reset_index()
@@ -385,7 +483,7 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
         'best_by_raw_min': best_by_raw_min
     }
 
-def log_nested_validation_to_wandb(
+def log_sweep(
     cfg: Dict,
     final_decision: str,
     approved_params: Dict,
@@ -419,8 +517,7 @@ def log_nested_validation_to_wandb(
     wandb.summary[f"tune_set_mean_faithfulness ({cfg['lrp']['mode']})"] = tune_performance['mean_faithfulness']
     wandb.summary[f"holdout_set_mean_faithfulness ({cfg['lrp']['mode']})"] = holdout_performance['mean_faithfulness']
 
-    # --- 2. Log Detailed Data as Tables ---
-    # The 'metric_name' column will now be present in these tables
+
     log_payload = {}
 
     log_payload.update({
@@ -430,8 +527,7 @@ def log_nested_validation_to_wandb(
         "holdout_set/parameter_analysis": wandb.Table(dataframe=analysis_df_holdout)
     })
 
-    # --- 3. Log Visualizations ---
-    # visualize_robustness_analysis now creates plots for all metrics
+
     tune_paths = visualize_robustness_analysis(analysis_df_tune, hpi_colors=hpi_colors, save_path="wandb_plots/tune_analysis.png")
     holdout_paths = visualize_robustness_analysis(analysis_df_holdout, hpi_colors=hpi_colors, save_path="wandb_plots/holdout_analysis.png")
 
@@ -440,7 +536,6 @@ def log_nested_validation_to_wandb(
         "plots/holdout_set_analysis_heatmaps": [wandb.Image(p, caption=os.path.basename(p)) for p in holdout_paths]
     })
 
-    # --- 4. Log Curves ---
     print("\n--- Logging Faithfulness Curves for Approved Parameters (All Metrics) ---")
 
     needed_cols = ["conv_gamma", "lin_gamma", "proxy_temp", "distance_metric", "topk"]
@@ -459,7 +554,6 @@ def log_nested_validation_to_wandb(
         if col not in worst_params:
             worst_params[col] = np.nan
     
-    # --- Approved ---
     approved_tune_curves_df = tune_curves_df[_build_filter(tune_curves_df, approved_params)].copy()
     approved_holdout_curves_df = holdout_curves_df[_build_filter(holdout_curves_df, approved_params)].copy()
 
@@ -491,7 +585,6 @@ def log_nested_validation_to_wandb(
         if holdout_plot: log_payload[log_key_holdout] = holdout_plot
 
 
-    # --- Worst ---
     worst_tune_df = tune_curves_df[_build_filter(tune_curves_df, worst_params)].copy()
     worst_holdout_df = holdout_curves_df[_build_filter(holdout_curves_df, worst_params)].copy()
 
@@ -531,7 +624,6 @@ def log_nested_validation_to_wandb(
             )
             log_payload["plots/aggregate_faithfulness_curves"] = wandb_plot
 
-    # --- 5. MAKE THE SINGLE, CONSOLIDATED LOG CALL ---
     if log_payload:
         print("\n--- Logging all artifacts to W&B in a single step ---")
         wandb.log(log_payload)
@@ -597,7 +689,6 @@ def plot_and_log_mean_curve(
     by_label = dict(zip(labels, handles))
     ax.legend(by_label.values(), by_label.keys())
 
-    # Dynamische y-Achsen-Grenzen
     y_min = df['score'].min()
     y_max = df['score'].max()
     padding = (y_max - y_min) * 0.05 

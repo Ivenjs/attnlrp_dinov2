@@ -51,7 +51,7 @@ lrp:
 
 
 sweep:
-  evaluation_metrics: []
+  sweep_evaluation: "accuracy" # "accuracy" or "proxy_score"
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
   temp: [0.01, 0.03, 0.05]
