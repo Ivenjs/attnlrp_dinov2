@@ -92,43 +92,34 @@ class DINOPatcher:
     def __enter__(self):
         if self.conservation_test:
             # --- CONSERVATION TEST PATCHING ---
-            # We patch all layers that are non-conservative by nature.
-            # We replace them with perfectly conservative versions for the test.
-            print("--- Applying CONSERVATION TEST patches ---")
+            #TODO: Behaves weirdly at the moment...
             for name, module in self.wrapper.named_modules():
                 key = name
-                
-                # Patch Linear and Conv2D to be bias-free (BiasManager handles bias)
-                # These are already conservative without bias. No patch needed if BiasManager is active.
-                # However, to be explicit, we can ensure no bias is used.
                 if isinstance(module, nn.Linear):
                     self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservative_linear_forward, module)
+                    module.forward = types.MethodType(_conservation_linear_forward, module)
                 elif isinstance(module, nn.Conv2d):
                     self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservative_conv2d_forward, module)
+                    module.forward = types.MethodType(_conservation_conv2d_forward, module)
                 
-                # Patch Attention with the special .detach() version
                 elif isinstance(module, Attention):
                     self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservative_attention_forward, module)
+                    module.forward = types.MethodType(_conservation_attention_forward, module)
 
                 elif isinstance(module, nn.LayerNorm):
                     self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservative_layernorm_forward, module)
+                    module.forward = types.MethodType(_conservation_layernorm_forward, module)
 
-                # CRITICAL: Disable LayerScale completely for the test by making it an identity
                 elif isinstance(module, LayerScale):
                     self.original_forwards[key] = module.forward
                     module.forward = types.MethodType(_conservative_identity_forward, module)
                 
-                # We make it an identity to remove its SiLU and multiplication from the equation.
                 elif isinstance(module, GluMlp):
                     self.original_forwards[key] = module.forward
                     module.forward = types.MethodType(_conservative_identity_forward, module)
         else:
-            # --- LRP RULE PATCHING (Normal Operation) ---
-            print("--- Applying LRP-rule patches ---")
+            # --- LRP PATCHING (Normal Operation) ---
+            print("--- Applying LRP patches ---")
             if self.attention_mode == "cp_lrp":
                 attn_patch_fn = lrp_attention_forward_cp
             else:
@@ -297,17 +288,17 @@ def lrp_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
 # -------------------------------------------------------------------
 # Custom Forward Pass for DINOV2 Attention with Conservation Test
 # -------------------------------------------------------------------
-def _conservative_linear_forward(self, x: torch.Tensor) -> torch.Tensor:
+def _conservation_linear_forward(self, x: torch.Tensor) -> torch.Tensor:
     """A perfectly conservative forward pass for nn.Linear for TESTING ONLY."""
     # A bias-free linear layer is inherently conservative. No special rules needed.
     return F.linear(x, self.weight, None) # Bias is None via BiasManager
 
-def _conservative_conv2d_forward(self, x: torch.Tensor) -> torch.Tensor:
+def _conservation_conv2d_forward(self, x: torch.Tensor) -> torch.Tensor:
     """A perfectly conservative forward pass for nn.Conv2d for TESTING ONLY."""
     # A bias-free conv layer is inherently conservative.
     return self._conv_forward(x, self.weight, None) # Bias is None via BiasManager
 
-def _conservative_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
+def _conservation_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     A special forward pass for Attention DESIGNED ONLY FOR LRP CONSERVATION TESTING.
     It detaches the softmax to ensure relevance is conserved through the value path.
@@ -332,7 +323,7 @@ def _conservative_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     x = self.proj_drop(x)
     return x
 
-def _conservative_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
+def _conservation_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     A conservative LayerNorm forward pass for TESTING ONLY.
     It performs normalization but SKIPS the non-conservative affine transform
@@ -340,10 +331,7 @@ def _conservative_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     mean = x.mean(dim=-1, keepdim=True)
     var = torch.var(x, dim=-1, keepdim=True, unbiased=False)
-    # *** FIX: REMOVED stop_gradient for the conservation test ***
     x_normalized = (x - mean) / torch.sqrt(var + self.eps)
-    # For a conservation test, we DO NOT apply self.weight or self.bias.
-    # Bias is handled by BiasManager, and we must ignore the weight here.
     return x_normalized
 
 def _conservative_identity_forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -908,7 +908,6 @@ def create_exclusion_mask(
             exclusion_mask[q_idx] = True
         except ValueError:
             pass
-        print(f"Excluding self: {query_filename} at index {q_idx}")
 
     # 2. Video-based exclusion
     if cross_video and query_video_id and db_video_ids:
@@ -917,7 +916,6 @@ def create_exclusion_mask(
             dtype=torch.bool, device=device
         )
         exclusion_mask |= same_video_mask
-        print(f"Excluding same video: {query_video_id}, {same_video_mask.sum().item()} items excluded.")
 
     # 3. Encounter-based exclusion
     if cross_encounter and query_video_id and db_video_ids:
@@ -928,6 +926,5 @@ def create_exclusion_mask(
                 for cam, date in (parse_encounter_id(vid) for vid in db_video_ids)
             ], dtype=torch.bool, device=device)
             exclusion_mask |= same_encounter_mask
-            print(f"Excluding same encounter: Camera {q_cam}, Date {q_date}, {same_encounter_mask.sum().item()} items excluded.")
 
     return exclusion_mask
