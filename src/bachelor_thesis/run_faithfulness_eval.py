@@ -108,7 +108,6 @@ def main(cfg):
 
 
     # --- Generate or Load Relevance Maps (for test images only) ---
-    print("Generating/Loading relevance maps for test images...")
     split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]

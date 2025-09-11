@@ -67,7 +67,7 @@ def compute_similarity_proto_margin_pass(
 
         if input_tensor.grad is None:
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
-            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+            
         else:
             relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
 
@@ -75,7 +75,7 @@ def compute_similarity_proto_margin_pass(
         zennit_comp.remove()
     if relevance is None:
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
-        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+        
     return relevance
 
 
@@ -133,7 +133,7 @@ def compute_similarity_lrp_pass(
         similarity_score.backward()
 
         if input_tensor.grad is None:
-            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+            
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
             # Standard LRP relevance calculation when gradients are present
@@ -143,7 +143,7 @@ def compute_similarity_lrp_pass(
         zennit_comp.remove()
     if relevance is None:
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
-        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+        
     return relevance, reference_embedding, ref_idx
 
 def compute_knn_topk_attnlrp_pass(
@@ -206,7 +206,7 @@ def compute_knn_topk_attnlrp_pass(
         knn_score.backward()
         
         if input_tensor.grad is None:
-            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+            
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
             # Standard LRP relevance calculation when gradients are present
@@ -216,7 +216,7 @@ def compute_knn_topk_attnlrp_pass(
         zennit_comp.remove()
 
     if relevance is None:
-        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+        
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance
 
@@ -279,7 +279,7 @@ def compute_knn_all_attnlrp_pass(
         knn_score.backward()
         
         if input_tensor.grad is None:
-            print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+            
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
             # Standard LRP relevance calculation when gradients are present
@@ -289,7 +289,7 @@ def compute_knn_all_attnlrp_pass(
         zennit_comp.remove()
 
     if relevance is None:
-        print(f"WARNING: No gradient for LRP on '{query_filename}'. Producing a zero relevance map.")
+        
         relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
     return relevance
 
@@ -562,16 +562,16 @@ def compute_knn_proto_margin(
 
     sims = F.linear(dbn, qn).squeeze(1)  # (N,)
 
-    filter_mode = "none"
-    if cross_encounter:
-        filter_mode = "cross_encounter"
-    elif exclude_self:
-        filter_mode = "exclude_self_only"
-
     exclusion_mask = create_exclusion_mask(
-        query_filename, query_video_id, db_filenames, db_video_ids,
-        filter_mode=filter_mode, device=sims.device
+        query_filename=query_filename,
+        query_video_id=query_video_id,
+        db_filenames=db_filenames,
+        db_video_ids=db_video_ids,
+        device=sims.device,
+        exclude_self=exclude_self,
+        cross_encounter=cross_encounter
     )
+
     sims[exclusion_mask] = -1e9
 
     # masks
@@ -668,16 +668,16 @@ def compute_knn_proxy_soft_all(
     # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
     similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
 
-    filter_mode = "none"
-    if cross_encounter:
-        filter_mode = "cross_encounter"
-    elif exclude_self:
-        filter_mode = "exclude_self_only"
-
     exclusion_mask = create_exclusion_mask(
-        query_filename, query_video_id, db_filenames, db_video_ids,
-        filter_mode=filter_mode, device=similarities.device
+        query_filename=query_filename,
+        query_video_id=query_video_id,
+        db_filenames=db_filenames,
+        db_video_ids=db_video_ids,
+        device=similarities.device,
+        exclude_self=exclude_self,
+        cross_encounter=cross_encounter
     )
+
     similarities[exclusion_mask] = -1e9
 
     # Differentiable soft neighbor weights via softmax. `temp` controls sharpness.
@@ -763,15 +763,14 @@ def compute_knn_proxy_soft_topk(
     
     all_similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
 
-    filter_mode = "none"
-    if cross_encounter:
-        filter_mode = "cross_encounter"
-    elif exclude_self:
-        filter_mode = "exclude_self_only"
-
     exclusion_mask = create_exclusion_mask(
-        query_filename, query_video_id, db_filenames, db_video_ids,
-        filter_mode=filter_mode, device=all_similarities.device
+        query_filename=query_filename,
+        query_video_id=query_video_id,
+        db_filenames=db_filenames,
+        db_video_ids=db_video_ids,
+        device=all_similarities.device,
+        exclude_self=exclude_self,
+        cross_encounter=cross_encounter
     )
     all_similarities[exclusion_mask] = -1e9
 
@@ -810,6 +809,7 @@ def compute_similarity_score(
         db_filenames: list,
         db_video_ids: list,
         cross_encounter: bool = True,
+        exclude_self: bool = True,
         reference_embedding: torch.Tensor = None
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """Computes the cosine similarity between two embeddings of the same class.
@@ -841,18 +841,16 @@ def compute_similarity_score(
             print(f"Warning: No positive samples found for label {query_label}. Returning zero score.")
             return query_embedding.sum() * 0, None, -1
 
-        filter_mode = "none"
-        if cross_encounter:
-            filter_mode = "cross_encounter"
-        elif exclude_self:
-            filter_mode = "exclude_self_only"
-
-        device = query_embedding.device
         exclusion_mask = create_exclusion_mask(
-            query_filename, query_video_id, db_filenames, db_video_ids,
-            filter_mode=filter_mode, device=device
+            query_filename=query_filename,
+            query_video_id=query_video_id,
+            db_filenames=db_filenames,
+            db_video_ids=db_video_ids,
+            device=query_embedding.device,
+            exclude_self=exclude_self,
+            cross_encounter=cross_encounter
         )
-        
+            
         # Filter the positive indices to find valid ones
         valid_positive_indices = [
             idx for idx in positive_indices if not exclusion_mask[idx].item()
@@ -879,23 +877,23 @@ def create_exclusion_mask(
     query_video_id: str,
     db_filenames: List[str],
     db_video_ids: List[str],
-    filter_mode: str,
-    device: torch.device
+    device: torch.device,
+    exclude_self: bool = False,
+    cross_video: bool = False,
+    cross_encounter: bool = False
 ) -> torch.Tensor:
     """
-    Creates a boolean mask to exclude items from the database based on a filter mode.
+    Creates a boolean mask to exclude items from the database based on flags.
 
     Args:
         query_filename: Filename of the query item.
         query_video_id: Video ID of the query item.
         db_filenames: List of all database filenames.
         db_video_ids: List of all database video IDs.
-        filter_mode: Strategy for exclusion. Options:
-            - 'cross_encounter': Exclude self and items from the same camera on the same day.
-            - 'cross_video': Exclude self and items from the exact same video_id.
-            - 'exclude_self_only': Only exclude the query item itself.
-            - 'none': No exclusion.
         device: The torch device to create the mask on.
+        exclude_self: If True, excludes the item with the exact same filename.
+        cross_video: If True, excludes all items from the same video_id.
+        cross_encounter: If True, excludes all items from the same camera on the same day.
 
     Returns:
         A boolean tensor where True indicates an item should be excluded.
@@ -903,31 +901,33 @@ def create_exclusion_mask(
     n_db = len(db_filenames)
     exclusion_mask = torch.zeros(n_db, dtype=torch.bool, device=device)
 
-    # 1. Self-exclusion
-    if filter_mode == 'self':
+    # 1. Self-exclusion (always applied if the flag is True)
+    if exclude_self:
         try:
             q_idx = db_filenames.index(query_filename)
             exclusion_mask[q_idx] = True
         except ValueError:
-            pass # Query not in DB, no self-exclusion needed
+            pass
+        print(f"Excluding self: {query_filename} at index {q_idx}")
 
-    # 2. Video/Encounter-based exclusion
-    if filter_mode == 'cross_video':
-        if query_video_id and db_video_ids:
-            same_video_mask = torch.tensor(
-                [vid == query_video_id for vid in db_video_ids],
-                dtype=torch.bool, device=device
-            )
-            exclusion_mask |= same_video_mask
+    # 2. Video-based exclusion
+    if cross_video and query_video_id and db_video_ids:
+        same_video_mask = torch.tensor(
+            [vid == query_video_id for vid in db_video_ids],
+            dtype=torch.bool, device=device
+        )
+        exclusion_mask |= same_video_mask
+        print(f"Excluding same video: {query_video_id}, {same_video_mask.sum().item()} items excluded.")
 
-    if filter_mode == 'cross_encounter':
-        if query_video_id and db_video_ids:
-            q_cam, q_date = parse_encounter_id(query_video_id)
-            if q_cam and q_date:
-                same_encounter_mask = torch.tensor([
-                    (cam == q_cam and date == q_date)
-                    for cam, date in (parse_encounter_id(vid) for vid in db_video_ids)
-                ], dtype=torch.bool, device=device)
-                exclusion_mask |= same_encounter_mask
-    
+    # 3. Encounter-based exclusion
+    if cross_encounter and query_video_id and db_video_ids:
+        q_cam, q_date = parse_encounter_id(query_video_id)
+        if q_cam and q_date:
+            same_encounter_mask = torch.tensor([
+                (cam == q_cam and date == q_date)
+                for cam, date in (parse_encounter_id(vid) for vid in db_video_ids)
+            ], dtype=torch.bool, device=device)
+            exclusion_mask |= same_encounter_mask
+            print(f"Excluding same encounter: Camera {q_cam}, Date {q_date}, {same_encounter_mask.sum().item()} items excluded.")
+
     return exclusion_mask
