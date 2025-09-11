@@ -532,25 +532,25 @@ def main(cfg: Dict):
     full_db_dataset = ConcatDataset(datasets)
     full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
 
-
-    query_dataset_offset = 0
-    found = False
-    for d in datasets:
-        if d is split_dataset:
-            found = True
-            break
-        query_dataset_offset += len(d)
-
-    print("Query dataset offset in DB:", query_dataset_offset)
-
-    if not found:
-        raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+    db_path = get_db_path(
+        model_checkpoint_path=cfg["model"]["checkpoint_path"],
+        dataset_name=train_dataset.dataset_name,
+        split_name=full_dataset_splits,
+        bp_transforms=cfg["model"]["bp_transforms"],
+        db_dir=cfg["knn"]["db_embeddings_dir"]
+    )
+    all_db_embeddings, all_db_labels, all_db_filenames, all_db_videos = get_knn_db(
+        db_path=db_path,
+        dataset=full_db_dataset,
+        model_wrapper=model_wrapper,
+        batch_size=cfg["data"]["batch_size"],
+        device=DEVICE
+    )
 
     local_query_indices = split_dataset.images_for_ce_knn
 
 
     # --- Generate or Load Relevance Maps (for test images only) ---
-    print("Generating/Loading relevance maps for test images...")
     split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]
@@ -565,9 +565,25 @@ def main(cfg: Dict):
 
     split_dataloader = DataLoader(split_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
 
+    if cfg["lrp"]["eval_db"] == "test":
+        relevance_split_name = split_name
+        relevance_db_embeddings = split_embeddings
+        relevance_db_labels = split_labels
+        relevance_db_filenames = split_filenames
+        relevance_db_videos = split_video_ids
+    elif cfg["lrp"]["eval_db"] == "all":
+        relevance_split_name = full_dataset_splits
+        relevance_db_embeddings = all_db_embeddings
+        relevance_db_labels = all_db_labels
+        relevance_db_filenames = all_db_filenames
+        relevance_db_videos = all_db_videos
+
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["lrp"]["db_relevances_dir"],
+        dataset_name=full_db_dataset.dataset_name, 
+        split_name=relevance_split_name, 
+        bp_transforms=cfg["model"]["bp_transforms"], 
+        db_dir=cfg["lrp"]["db_relevances_dir"],
         decision_metric=MODE,
         lrp_params={
             "conv_gamma": cfg["lrp"]["conv_gamma"],
@@ -578,11 +594,22 @@ def main(cfg: Dict):
     )
     
     relevances_all = get_relevances(
-        db_path=db_path_relevances, model_wrapper=model_wrapper, dataloader=split_dataloader,
-        device=DEVICE, recompute=False, conv_gamma=cfg["lrp"]["conv_gamma"], lin_gamma=cfg["lrp"]["lin_gamma"],
-        proxy_temp=cfg["lrp"]["temp"], distance_metric=cfg["lrp"]["distance_metric"], mode=cfg["lrp"]["mode"],
-        topk=cfg["lrp"]["topk"], db_embeddings=split_embeddings, db_filenames=split_filenames,
-        db_labels=split_labels, db_video_ids=split_video_ids, cross_encounter=cfg["lrp"]["cross_encounter"]
+        db_path=db_path_relevances, 
+        model_wrapper=model_wrapper, 
+        dataloader=split_dataloader,
+        device=DEVICE, 
+        recompute=False, 
+        conv_gamma=cfg["lrp"]["conv_gamma"], 
+        lin_gamma=cfg["lrp"]["lin_gamma"],
+        proxy_temp=cfg["lrp"]["temp"], 
+        distance_metric=cfg["lrp"]["distance_metric"], 
+        mode=cfg["lrp"]["mode"],
+        topk=cfg["lrp"]["topk"], 
+        db_embeddings=relevance_db_embeddings, 
+        db_filenames=relevance_db_filenames,
+        db_labels=relevance_db_labels, 
+        db_video_ids=relevance_db_videos, 
+        cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
     relevances_all = [

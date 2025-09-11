@@ -48,6 +48,7 @@ lrp:
   cross_encounter: True
   # "soft_knn_margin_all" or "proto_margin" or "similarity" or "soft_knn_margin_all_topk"
   db_relevances_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db"
+  eval_db: "all" # "all" (for train + test) or "test"
 
 
 sweep:
@@ -57,7 +58,7 @@ sweep:
   temp: [0.01, 0.03, 0.05]
   #0.01, 0.03, 0.07, 0.15
   queries_per_class: 2
-  topk: [5, 50]
+  topk: [1, 5, 50]
   # maybe pass in diff values for proto_margin and soft_knn_margin_topk
   # 5, 10, 50
   conv_gammas: [0.05, 0.1, 0.25, 0.5, 0.75]

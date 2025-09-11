@@ -478,7 +478,7 @@ def faithfulness_eval_acc(
 
     print(f"Prepared {len(query_images_list)} images for evaluation.")
 
-    sweep_args = {
+    perturbation_args = {
         "model": model,
         "query_images_tensor": query_images_tensor,
         "query_labels_int": query_labels_int,
@@ -495,9 +495,9 @@ def faithfulness_eval_acc(
         "fractions_to_record": fractions_to_record
     }
 
-    morf_curve, fraction_accuracies_morf = _run_perturbation_experiment_acc(all_patch_orders=morf_orders_tensor, **sweep_args)
-    lerf_curve, fraction_accuracies_lerf = _run_perturbation_experiment_acc(all_patch_orders=lerf_orders_tensor, **sweep_args)
-    random_curve, fraction_accuracies_random = _run_perturbation_experiment_acc(all_patch_orders=random_orders_tensor, **sweep_args)
+    morf_curve, fraction_accuracies_morf = _run_perturbation_experiment_acc(all_patch_orders=morf_orders_tensor, **perturbation_args)
+    lerf_curve, fraction_accuracies_lerf = _run_perturbation_experiment_acc(all_patch_orders=lerf_orders_tensor, **perturbation_args)
+    random_curve, fraction_accuracies_random = _run_perturbation_experiment_acc(all_patch_orders=random_orders_tensor, **perturbation_args)
 
     auc_morf = calculate_auc(morf_curve)
     auc_lerf = calculate_auc(lerf_curve)
