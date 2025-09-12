@@ -16,7 +16,7 @@ db:
   feature_type: "body"
 
 eval:
-  patches_per_step: 50
+  patches_per_step: 30
   baseline_value: "mean" #mean or black
 
 knn:
@@ -55,9 +55,9 @@ sweep:
   sweep_evaluation: "accuracy" # "accuracy" or "proxy_score"
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
-  temp: [0.01, 0.03, 0.05]
+  temp: [0.01, 0.03, 0.1, 0.5]
   #0.01, 0.03, 0.07, 0.15
-  queries_per_class: 2
+  queries_per_class: 5
   topk: [1, 5, 50]
   # maybe pass in diff values for proto_margin and soft_knn_margin_topk
   # 5, 10, 50

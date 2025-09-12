@@ -243,14 +243,16 @@ def main(cfg: dict):
     print("\nFinding best parameters on TRAIN set...")
     best_params_raw_train, analysis_df_train, worst_params_raw_train = find_robust_hyperparameters(
         results=train_results_list,
-        decision_metric=DECISION_METRIC
+        decision_metric=DECISION_METRIC,
+        sweep_evaluation=cfg["sweep"]["sweep_evaluation"]
     )
 
     print_robustness_summary(best_params_raw_train, analysis_df_train, DECISION_METRIC)
 
     _, analysis_df_val, _ = find_robust_hyperparameters(
         results=val_results_list,
-        decision_metric=DECISION_METRIC
+        decision_metric=DECISION_METRIC,
+        sweep_evaluation=cfg["sweep"]["sweep_evaluation"]
     )
 
     print(f"\nLooking up performance of TRAIN-selected parameters on the VAL set for metric '{DECISION_METRIC}'...")

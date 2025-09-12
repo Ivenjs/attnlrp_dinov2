@@ -572,7 +572,7 @@ def compute_knn_proto_margin(
         cross_encounter=cross_encounter
     )
 
-    sims[exclusion_mask] = -1e9
+    sims[exclusion_mask] = torch.finfo(sims.dtype).min
 
     # masks
     device = sims.device
@@ -678,7 +678,7 @@ def compute_knn_proxy_soft_all(
         cross_encounter=cross_encounter
     )
 
-    similarities[exclusion_mask] = -1e9
+    similarities[exclusion_mask] = torch.finfo(similarities.dtype).min
 
     # Differentiable soft neighbor weights via softmax. `temp` controls sharpness.
     # Low temp -> focuses on the very nearest neighbors.
@@ -772,7 +772,7 @@ def compute_knn_proxy_soft_topk(
         exclude_self=exclude_self,
         cross_encounter=cross_encounter
     )
-    all_similarities[exclusion_mask] = -1e9
+    all_similarities[exclusion_mask] = torch.finfo(all_similarities.dtype).min
 
     num_valid_db_items = (~exclusion_mask).sum().item()
     effective_k = min(topk, num_valid_db_items)

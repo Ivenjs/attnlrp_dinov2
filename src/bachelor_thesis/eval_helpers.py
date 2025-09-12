@@ -61,11 +61,12 @@ def _run_perturbation_experiment_proxy_score(
     # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type):
         initial_embedding = model(input_tensor)
-        result = score_fn(initial_embedding, **score_fn_kwargs)
-        if isinstance(result, tuple):
-            initial_score = result[0] #similarity returns reference embedding for easy lookup
-        else:
-            initial_score = result
+
+    result = score_fn(initial_embedding, **score_fn_kwargs)
+    if isinstance(result, tuple):
+        initial_score = result[0] #similarity returns reference embedding for easy lookup
+    else:
+        initial_score = result
 
     num_patches = len(patch_order)
     h, w = input_tensor.shape[-2:]
@@ -103,12 +104,13 @@ def _run_perturbation_experiment_proxy_score(
         # After perturbing the chunk, run the model and get the score
         with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type):
             current_embedding = model(perturbed_tensor)
-            result = score_fn(current_embedding, **score_fn_kwargs)
-            if isinstance(result, tuple):
-                score = result[0] #similarity returns reference embedding for easy lookup
-            else:
-                score = result
-            output_scores.append(score.item())
+        
+        result = score_fn(current_embedding, **score_fn_kwargs)
+        if isinstance(result, tuple):
+            score = result[0] #similarity returns reference embedding for easy lookup
+        else:
+            score = result
+        output_scores.append(score.item())
 
         # Update progress
         num_in_chunk = end_idx - start_idx
