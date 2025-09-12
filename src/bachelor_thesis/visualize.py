@@ -13,7 +13,7 @@ import torch.nn.functional as F
 # Import imgify from zennit
 from zennit.image import imgify
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 from lxt.efficient import monkey_patch_zennit
 from dataset import GorillaReIDDataset, custom_collate_fn
 from basemodel import get_model_wrapper
@@ -58,7 +58,8 @@ class AttentionVisualizer:
         mask: Union[torch.Tensor, np.ndarray],
         relevance: torch.Tensor,
         stats: Dict[str, Any],
-        intensify: bool = False
+        intensify: bool = False,
+        show_stats: bool = False
     ) -> str:
         """
         Generates and saves a comprehensive relevance plot for a single model and image.
@@ -95,12 +96,13 @@ class AttentionVisualizer:
             f"Gorilla Attention (AoGR): {aogr_total:.2%}"
         )
         
-        fig.text(
-            0.01, 0.99, stats_text,
-            fontsize=10, family='monospace',
-            va='top', ha='left',
-            bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8)
-        )
+        if show_stats:
+            fig.text(
+                0.01, 0.99, stats_text,
+                fontsize=10, family='monospace',
+                va='top', ha='left',
+                bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8)
+            )
 
         norm = plt.Normalize(vmin=-1.0, vmax=1.0)
         mappable = plt.cm.ScalarMappable(norm=norm, cmap='coolwarm')
@@ -256,54 +258,98 @@ class AttentionVisualizer:
     
 def main(cfg):
     monkey_patch_zennit(verbose=True)
-    DEVICE = torch.device("cpu")
+
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    random.seed(cfg["seed"])
+    torch.manual_seed(cfg["seed"])
     MODE = cfg["lrp"]["mode"]
     print(f"\n--- RUNNING WITH MODE: {MODE} ---")
 
-    DECISION_METRIC = MODE
+    is_finetuned = cfg["model"]["finetuned"]
+    model_type_str = "finetuned" if is_finetuned else "base"
+    print(f"--- Running experiment for: {model_type_str.upper()} MODEL ---")
+
+
     model_wrapper, image_transforms, model_data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
-    random.seed(cfg["seed"])
-    torch.manual_seed(cfg["seed"])
+    mask_transform = get_mask_transform(cfg["model"]["img_size"])
+
+    # --- Prepare Datasets ---
     split_name = cfg["data"]["analysis_split"]
     split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
     split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
-    model_type_str = "finetuned" if cfg["model"]["finetuned"] else "base"
-    mask_transform = get_mask_transform(cfg["model"]["img_size"])
-
-    dataset = GorillaReIDDataset(
+    
+    split_dataset = GorillaReIDDataset(
         image_dir=split_dir,
         filenames=split_files,
         transform=image_transforms,
         base_mask_dir=cfg["data"]["base_mask_dir"],
-        mask_transform=mask_transform
+        mask_transform=mask_transform,
+        k=cfg["knn"]["k"],
     )
+    
+    train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
+    train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
+    train_dataset = GorillaReIDDataset(
+        image_dir=train_dir, filenames=train_files, transform=image_transforms
+    )
+    
 
-    dataloader = DataLoader(dataset, batch_size=cfg["data"]["batch_size"], num_workers=0, collate_fn=custom_collate_fn, shuffle=False)
+    datasets = [split_dataset, train_dataset]
+    full_db_dataset = ConcatDataset(datasets)
+    full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
 
-    # --- 3. Compute k-NN Database ---
-    db_path_knn = get_db_path(
+    db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=dataset.dataset_name,
-        split_name=split_name,
+        dataset_name=train_dataset.dataset_name,
+        split_name=full_dataset_splits,
         bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
     )
-    db_embeddings, db_labels, db_filenames, db_video_ids = get_knn_db(
-        db_path=db_path_knn,
-        dataset=dataset,
+    all_db_embeddings, all_db_labels, all_db_filenames, all_db_videos = get_knn_db(
+        db_path=db_path,
+        dataset=full_db_dataset,
         model_wrapper=model_wrapper,
         batch_size=cfg["data"]["batch_size"],
         device=DEVICE
     )
 
-    # --- 4. Compute Relevances ---
+    local_query_indices = split_dataset.images_for_ce_knn
+
+
+    # --- Generate or Load Relevance Maps (for test images only) ---
+    split_db_path_knn = get_db_path(
+        model_checkpoint_path=cfg["model"]["checkpoint_path"],
+        dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]
+    )
+    split_embeddings, split_labels, split_filenames, split_video_ids = get_knn_db(
+        db_path=split_db_path_knn, dataset=split_dataset, model_wrapper=model_wrapper,
+        batch_size=cfg["data"]["batch_size"], device=DEVICE
+    )
+
+    split_query_subset = torch.utils.data.Subset(split_dataset, local_query_indices)
+
+    split_dataloader = DataLoader(split_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
+
+    if cfg["lrp"]["eval_db"] == "test":
+        relevance_split_name = split_name
+        relevance_db_embeddings = split_embeddings
+        relevance_db_labels = split_labels
+        relevance_db_filenames = split_filenames
+        relevance_db_videos = split_video_ids
+    elif cfg["lrp"]["eval_db"] == "all":
+        relevance_split_name = full_dataset_splits
+        relevance_db_embeddings = all_db_embeddings
+        relevance_db_labels = all_db_labels
+        relevance_db_filenames = all_db_filenames
+        relevance_db_videos = all_db_videos
+
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=dataset.dataset_name,
-        split_name=split_name,
-        bp_transforms=cfg["model"]["bp_transforms"],
+        dataset_name=train_dataset.dataset_name, 
+        split_name=relevance_split_name, 
+        bp_transforms=cfg["model"]["bp_transforms"], 
         db_dir=cfg["lrp"]["db_relevances_dir"],
-        decision_metric=DECISION_METRIC,
+        decision_metric=MODE,
         lrp_params={
             "conv_gamma": cfg["lrp"]["conv_gamma"],
             "lin_gamma": cfg["lrp"]["lin_gamma"],
@@ -311,50 +357,47 @@ def main(cfg):
             "topk": cfg["lrp"]["topk"],
         }
     )
-
+    
     relevances_all = get_relevances(
-        db_path=db_path_relevances,
-        model_wrapper=model_wrapper,
-        dataloader=dataloader,
-        device=DEVICE,
-        recompute=False,
-        # All of these will be caught by **kwargs and passed to generate_relevances
-        conv_gamma=cfg["lrp"]["conv_gamma"],           # Pass as single value (will be converted to list)
-        lin_gamma=cfg["lrp"]["lin_gamma"],             # Pass as single value
-        proxy_temp=cfg["lrp"]["temp"],          # Pass as single value 
-        distance_metric=cfg["lrp"]["distance_metric"], #pass as single value
-        topk=cfg["lrp"]["topk"],  # Pass as single value
+        db_path=db_path_relevances, 
+        model_wrapper=model_wrapper, 
+        dataloader=split_dataloader,
+        device=DEVICE, 
+        recompute=False, 
+        conv_gamma=cfg["lrp"]["conv_gamma"], 
+        lin_gamma=cfg["lrp"]["lin_gamma"],
+        proxy_temp=cfg["lrp"]["temp"], 
+        distance_metric=cfg["lrp"]["distance_metric"], 
         mode=cfg["lrp"]["mode"],
-        db_embeddings=db_embeddings,
-        db_filenames=db_filenames,
-        db_labels=db_labels,
-        db_video_ids=db_video_ids,
+        topk=cfg["lrp"]["topk"], 
+        db_embeddings=relevance_db_embeddings, 
+        db_filenames=relevance_db_filenames,
+        db_labels=relevance_db_labels, 
+        db_video_ids=relevance_db_videos, 
         cross_encounter=cfg["lrp"]["cross_encounter"]
     )
 
     relevance_dict = {
         item['filename']: (item['relevance'], item['mask']) for item in relevances_all
     }
-    print(f"length of relevance_dict: {len(relevance_dict)}")
 
     denorm_transform = get_denormalization_transform(mean=model_data_config['mean'], std=model_data_config['std'])
 
     visualizer = AttentionVisualizer(
-        save_dir="./visualizations",
+        save_dir=f"./visualizations/{model_type_str}/{cfg['lrp']['mode']}",
         denorm_transform=denorm_transform,
         seed=cfg["seed"]
     )
 
-    # select 20 random images
+    # select 50 random images
     example_images = random.sample([os.path.splitext(f)[0] for f in split_files], 50)
 
-    #print(f"Example images for visualization: {example_images}")
 
     fname_to_idx = {
-        os.path.splitext(f)[0]: i for i, f in enumerate(dataset.filenames)
+        os.path.splitext(f)[0]: i for i, f in enumerate(split_dataset.filenames)
     }
 
-    example_images = ["PL02_Tm002_20220706_015_2394_31676", "TU03_R118_20220912_096_42_851638"]
+    #example_images = ["PL02_Tm002_20220706_015_2394_31676", "TU03_R118_20220912_096_42_851638"]
     for filename in example_images:
 
         # Get the necessary data for plotting
@@ -362,15 +405,11 @@ def main(cfg):
             print(f"Warning: Filename '{filename}' not found in dataset. Skipping.")
             continue
             
-        sample_data = dataset[fname_to_idx[os.path.splitext(filename)[0]]]
+        sample_data = split_dataset[fname_to_idx[os.path.splitext(filename)[0]]]
         image_tensor = sample_data["image"]
         
         relevance, mask = relevance_dict[filename]
 
-        # Normalize relevance map for consistent visualization
-        # This makes heatmaps comparable by scaling them to the [-1, 1] range
-        #relevance = relevance / torch.abs(relevance).max()
-        #relevance = torch.sign(relevance ) * torch.abs(relevance )**2
         frac = 0.75
 
         save_path = visualizer.plot_heatmap(
@@ -379,41 +418,8 @@ def main(cfg):
             mask=mask,
             relevance=relevance,
             stats={},
-            intensify=True
+            intensify=False
         )
-
-        """saved_path_morf = visualizer.plot_perturbation(
-            filename=filename,
-            image_tensor=image_tensor,
-            relevance_map=relevance,
-            patch_size=cfg["model"]["patch_size"],
-            perturbation_fraction=frac, # Perturb the top 25% of patches
-            perturbation_mode='morf',   # Most Relevant First
-            baseline_value='mean'
-        )
-        print(f"MoRF perturbation plot saved to: {saved_path_morf}")
-
-        saved_path_lerf = visualizer.plot_perturbation(
-            filename=filename,
-            image_tensor=image_tensor,
-            relevance_map=relevance,
-            patch_size=cfg["model"]["patch_size"],
-            perturbation_fraction=frac,
-            perturbation_mode='lerf',    # Least Relevant First
-            baseline_value='mean'
-        )
-        print(f"LeRF perturbation plot saved to: {saved_path_lerf}")
-
-        saved_path_lerf = visualizer.plot_perturbation(
-            filename=filename,
-            image_tensor=image_tensor,
-            relevance_map=relevance,
-            patch_size=cfg["model"]["patch_size"],
-            perturbation_fraction=frac,
-            perturbation_mode='random',    # Random
-            baseline_value='mean'
-        )
-        print(f"Random perturbation plot saved to: {saved_path_lerf}")"""
 
 
 

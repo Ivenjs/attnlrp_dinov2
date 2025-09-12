@@ -580,7 +580,7 @@ def main(cfg: Dict):
 
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=full_db_dataset.dataset_name, 
+        dataset_name=train_dataset.dataset_name, 
         split_name=relevance_split_name, 
         bp_transforms=cfg["model"]["bp_transforms"], 
         db_dir=cfg["lrp"]["db_relevances_dir"],
