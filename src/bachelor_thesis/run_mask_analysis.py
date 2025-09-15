@@ -22,6 +22,7 @@ import os
 import random
 import torch
 import argparse 
+import torch.nn.functional as F
 import wandb
 from relevance_metrics import compute_all_relevance_metrics
 import seaborn as sns

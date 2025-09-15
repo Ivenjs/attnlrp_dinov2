@@ -279,7 +279,7 @@ def main(cfg: dict):
     print("\n" + "="*80)
     print("--- FINAL VALIDATION & DECISION ---")
     print("="*80)
-    print(f"Chosen Parameters: conv_gamma={best_params_raw_train['conv_gamma']}, lin_gamma={best_params_raw_train['lin_gamma']}, dist={best_params_raw_train['distance_metric']}, proxy_temp={best_params_raw_train['proxy_temp']}")
+    print(f"Chosen Parameters: conv_gamma={best_params_raw_train['conv_gamma']}, lin_gamma={best_params_raw_train['lin_gamma']}, dist={best_params_raw_train['distance_metric']}, proxy_temp={best_params_raw_train['proxy_temp']}, topk={best_params_raw_train['topk']}")
     print(f"Performance on TRAIN set:    Mean Faithfulness = {train_performance['mean_faithfulness']:.4f}")
     print(f"Performance on VAL set: Mean Faithfulness = {val_performance['mean_faithfulness']:.4f}")
 

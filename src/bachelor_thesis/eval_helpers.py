@@ -7,7 +7,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from basemodel import TimmWrapper
 from typing import Any, Optional, Tuple, List, Dict, Callable
-from knn_helpers import calculate_distance
+from knn_helpers import calculate_distance_normalized
 from lrp_helpers import compute_knn_proxy_soft_all, compute_knn_proto_margin, compute_similarity_score, compute_knn_proxy_soft_topk
 from utils import deterministic_randperm, parse_encounter_id
 from model_evaluation import perform_knn_ce_evaluation
@@ -324,7 +324,7 @@ def _run_perturbation_experiment_acc(
         original_query_embeddings = torch.cat([model(batch[0].to(device)) for batch in temp_loader])
 
     print("  Calculating baseline accuracy (0% perturbation)...")
-    baseline_accuracy = perform_knn_ce_evaluation(
+    baseline_accuracy, _ = perform_knn_ce_evaluation(
         query_embeddings=original_query_embeddings,
         **eval_kwargs
     )
@@ -360,11 +360,10 @@ def _run_perturbation_experiment_acc(
     # The accuracy curve will now store tuples of (patches_perturbed, accuracy)
     accuracy_curve = [(0, baseline_accuracy)]
 
-    # --- 3. Run the perturbation sweep loop ---
     perturbed_images = query_images_tensor.clone().to(device)
     patches_processed_so_far = 0
     
-    pbar = tqdm(sorted_steps, desc="Running Downstream Perturbation Sweep", leave=False)
+    pbar = tqdm(sorted_steps, desc="Running perturbation over accuracy", leave=False)
     for end_idx in pbar:
         if end_idx <= patches_processed_so_far:
             continue
@@ -387,7 +386,7 @@ def _run_perturbation_experiment_acc(
             current_query_embeddings = torch.cat([model(batch[0]) for batch in temp_loader])
 
         # Evaluate accuracy at this milestone
-        current_accuracy = perform_knn_ce_evaluation(
+        current_accuracy, _ = perform_knn_ce_evaluation(
             query_embeddings=current_query_embeddings,
             **eval_kwargs
         )
@@ -655,7 +654,7 @@ def get_query_performance_metrics(
     db_filenames_np = np.array(db_filenames)
 
     with torch.no_grad(), torch.amp.autocast(device_type=device.type):
-        distances = calculate_distance(query_embedding, db_embeddings, distance_metric)
+        distances = calculate_distance_normalized(query_embedding, db_embeddings, distance_metric)
         try:
             query_idx = db_filenames.index(query_filename)
             distances[query_idx] = torch.inf

@@ -861,7 +861,7 @@ def compute_similarity_score(
             return query_embedding.sum() * 0, None, -1
 
         ref_idx = valid_positive_indices[0]
-        reference_embedding = db_embeddings[ref_idx].unsqueeze(0).to(device)
+        reference_embedding = db_embeddings[ref_idx].unsqueeze(0).to(query_embedding.device)
 
     assert reference_embedding.ndim == 2 and reference_embedding.shape[0] == 1, \
         "reference_embedding should be of shape [1, embedding_dim]"

@@ -51,7 +51,7 @@ class AttentionVisualizer:
             return mask.squeeze().cpu().numpy()
         return mask.squeeze()
 
-    def plot_heatmap(
+    def plot_and_save_individual_overview(
         self,
         filename: str,
         image_tensor: torch.Tensor,
@@ -60,85 +60,111 @@ class AttentionVisualizer:
         stats: Dict[str, Any],
         intensify: bool = False,
         show_stats: bool = False
-    ) -> str:
+    ) -> Dict[str, str]:
         """
-        Generates and saves a comprehensive relevance plot for a single model and image.
+        Generates and saves individual, themed plots for a single model and image.
+
+        Each plot (original, mask, heatmap, overlay) is saved in a separate
+        subdirectory within the main save directory.
 
         Args:
             filename (str): A descriptive filename, e.g., "reason_originalfilename".
             image_tensor (torch.Tensor): The input image tensor.
             mask (Union[torch.Tensor, np.ndarray]): The ground truth segmentation mask.
             relevance (torch.Tensor): The relevance map from the model.
-            stats (Dict[str, Any]): A dictionary containing all stats for the image
-                                    from the masking experiment DataFrame.
+            stats (Dict[str, Any]): A dictionary containing all stats for the image.
+            intensify (bool): Whether to apply a tanh intensification to the relevance map.
+            show_stats (bool): If True, adds a stats box to the original image plot.
+
+        Returns:
+            Dict[str, str]: A dictionary mapping plot themes to their save paths.
         """
         img_np = self._preprocess_image(image_tensor)
         mask_np = self._preprocess_mask(mask)
 
-        parts = os.path.splitext(filename)[0].split('_', 1)
-        reason = parts[0].replace('-', ' ').title()
-        clean_filename = parts[1] if len(parts) > 1 else filename
+        # Normalize relevance for visualization
+        relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
+        relevance_intensified = torch.tanh(5 * relevance_norm)
+        if intensify:
+            relevance_norm = relevance_intensified
 
-        fig, axs = plt.subplots(1, 4, figsize=(24, 8))
-        fig.suptitle(f"Analysis for: {clean_filename}\n(Category: {reason})", fontsize=20, y=1.02)
+        cmap = plt.get_cmap('coolwarm')
+        norm_for_cmap = plt.Normalize(vmin=-1.0, vmax=1.0)
+        heatmap_img = imgify(relevance_norm, vmin=-1.0, vmax=1.0)
+        heatmap_intensified_img = imgify(relevance_intensified, vmin=-1.0, vmax=1.0)
 
-        rank_orig = stats.get('rank_orig', 'N/A')
-        rank_masked = stats.get('rank_masked', 'N/A')
-        delta_proxy = stats.get('delta_proxy_score', 0.0)
-        aogr_total = stats.get('AoGR_total', 0.0)
+        themes = {
+            "original": "original_image",
+            "masked": "mask_outline",
+            "heatmap": "relevance_heatmap",
+            "overlay": "relevance_overlay"
+        }
+        
+        for theme_dir in themes.values():
+            os.makedirs(os.path.join(self.save_dir, theme_dir), exist_ok=True)
+            
+        saved_paths = {}
 
-        stats_text = (
-            f"--- Performance ---\n"
-            f"Original Rank: {rank_orig}\n"
-            f"Masked Rank:   {rank_masked}\n"
-            f"Δ Proxy Score: {delta_proxy:+.3f}\n\n"
-            f"--- Attention ---\n"
-            f"Gorilla Attention (AoGR): {aogr_total:.2%}"
-        )
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img_np)
+        ax.set_title("Original Image")
+        ax.axis('off')
         
         if show_stats:
-            fig.text(
-                0.01, 0.99, stats_text,
-                fontsize=10, family='monospace',
-                va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8)
+            rank_orig = stats.get('rank_orig', 'N/A')
+            rank_masked = stats.get('rank_masked', 'N/A')
+            delta_proxy = stats.get('delta_proxy_score', 0.0)
+            aogr_total = stats.get('AoGR_total', 0.0)
+            stats_text = (
+                f"--- Performance ---\n"
+                f"Original Rank: {rank_orig}\n"
+                f"Masked Rank:   {rank_masked}\n"
+                f"Δ Proxy Score: {delta_proxy:+.3f}\n\n"
+                f"--- Attention ---\n"
+                f"Gorilla Attention (AoGR): {aogr_total:.2%}"
             )
+            fig.text(0.01, 0.99, stats_text, fontsize=10, family='monospace',
+                     va='top', ha='left', bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8))
 
-        norm = plt.Normalize(vmin=-1.0, vmax=1.0)
-        mappable = plt.cm.ScalarMappable(norm=norm, cmap='coolwarm')
-
-        axs[0].imshow(img_np)
-        axs[0].set_title("Original Image")
-        axs[0].axis('off')
-
-        axs[1].imshow(img_np)
-        axs[1].contour(mask_np, colors='lime', linewidths=1.5)
-        axs[1].set_title("Mask Outline")
-        axs[1].axis('off')
-
-        relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
-        if intensify:
-            relevance_norm = torch.tanh(3 * relevance_norm)
-
-        heatmap_img = imgify(relevance_norm, vmin=-1.0, vmax=1.0)
-        axs[2].imshow(heatmap_img)
-        axs[2].set_title("Relevance Heatmap")
-        axs[2].axis('off')
-        fig.colorbar(mappable, ax=axs[2], orientation='vertical', fraction=0.046, pad=0.04)
-
-        axs[3].imshow(img_np)
-        axs[3].imshow(heatmap_img, alpha=0.6)
-        axs[3].set_title("Relevance Overlay")
-        axs[3].contour(mask_np, colors='lime', linewidths=1.5)
-        axs[3].axis('off')
-        
-
-        plt.tight_layout(rect=[0, 0.03, 1, 0.92]) # Adjust rect to fit suptitle
-
-        save_path = os.path.join(self.save_dir, f"{filename}.png")
-        plt.savefig(save_path, bbox_inches='tight')
+        save_path = os.path.join(self.save_dir, themes["original"], f"{filename}.png")
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
-        return save_path
+        saved_paths['original_image'] = save_path
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img_np)
+        ax.contour(mask_np, colors='lime', linewidths=1.5)
+        ax.set_title("Mask Outline")
+        ax.axis('off')
+        save_path = os.path.join(self.save_dir, themes["masked"], f"{filename}.png")
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
+        plt.close(fig)
+        saved_paths['mask_outline'] = save_path
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        im = ax.imshow(heatmap_img)
+        ax.set_title("Relevance Heatmap")
+        ax.axis('off')
+        # Add a colorbar
+        mappable = plt.cm.ScalarMappable(norm=norm_for_cmap, cmap=cmap)
+        fig.colorbar(mappable, ax=ax, orientation='vertical', fraction=0.046, pad=0.04)
+        save_path = os.path.join(self.save_dir, themes["heatmap"], f"{filename}.png")
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
+        plt.close(fig)
+        saved_paths['relevance_heatmap'] = save_path
+        
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img_np)
+        ax.imshow(heatmap_intensified_img, alpha=0.2)
+        ax.contour(mask_np, colors='lime', linewidths=1.5)
+        ax.set_title("Relevance Overlay")
+        ax.axis('off')
+        save_path = os.path.join(self.save_dir, themes["overlay"], f"{filename}.png")
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
+        plt.close(fig)
+        saved_paths['relevance_overlay'] = save_path
+
+        return saved_paths
     
     def plot_perturbation(
         self,
@@ -412,7 +438,7 @@ def main(cfg):
 
         frac = 0.75
 
-        save_path = visualizer.plot_heatmap(
+        save_path = visualizer.plot_and_save_individual_overview(
             filename=filename,
             image_tensor=image_tensor,
             mask=mask,

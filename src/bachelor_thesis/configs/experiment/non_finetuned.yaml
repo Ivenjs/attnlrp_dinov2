@@ -1,6 +1,6 @@
 model:
   finetuned: False
-  checkpoint_path: "base" # not really a path but still works
+  checkpoint_path: "base" # not really a path but works nonetheless
 
 lrp:
   mode: "soft_knn_margin_all" # Default
@@ -12,23 +12,23 @@ lrp:
 
 lrp_params:
   soft_knn_margin_all:
-    conv_gamma: 0.25
-    lin_gamma: 0.001
-    temp: 0.015
+    conv_gamma: 1.0
+    lin_gamma: 0.0005
+    temp: 0.005
     topk: null
   soft_knn_margin_topk:
-    temp: 0.01
-    topk: 5
-    conv_gamma: 0.25
-    lin_gamma: 0.001
+    temp: 0.5
+    topk: 1500
+    conv_gamma: 0.5
+    lin_gamma: 0.0005
   proto_margin:
-    temp: 0.03
-    topk: 50
-    conv_gamma: 0.1
-    lin_gamma: 0.05
+    temp: 0.005
+    topk: 750
+    conv_gamma: 0.5
+    lin_gamma: 0.0005
   
   similarity:
     temp: null
     topk: null
     conv_gamma: 0.25
-    lin_gamma: 0.001
+    lin_gamma: 0.25

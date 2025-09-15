@@ -74,7 +74,6 @@ def fill_knn_db(
 
     print(f"Saved {len(all_filenames)} embeddings to {output_path}")
 
-    # Return the GPU tensor and CPU lists, as per the original function's intent
     return final_embeddings_gpu, all_labels, all_filenames, all_videos
 
 def get_knn_db(
@@ -105,9 +104,9 @@ def get_knn_db(
 
 
 
-def calculate_distance_batched(db_embeddings, query_batch_embeddings, metric):
+def calculate_distance_batched_normalized(db_embeddings, query_batch_embeddings, metric):
     """
-    Calculates distances from a batch of queries to the entire database.
+    Calculates the NORMALIZED distances from a batch of queries to the entire database.
     
     Args:
         db_embeddings (Tensor): Shape [db_size, dim]
@@ -117,25 +116,22 @@ def calculate_distance_batched(db_embeddings, query_batch_embeddings, metric):
     Returns:
         Tensor: Distance matrix of shape [batch_size, db_size]
     """
+    db_norm = F.normalize(db_embeddings, p=2, dim=1)
+    query_norm = F.normalize(query_batch_embeddings, p=2, dim=1)
     if metric == "cosine":
-        # Normalize both sets of embeddings
-        db_norm = F.normalize(db_embeddings, p=2, dim=1)
-        query_norm = F.normalize(query_batch_embeddings, p=2, dim=1)
-        # Calculate similarity matrix using matrix multiplication
         similarity_matrix = torch.matmul(query_norm, db_norm.T)
-        # Convert similarity to distance
         return 1 - similarity_matrix
-    else: # Default to Euclidean
-        return torch.cdist(query_batch_embeddings, db_embeddings)
+    else:
+        return torch.cdist(query_norm, db_norm)
     
-def calculate_distance(embeddings, test_embedding, metric):
-    embeddings = embeddings.to(embeddings.device)
+def calculate_distance_normalized(embeddings, test_embedding, metric):
+    """calculates the NORMALIZED distance from a single test embedding to all embeddings."""
+    embeddings = F.normalize(embeddings, p=2, dim=1)
+    test_embedding = F.normalize(test_embedding, p=2, dim=1)
     if metric == "euclidean":
         distance = torch.norm(embeddings - test_embedding, dim=1)
     elif metric == "cosine":
-        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
-        normalized_test_embedding = F.normalize(test_embedding, p=2, dim=1)
-        cosine_similarity = torch.matmul(normalized_embeddings, normalized_test_embedding.transpose(0, 1)).squeeze()
+        cosine_similarity = torch.matmul(embeddings, test_embedding.transpose(0, 1)).squeeze()
         distance = 1 - cosine_similarity
     else:
         raise ValueError(f"Unsupported distance metric: {metric}")
