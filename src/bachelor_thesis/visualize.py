@@ -1,6 +1,7 @@
 # visualize.py
 
 import argparse
+from collections import defaultdict
 import os
 import random
 import torch
@@ -59,7 +60,8 @@ class AttentionVisualizer:
         relevance: torch.Tensor,
         stats: Dict[str, Any],
         intensify: bool = False,
-        show_stats: bool = False
+        show_stats: bool = False,
+        category: str = ""
     ) -> Dict[str, str]:
         """
         Generates and saves individual, themed plots for a single model and image.
@@ -101,7 +103,7 @@ class AttentionVisualizer:
         }
         
         for theme_dir in themes.values():
-            os.makedirs(os.path.join(self.save_dir, theme_dir), exist_ok=True)
+            os.makedirs(os.path.join(self.save_dir, category, theme_dir), exist_ok=True)
             
         saved_paths = {}
 
@@ -126,7 +128,7 @@ class AttentionVisualizer:
             fig.text(0.01, 0.99, stats_text, fontsize=10, family='monospace',
                      va='top', ha='left', bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8))
 
-        save_path = os.path.join(self.save_dir, themes["original"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category,themes["original"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['original_image'] = save_path
@@ -136,7 +138,7 @@ class AttentionVisualizer:
         ax.contour(mask_np, colors='lime', linewidths=1.5)
         ax.set_title("Mask Outline")
         ax.axis('off')
-        save_path = os.path.join(self.save_dir, themes["masked"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category, themes["masked"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['mask_outline'] = save_path
@@ -148,7 +150,7 @@ class AttentionVisualizer:
         # Add a colorbar
         mappable = plt.cm.ScalarMappable(norm=norm_for_cmap, cmap=cmap)
         fig.colorbar(mappable, ax=ax, orientation='vertical', fraction=0.046, pad=0.04)
-        save_path = os.path.join(self.save_dir, themes["heatmap"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category, themes["heatmap"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['relevance_heatmap'] = save_path
@@ -159,7 +161,7 @@ class AttentionVisualizer:
         ax.contour(mask_np, colors='lime', linewidths=1.5)
         ax.set_title("Relevance Overlay")
         ax.axis('off')
-        save_path = os.path.join(self.save_dir, themes["overlay"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category, themes["overlay"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['relevance_overlay'] = save_path
@@ -416,7 +418,39 @@ def main(cfg):
     )
 
     # select 50 random images
-    example_images = random.sample([os.path.splitext(f)[0] for f in split_files], 50)
+    #example_images = random.sample([os.path.splitext(f)[0] for f in split_files], 50)
+    images_to_visualize = defaultdict(list)
+    images_to_visualize["correct"] = [
+        "OE00_R019_20220815_077_60_155860",
+        "ME00_R465_20210924_023_385_1172856",
+        "PL02_R465_20220227_163_983_1172733",
+        "PL01_R465_20220204_282_1470_1172870",
+        "GA41_R105_20220819_003_1692_29862",
+        "NN00_R018_20220825_184_1020_766159",
+        "PL00_R018_20220317_027_4548_1109074",
+        "TU03_R118_20220111_261_642_280864",
+        "RC42_R108_20221127_293_768_23067",
+        "RC21_R105_20230201_327_396_329203",
+        "PL61_R103_20230227_071_492_833240",
+        "DU40_R030_20211202_064_1455_1172731"
+    ]
+
+    #TODO why is this one longer?
+    images_to_visualize["incorrect"] = [
+        "RC42_R108_20221127_293_7488_23115",
+        "ME00_R465_20211104_151_1245_1172834",
+        "NN00_R018_20220711_050_3546_765937",
+        "OE00_R172_20221121_204_78_862780",
+        "PL61_R103_20230227_071_672_833242",
+        "PL01_R465_20220629_005_948_882125",
+        "RC21_R108_20230128_018_1638_847788",
+        "PL02_R465_20220228_205_162_724627",
+        "GA41_R108_20220824_022_1272_843913",
+        "PL00_R465_20221101_317_4338_29555",
+        "DU40_R030_20220325_020_1924_1172823",
+        "AP03_R066_20221118_164_285_1173026",
+        "TU03_R118_20221020_143_1488_261233"
+    ]
 
 
     fname_to_idx = {
@@ -424,28 +458,30 @@ def main(cfg):
     }
 
     #example_images = ["PL02_Tm002_20220706_015_2394_31676", "TU03_R118_20220912_096_42_851638"]
-    for filename in example_images:
+    for category, filenames in images_to_visualize.items():
+        for filename in filenames:
 
-        # Get the necessary data for plotting
-        if os.path.splitext(filename)[0] not in fname_to_idx:
-            print(f"Warning: Filename '{filename}' not found in dataset. Skipping.")
-            continue
+            # Get the necessary data for plotting
+            if os.path.splitext(filename)[0] not in fname_to_idx:
+                print(f"Warning: Filename '{filename}' not found in dataset. Skipping.")
+                continue
             
-        sample_data = split_dataset[fname_to_idx[os.path.splitext(filename)[0]]]
-        image_tensor = sample_data["image"]
-        
-        relevance, mask = relevance_dict[filename]
+            sample_data = split_dataset[fname_to_idx[os.path.splitext(filename)[0]]]
+            image_tensor = sample_data["image"]
+            
+            relevance, mask = relevance_dict[filename]
 
-        frac = 0.75
+            frac = 0.75
 
-        save_path = visualizer.plot_and_save_individual_overview(
-            filename=filename,
-            image_tensor=image_tensor,
-            mask=mask,
-            relevance=relevance,
-            stats={},
-            intensify=False
-        )
+            save_path = visualizer.plot_and_save_individual_overview(
+                filename=filename,
+                image_tensor=image_tensor,
+                mask=mask,
+                relevance=relevance,
+                stats={},
+                intensify=False,
+                category=category,
+            )
 
 
 

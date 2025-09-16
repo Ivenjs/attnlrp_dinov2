@@ -47,43 +47,64 @@ def main(cfg):
     )
 
     # --- Prepare Datasets ---
-    split_name = cfg["data"]["analysis_split"]
-    split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
-    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
-    
-    split_dataset = GorillaReIDDataset(
-        image_dir=split_dir,
-        filenames=split_files,
-        transform=image_transforms,
-        base_mask_dir=cfg["data"]["base_mask_dir"],
-        mask_transform=mask_transform,
-        k=cfg["knn"]["k"],
-    )
-    
-    train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
-    train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
-    train_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=train_files, transform=image_transforms
-    )
-    
+    dataset_dir = cfg["data"]["dataset_dir"]
+    if not "zoo" in dataset_dir:
+        split_name = cfg["data"]["analysis_split"]
+        split_dir = os.path.join(dataset_dir, split_name)
+        split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
+        
+        split_dataset = GorillaReIDDataset(
+            image_dir=split_dir,
+            filenames=split_files,
+            transform=image_transforms,
+            base_mask_dir=cfg["data"]["base_mask_dir"],
+            mask_transform=mask_transform,
+            k=cfg["knn"]["k"],
+        )
+        
+        train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
+        train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
+        train_dataset = GorillaReIDDataset(
+            image_dir=train_dir, filenames=train_files, transform=image_transforms
+        )
+        
 
-    datasets = [split_dataset, train_dataset]
-    full_db_dataset = ConcatDataset(datasets)
-    full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
+        datasets = [split_dataset, train_dataset]
+        full_db_dataset = ConcatDataset(datasets)
+        full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
 
 
-    query_dataset_offset = 0
-    found = False
-    for d in datasets:
-        if d is split_dataset:
-            found = True
-            break
-        query_dataset_offset += len(d)
+        query_dataset_offset = 0
+        found = False
+        for d in datasets:
+            if d is split_dataset:
+                found = True
+                break
+            query_dataset_offset += len(d)
 
-    print("Query dataset offset in DB:", query_dataset_offset)
+        print("Query dataset offset in DB:", query_dataset_offset)
 
-    if not found:
-        raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+        if not found:
+            raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+        
+    else:
+        print("Using Zoo dataset for evaluation.")
+        split_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
+        split_dataset = GorillaReIDDataset(
+            image_dir=dataset_dir,
+            filenames=split_files,
+            transform=image_transforms,
+            base_mask_dir=cfg["data"]["base_mask_dir"],
+            mask_transform=mask_transform,
+            k=cfg["knn"]["k"],
+        )
+
+        query_dataset_offset = 0
+        full_db_dataset = split_dataset
+        full_dataset_splits = os.path.basename(dataset_dir)
+        split_name = full_dataset_splits
+
+
 
     local_query_indices = split_dataset.images_for_ce_knn
 
@@ -93,7 +114,7 @@ def main(cfg):
     print("Preparing the main KNN database (gallery)...")
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=train_dataset.dataset_name,
+        dataset_name=split_dataset.dataset_name,
         split_name=full_dataset_splits,
         bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
@@ -139,7 +160,7 @@ def main(cfg):
 
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=train_dataset.dataset_name,
+        dataset_name=split_dataset.dataset_name,
         split_name=relevance_split_name,
         bp_transforms=cfg["model"]["bp_transforms"], 
         db_dir=cfg["lrp"]["db_relevances_dir"],

@@ -362,6 +362,18 @@ def _run_perturbation_experiment_acc(
 
     perturbed_images = query_images_tensor.clone().to(device)
     patches_processed_so_far = 0
+
+    if baseline_value.lower() == "mean":
+        baseline_fills = query_images_tensor.mean(dim=[2, 3], keepdim=True).to(device)
+    elif baseline_value.lower() == "black":
+        single_baseline = torch.zeros(
+            (1, query_images_tensor.shape[1], 1, 1),
+            device=device,
+            dtype=query_images_tensor.dtype
+        )
+        baseline_fills = single_baseline.expand(query_images_tensor.shape[0], -1, -1, -1)
+    else:
+        raise ValueError(f"Unknown baseline type: {baseline_value}")
     
     pbar = tqdm(sorted_steps, desc="Running perturbation over accuracy", leave=False)
     for end_idx in pbar:
@@ -374,7 +386,7 @@ def _run_perturbation_experiment_acc(
             step_start_idx=patches_processed_so_far,
             step_end_idx=end_idx,
             patch_size=patch_size,
-            baseline_value=baseline_value
+            precomputed_baselines=baseline_fills
         )
 
         # Re-calculate embeddings for the newly perturbed batch
@@ -539,7 +551,7 @@ def apply_perturbation_to_batch(
     step_start_idx: int,
     step_end_idx: int,
     patch_size: int,
-    baseline_value: str = "mean",
+    precomputed_baselines: torch.Tensor = None,
 ) -> torch.Tensor:
     """
     Applies perturbation to a batch of images based on pre-computed patch orders.
@@ -552,18 +564,6 @@ def apply_perturbation_to_batch(
         patch_size: The size of each square patch.
         baseline_value: The baseline to use for perturbation.
     """
-    if baseline_value.lower() == "black":
-        # Create baseline once, then broadcast
-        baseline_fill_patch = torch.zeros(
-            (1, image_batch.shape[1], patch_size, patch_size),
-            device=image_batch.device,
-            dtype=image_batch.dtype
-        )
-    elif baseline_value.lower() == "mean":
-        # 'mean' baseline is image-specific. We handle this inside the loop.
-        pass
-    else:
-        raise ValueError(f"Unknown baseline type: {baseline_value}")
 
     h, w = image_batch.shape[-2:]
     num_patches_w = w // patch_size
@@ -571,11 +571,9 @@ def apply_perturbation_to_batch(
     patches_to_perturb_this_step = patch_orders[:, step_start_idx:step_end_idx]
 
     for i in range(image_batch.shape[0]):  
-        if baseline_value.lower() == "mean":
-             mean_color = image_batch[i].mean(dim=[1, 2], keepdim=True)
-             baseline_fill_patch = mean_color.expand(
-                 -1, patch_size, patch_size
-             ).unsqueeze(0)
+        baseline_fill_patch = precomputed_baselines[i:i+1].expand(
+            -1, -1, patch_size, patch_size
+        )
 
 
         for patch_idx in patches_to_perturb_this_step[i]:

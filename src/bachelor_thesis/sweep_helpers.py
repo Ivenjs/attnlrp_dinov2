@@ -351,8 +351,8 @@ def visualize_robustness_analysis(
 
     plots = [
         ('Mean Faithfulness', 'raw_mean'),
-        ('Minimum Faithfulness (Worst-Case)', 'raw_min'),
-        ('Overall Robustness Score', 'robustness_score')
+        #('Minimum Faithfulness (Worst-Case)', 'raw_min'),
+        #('Overall Robustness Score', 'robustness_score')
     ]
 
     # nur valide Werte nehmen (kein None / NaN)
