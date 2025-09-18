@@ -376,7 +376,10 @@ def visualize_robustness_analysis(
                     if df_subset.empty:
                         continue
 
-                    fig, axes = plt.subplots(1, 3, figsize=(22, 6))
+                    fig, axes = plt.subplots(1, len(plots), figsize=(7 * len(plots), 6))
+                    if len(plots) == 1:
+                        axes = [axes]
+                        
                     fig.suptitle(
                         f"Robustness Analysis (Eval: {eval_metric}, "
                         f"Distance: {dist_metric}, Proxy Temp: {proxy_temp}, TopK: {topk})",
