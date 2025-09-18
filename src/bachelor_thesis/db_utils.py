@@ -50,8 +50,6 @@ def fetch_bounding_boxes(file_df: pd.DataFrame, db_schema: str, feature_type: st
     params_to_query = list(zip(file_df["frame_nr"], file_df["tracking_id"]))
 
     try:
-        # NOTE: Using a 'with' statement for the cursor assumes your get_db_connection handles
-        # connection and cursor closing properly.
         with get_db_connection(schema=db_schema) as cursor:
             query = f"""
                 SELECT

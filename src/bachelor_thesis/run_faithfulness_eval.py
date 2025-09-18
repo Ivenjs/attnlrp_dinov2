@@ -157,7 +157,6 @@ def main(cfg):
         relevance_db_filenames = all_db_filenames
         relevance_db_videos = all_db_videos
 
-
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name,
@@ -172,6 +171,7 @@ def main(cfg):
             "topk": cfg["lrp"]["topk"],
         }
     )
+    
     
     relevances_all = get_relevances(
         db_path=db_path_relevances, 

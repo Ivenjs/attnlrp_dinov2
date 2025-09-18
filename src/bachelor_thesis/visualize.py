@@ -86,7 +86,7 @@ class AttentionVisualizer:
 
         # Normalize relevance for visualization
         relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
-        relevance_intensified = torch.tanh(5 * relevance_norm)
+        relevance_intensified = torch.tanh(2 * relevance_norm)
         if intensify:
             relevance_norm = relevance_intensified
 
@@ -128,7 +128,7 @@ class AttentionVisualizer:
             fig.text(0.01, 0.99, stats_text, fontsize=10, family='monospace',
                      va='top', ha='left', bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8))
 
-        save_path = os.path.join(self.save_dir, category,themes["original"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category,themes["original"], f"{filename}.svg")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['original_image'] = save_path
@@ -138,7 +138,7 @@ class AttentionVisualizer:
         ax.contour(mask_np, colors='lime', linewidths=1.5)
         ax.set_title("Mask Outline")
         ax.axis('off')
-        save_path = os.path.join(self.save_dir, category, themes["masked"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category, themes["masked"], f"{filename}.svg")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['mask_outline'] = save_path
@@ -150,18 +150,18 @@ class AttentionVisualizer:
         # Add a colorbar
         mappable = plt.cm.ScalarMappable(norm=norm_for_cmap, cmap=cmap)
         fig.colorbar(mappable, ax=ax, orientation='vertical', fraction=0.046, pad=0.04)
-        save_path = os.path.join(self.save_dir, category, themes["heatmap"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category, themes["heatmap"], f"{filename}.svg")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['relevance_heatmap'] = save_path
         
         fig, ax = plt.subplots(figsize=(8, 8))
-        ax.imshow(img_np)
-        ax.imshow(heatmap_intensified_img, alpha=0.2)
+        ax.imshow(heatmap_intensified_img)#, alpha=0.2)
+        ax.imshow(img_np, alpha=0.5)
         ax.contour(mask_np, colors='lime', linewidths=1.5)
         ax.set_title("Relevance Overlay")
         ax.axis('off')
-        save_path = os.path.join(self.save_dir, category, themes["overlay"], f"{filename}.png")
+        save_path = os.path.join(self.save_dir, category, themes["overlay"], f"{filename}.svg")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['relevance_overlay'] = save_path

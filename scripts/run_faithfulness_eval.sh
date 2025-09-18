@@ -9,7 +9,8 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH -p aisc 
 #SBATCH --account=aisc 
-#SBATCH --qos=aisc 
+#SBATCH --qos=aisc
+#SBATCH --partition=aisc
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=slack:iven.schlegelmilch
 #SBATCH --output=logs/%x-%j.out    # %x = jobname, %j = jobid
