@@ -1,7 +1,8 @@
 from collections import defaultdict
 import numpy as np
-from pydash import result
 import torch
+import json
+import os
 import torch.nn.functional as F
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -283,6 +284,7 @@ def _run_perturbation_experiment_acc(
     query_labels_int: torch.Tensor,
     query_encounter_ids_int: torch.Tensor,
     query_original_indices: torch.Tensor,
+    query_filenames: List[str],
     all_patch_orders: torch.Tensor,
     db_embeddings: torch.Tensor,
     db_labels_int: torch.Tensor,
@@ -293,10 +295,9 @@ def _run_perturbation_experiment_acc(
     baseline_value: str,
     device: torch.device,
     fractions_to_record: Optional[List[float]] = None,
-) -> Tuple[torch.Tensor, Dict[float, float]]:
+) -> Tuple[torch.Tensor, Dict[float, float], Dict[int, List[Dict]]]:
     """
     Runs a perturbation sweep and evaluates downstream k-NN accuracy at each step.
-    This version is adapted to use the specific `perform_knn_ce_evaluation` function.
     """
     model.eval()
     num_patches = all_patch_orders.shape[1]
@@ -312,6 +313,7 @@ def _run_perturbation_experiment_acc(
         "query_labels_int": query_labels_int,
         "query_encounter_ids_int": query_encounter_ids_int,
         "query_original_indices": query_original_indices,
+        "query_filenames": query_filenames,
     }
 
     # --- 1. Get Baseline Accuracy ---
@@ -324,7 +326,7 @@ def _run_perturbation_experiment_acc(
         original_query_embeddings = torch.cat([model(batch[0].to(device)) for batch in temp_loader])
 
     print("  Calculating baseline accuracy (0% perturbation)...")
-    baseline_accuracy, _ = perform_knn_ce_evaluation(
+    baseline_accuracy, baseline_details = perform_knn_ce_evaluation(
         query_embeddings=original_query_embeddings,
         **eval_kwargs
     )
@@ -357,7 +359,7 @@ def _run_perturbation_experiment_acc(
     sorted_steps = sorted(list(steps))
     print(f"  Total evaluation steps: {len(sorted_steps)} (including baseline and final step)")
     
-    # The accuracy curve will now store tuples of (patches_perturbed, accuracy)
+    step_by_step_predictions = {0: baseline_details} 
     accuracy_curve = [(0, baseline_accuracy)]
 
     perturbed_images = query_images_tensor.clone().to(device)
@@ -398,12 +400,13 @@ def _run_perturbation_experiment_acc(
             current_query_embeddings = torch.cat([model(batch[0]) for batch in temp_loader])
 
         # Evaluate accuracy at this milestone
-        current_accuracy, _ = perform_knn_ce_evaluation(
+        current_accuracy, current_details = perform_knn_ce_evaluation(
             query_embeddings=current_query_embeddings,
             **eval_kwargs
         )
         
         accuracy_curve.append((end_idx, current_accuracy))
+        step_by_step_predictions[end_idx] = current_details
 
         frac = patches_at_fraction.get(end_idx)  
         if frac is not None and frac not in fraction_accuracies:
@@ -417,7 +420,7 @@ def _run_perturbation_experiment_acc(
     pbar.close()
 
     final_accuracy_curve = torch.tensor([acc for step, acc in accuracy_curve], device=device)
-    return final_accuracy_curve, fraction_accuracies
+    return final_accuracy_curve, fraction_accuracies, step_by_step_predictions
 
 def faithfulness_eval_acc(
     relevance_maps_dict: Dict[str, torch.Tensor],
@@ -435,12 +438,13 @@ def faithfulness_eval_acc(
     baseline_value: str = "mean",
     seed=161,
     fractions_to_record: Optional[List[float]] = None,
+    relevances_name: str = None
 ) -> Dict:
     device = db_embeddings.device
     model.to(device)
 
     print("Pre-computing perturbation orders and preparing query metadata...")
-    query_images_list, query_labels_list, query_videos_list = [], [], []
+    query_images_list, query_labels_list, query_videos_list, query_filenames_list = [], [], [], []
     morf_orders, lerf_orders, random_orders = [], [], []
 
     filename_to_global_idx = {
@@ -468,6 +472,7 @@ def faithfulness_eval_acc(
         query_images_list.append(sample['image'])
         query_labels_list.append(sample['label'])
         query_videos_list.append(sample['video'])
+        query_filenames_list.append(sample['filename'])
 
         final_global_indices.append(filename_to_global_idx[filename_no_ext])
 
@@ -497,6 +502,7 @@ def faithfulness_eval_acc(
         "query_labels_int": query_labels_int,
         "query_encounter_ids_int": query_encounter_ids_int,
         "query_original_indices": query_original_indices_tensor,
+        "query_filenames": query_filenames_list,
         "db_embeddings": db_embeddings,
         "db_labels_int": db_labels_int,
         "db_encounter_ids_int": db_encounter_ids_int,
@@ -508,9 +514,18 @@ def faithfulness_eval_acc(
         "fractions_to_record": fractions_to_record
     }
 
-    morf_curve, fraction_accuracies_morf = _run_perturbation_experiment_acc(all_patch_orders=morf_orders_tensor, **perturbation_args)
-    lerf_curve, fraction_accuracies_lerf = _run_perturbation_experiment_acc(all_patch_orders=lerf_orders_tensor, **perturbation_args)
-    random_curve, fraction_accuracies_random = _run_perturbation_experiment_acc(all_patch_orders=random_orders_tensor, **perturbation_args)
+    morf_curve, fraction_accuracies_morf, morf_details = _run_perturbation_experiment_acc(all_patch_orders=morf_orders_tensor, **perturbation_args)
+    lerf_curve, fraction_accuracies_lerf, lerf_details = _run_perturbation_experiment_acc(all_patch_orders=lerf_orders_tensor, **perturbation_args)
+    random_curve, fraction_accuracies_random, _ = _run_perturbation_experiment_acc(all_patch_orders=random_orders_tensor, **perturbation_args)
+
+    analysis_results = analyze_perturbation_results(
+        lerf_details=lerf_details,
+        morf_details=morf_details
+    )
+
+    #save this analysis in json
+    with open(f"./visualizations/{relevances_name}.json", "w") as f:
+        json.dump(analysis_results, f, indent=4)
 
     auc_morf = calculate_auc(morf_curve)
     auc_lerf = calculate_auc(lerf_curve)
@@ -540,7 +555,8 @@ def faithfulness_eval_acc(
         'random_curve': random_curve.cpu().numpy(),
         'fraction_accuracies_morf': fraction_accuracies_morf,
         'fraction_accuracies_lerf': fraction_accuracies_lerf,
-        'fraction_accuracies_random': fraction_accuracies_random
+        'fraction_accuracies_random': fraction_accuracies_random,
+        'analysis_by_image': analysis_results
     }
 
     return results
@@ -694,3 +710,69 @@ def get_query_performance_metrics(
         'recall_at_k': recall_at_k
     }
 
+
+def analyze_perturbation_results(
+    lerf_details: Dict[int, List[Dict]],
+    morf_details: Dict[int, List[Dict]]
+) -> Dict[str, List[str]]:
+    """
+    Analyzes the step-by-step prediction details to find interesting image subsets.
+
+    Args:
+        lerf_details: Dict mapping {patches_perturbed: prediction_details} for LeRF.
+        morf_details: Dict mapping {patches_perturbed: prediction_details} for MoRF.
+
+    Returns:
+        A dictionary containing lists of filenames for each category.
+    """
+    def _create_correctness_history(details_dict: Dict[int, List[Dict]]):
+        history = defaultdict(dict)
+        for step, details_list in details_dict.items():
+            for detail in details_list:
+                history[detail['filename']][step] = detail['is_correct']
+        return history
+
+    lerf_history = _create_correctness_history(lerf_details)
+    morf_history = _create_correctness_history(morf_details)
+
+    positive_lerf_flippers = []
+    negative_morf_flippers = []
+    hard_lerf_failures = []
+    robust_morf_successes = []
+
+    all_filenames = set(lerf_history.keys()) | set(morf_history.keys())
+
+    for filename in all_filenames:
+        if filename in lerf_history:
+            lerf_run = lerf_history[filename]
+            # Check for Positive Flippers: Was incorrect at start, but became correct later
+            if not lerf_run.get(0, True) and any(v for k, v in lerf_run.items() if k > 0):
+                positive_lerf_flippers.append(filename)
+            
+            # Check for Hard Failures: Was never correct
+            if not any(lerf_run.values()):
+                hard_lerf_failures.append(filename)
+
+        if filename in morf_history:
+            morf_run = morf_history[filename]
+            # Check for Negative Flippers: Was correct at start, but became incorrect later
+            if morf_run.get(0, False) and not all(v for k, v in morf_run.items() if k > 0):
+                negative_morf_flippers.append(filename)
+
+            # Check for Robust Successes: Was always correct. Should be empty since the 100% perturbation image is likely not resulting in correct predictions
+            if all(morf_run.values()):
+                robust_morf_successes.append(filename)
+                
+    print("\n--- Perturbation Analysis Summary ---")
+    print(f"Out of {len(all_filenames)} images:")
+    print(f" - Positive LeRF Flippers: {len(positive_lerf_flippers)}")
+    print(f" - Negative MoRF Flippers: {len(negative_morf_flippers)}")
+    print(f" - Hard LeRF Failures: {len(hard_lerf_failures)}")
+    print(f" - Robust MoRF Successes: {len(robust_morf_successes)}")
+
+    return {
+        "positive_lerf_flippers": positive_lerf_flippers,
+        "negative_morf_flippers": negative_morf_flippers,
+        "hard_lerf_failures": hard_lerf_failures,
+        "robust_morf_successes": robust_morf_successes,
+    }

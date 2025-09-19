@@ -6,6 +6,7 @@ from utils import load_config, get_db_path, parse_encounter_id
 from basemodel import get_model_wrapper
 from dataset import GorillaReIDDataset, custom_collate_fn
 from torch.utils.data import DataLoader, Subset, ConcatDataset
+from typing import List
 from knn_helpers import get_knn_db, calculate_distance_batched_normalized
 from sklearn.metrics import balanced_accuracy_score, accuracy_score
 from torchvision import transforms
@@ -14,6 +15,7 @@ import os
 import operator
 import torch.nn.functional as F
 from collections import defaultdict
+from knn_helpers import create_exclusion_mask
 
 def analyze_predictions_by_class(prediction_details, id_to_label, n=50):
     """
@@ -62,6 +64,37 @@ def analyze_predictions_by_class(prediction_details, id_to_label, n=50):
             f"Distance: {pred['confidence_distance']:.4f}"
         )
 
+#TODO: use this in perform_knn_ce_evaluation for a unified approach alongside the lrp masking. But would need to update the masking to be wiht integers for lrp of non-integers here
+def create_batched_exclusion_mask(
+    query_filenames_batch: List[str],
+    query_video_ids_batch: List[str],
+    db_filenames: List[str],
+    db_video_ids: List[str],
+    device: torch.device,
+    exclude_self: bool = True,
+    cross_encounter: bool = True
+) -> torch.Tensor:
+    """
+    A wrapper that applies `create_exclusion_mask` to a batch of queries.
+    """
+    all_masks = []
+    for q_filename, q_video_id in zip(query_filenames_batch, query_video_ids_batch):
+        single_mask = create_exclusion_mask(
+            query_filename=q_filename,
+            query_video_id=q_video_id,
+            db_filenames=db_filenames,
+            db_video_ids=db_video_ids,
+            device=device,
+            exclude_self=exclude_self,
+            cross_encounter=cross_encounter
+        )
+        all_masks.append(single_mask)
+
+    if all_masks:
+        return torch.stack(all_masks, dim=0)
+    else:
+        return torch.empty((0, len(db_filenames)), dtype=torch.bool, device=device)
+    
 def perform_knn_ce_evaluation(
     query_embeddings,
     query_labels_int,
@@ -90,6 +123,7 @@ def perform_knn_ce_evaluation(
     for i in tqdm(range(0, num_queries, batch_size), desc="Running Batched KNN-CE"):
         batch_end = min(i + batch_size, num_queries)
         query_embeddings_batch = query_embeddings[i:batch_end]
+        query_labels_batch = query_labels_int[i:batch_end]
         query_encounter_ids_batch = query_encounter_ids_int[i:batch_end]
         query_indices_batch = query_original_indices[i:batch_end] if query_original_indices is not None else None
         query_filenames_batch = query_filenames[i:batch_end] if query_filenames is not None else None
@@ -98,7 +132,14 @@ def perform_knn_ce_evaluation(
 
         # --- Apply Cross-Encounter Mask ---
         same_encounter_mask = (query_encounter_ids_batch.view(-1, 1) == db_encounter_ids_int)
+
+        #same label mask
+        same_label_mask = (query_labels_batch.view(-1, 1) == db_labels_int)
+
+        final_mask = same_encounter_mask & same_label_mask #use this to still allow other labels in same encounter. We would also need to update the cross encounter filtering for proxy scores
         distance_matrix[same_encounter_mask] = float('inf')
+
+        #distance_matrix[same_encounter_mask] = float('inf')
 
         # --- Apply Self-Match Mask (if query is subset of db) --- Probably not needed with encounter masking but just in case
         if query_indices_batch is not None:

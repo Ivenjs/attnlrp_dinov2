@@ -23,7 +23,6 @@ def main(cfg):
     Runs a faithfulness evaluation by perturbing images based on LRP relevance maps
     and measuring the impact on k-NN Re-ID accuracy.
     """
-    # --- Setup ---
     monkey_patch_zennit(verbose=True)
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     MODE = cfg["lrp"]["mode"]
@@ -72,6 +71,8 @@ def main(cfg):
         datasets = [split_dataset, train_dataset]
         full_db_dataset = ConcatDataset(datasets)
         full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
+
+        print(f"full dataset contains {len(full_db_dataset)} images from splits: {full_dataset_splits}")
 
 
         query_dataset_offset = 0
@@ -213,6 +214,8 @@ def main(cfg):
 
     perturbation_fractions = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1] # 0 will be included by default 
 
+
+    relevances_name=os.path.basename(db_path_relevances)
     eval_results = faithfulness_eval_acc(
         relevance_maps_dict=relevance_dict,
         query_dataset=split_query_subset, 
@@ -228,7 +231,8 @@ def main(cfg):
         patches_per_step=cfg["eval"]["patches_per_step"],
         baseline_value=cfg["eval"]["baseline_value"],
         seed=cfg["seed"],
-        fractions_to_record=perturbation_fractions # this overrides the patches_per_step, but is optional
+        fractions_to_record=perturbation_fractions, # this overrides the patches_per_step, but is optional
+        relevances_name=relevances_name
     )
 
     curves = {
@@ -237,7 +241,7 @@ def main(cfg):
         'random': eval_results["fraction_accuracies_random"]
     }
     print("\nEvaluation Results:")
-    print(eval_results)
+    print(curves)
 
     hpi_colors = get_hpi_colors(cfg=cfg)
     colors = {'morf': hpi_colors["red"], 'lerf': hpi_colors["yellow"], 'random': hpi_colors["gray"]}
@@ -294,6 +298,6 @@ if __name__ == "__main__":
         "--config_name",
         args.config_name
     ] + unknown_args
-    subprocess.run(command, check=True)
+    #subprocess.run(command, check=True)
 
     main(cfg)

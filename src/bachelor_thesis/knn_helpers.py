@@ -3,10 +3,11 @@ import os
 import torch
 from tqdm import tqdm
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, List
 from torch.utils.data import DataLoader
 from lxt.efficient.rules import identity_rule_implicit
 import torch
+from utils import parse_encounter_id
 
 
 import numpy as np
@@ -137,3 +138,59 @@ def calculate_distance_normalized(embeddings, test_embedding, metric):
         raise ValueError(f"Unsupported distance metric: {metric}")
     return distance
 
+def create_exclusion_mask(
+    query_filename: str,
+    query_video_id: str,
+    db_filenames: List[str],
+    db_video_ids: List[str],
+    device: torch.device,
+    exclude_self: bool = False,
+    cross_video: bool = False,
+    cross_encounter: bool = False
+) -> torch.Tensor:
+    """
+    Creates a boolean mask to exclude items from the database based on flags.
+
+    Args:
+        query_filename: Filename of the query item.
+        query_video_id: Video ID of the query item.
+        db_filenames: List of all database filenames.
+        db_video_ids: List of all database video IDs.
+        device: The torch device to create the mask on.
+        exclude_self: If True, excludes the item with the exact same filename.
+        cross_video: If True, excludes all items from the same video_id.
+        cross_encounter: If True, excludes all items from the same camera on the same day.
+
+    Returns:
+        A boolean tensor where True indicates an item should be excluded.
+    """
+    n_db = len(db_filenames)
+    exclusion_mask = torch.zeros(n_db, dtype=torch.bool, device=device)
+
+    # 1. Self-exclusion (always applied if the flag is True)
+    if exclude_self:
+        try:
+            q_idx = db_filenames.index(query_filename)
+            exclusion_mask[q_idx] = True
+        except ValueError:
+            pass
+
+    # 2. Video-based exclusion
+    if cross_video and query_video_id and db_video_ids:
+        same_video_mask = torch.tensor(
+            [vid == query_video_id for vid in db_video_ids],
+            dtype=torch.bool, device=device
+        )
+        exclusion_mask |= same_video_mask
+
+    # 3. Encounter-based exclusion
+    if cross_encounter and query_video_id and db_video_ids:
+        q_cam, q_date = parse_encounter_id(query_video_id)
+        if q_cam and q_date:
+            same_encounter_mask = torch.tensor([
+                (cam == q_cam and date == q_date)
+                for cam, date in (parse_encounter_id(vid) for vid in db_video_ids)
+            ], dtype=torch.bool, device=device)
+            exclusion_mask |= same_encounter_mask
+
+    return exclusion_mask

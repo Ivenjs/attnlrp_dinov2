@@ -1,5 +1,3 @@
-# visualize.py
-
 import argparse
 from collections import defaultdict
 import os
@@ -10,6 +8,7 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 from typing import Tuple, Union, Dict, Any
 import torch.nn.functional as F
+import json
 
 # Import imgify from zennit
 from zennit.image import imgify
@@ -451,6 +450,20 @@ def main(cfg):
         "AP03_R066_20221118_164_285_1173026",
         "TU03_R118_20221020_143_1488_261233"
     ]
+
+    analysis_json_path = f"./visualizations/{os.path.basename(db_path_relevances)}.json"
+    if os.path.exists(analysis_json_path):
+        with open(analysis_json_path, 'r') as f:
+            analysis_data = json.load(f)
+    else:
+        analysis_data = {}
+
+    for category, filenames in analysis_data.items():
+        if category not in images_to_visualize:
+            images_to_visualize[category] = []
+        sampled_filenames = random.sample(filenames, min(15, len(filenames)))
+        for filename in sampled_filenames:
+            images_to_visualize[category].append(filename)
 
 
     fname_to_idx = {

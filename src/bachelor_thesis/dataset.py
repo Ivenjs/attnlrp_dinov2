@@ -74,6 +74,8 @@ class GorillaReIDDataset(Dataset):
         for i, (label, encounter) in enumerate(zip(self.labels, self.encounters)):
             if encounter[0] is not None:  # Ensure encounter was parsed correctly
                 data_by_label_and_encounter[label][encounter].append(i)
+            else:
+                print(f"Warning: Could not parse encounter for image {self.filenames[idx]}. Skipping KNN filtering for this image.")
 
         self.images_for_ce_knn = []  # CE: Cross-Encounter
         self.images_for_standard_knn = []
@@ -81,6 +83,7 @@ class GorillaReIDDataset(Dataset):
         # 2. Iterate through each image and apply filtering logic
         for idx, (label, current_encounter) in enumerate(zip(self.labels, self.encounters)):
             if current_encounter[0] is None:
+                print(f"Warning: Could not parse encounter for image {self.filenames[idx]}. Skipping KNN filtering for this image.")
                 continue # Skip images that couldn't be parsed
 
             encounters_with_label = data_by_label_and_encounter[label]
@@ -113,6 +116,13 @@ class GorillaReIDDataset(Dataset):
         if not self.images_for_ce_knn:
             print("Warning: No images were found suitable for Cross-Encounter KNN evaluation. Using all images instead.")
             self.images_for_ce_knn = list(range(len(self)))
+        
+        print(f"Total unique labels: {len(set(self.labels))}")
+        print(f"Total unique encounters: {len(set(self.encounters))}")
+        labels_ce = {self.labels[i] for i in self.images_for_ce_knn}
+        encounters_ce = {self.encounters[i] for i in self.images_for_ce_knn}
+        print(f"CE KNN unique labels: {len(labels_ce)}, unique encounters: {len(encounters_ce)}")
+
 
     def __len__(self) -> int:
         return len(self.filenames)

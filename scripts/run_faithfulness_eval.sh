@@ -3,7 +3,7 @@
 #SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --mem=150G
+#SBATCH --mem=200G
 #SBATCH --cpus-per-task=10
 #SBATCH --time=1-00:00:00
 #SBATCH --gres=gpu:h100:1
