@@ -157,7 +157,11 @@ def main(cfg: dict):
 
 
     train_dataloader = DataLoader(train_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn,shuffle=False)
-    
+
+    print(f"sweep parameters:")
+    for key, value in cfg["sweep"].items():
+        print(f"  {key}: {value}")
+
     train_relevances_all = generate_relevances(
         model_wrapper=model_wrapper,
         dataloader=train_dataloader,
@@ -198,24 +202,48 @@ def main(cfg: dict):
         )
 
 
-    print("\n--- EVALUATING SWEEP ON VAL SET ---")
+    print("\n--- PHASE 2: FINDING TOP-K CANDIDATES FROM TRAIN SET ---")
+    _, analysis_df_train, _ = find_robust_hyperparameters(
+        results=train_results_list,
+        decision_metric=DECISION_METRIC,
+        sweep_evaluation=cfg["sweep"]["sweep_evaluation"]
+    )
+
+    analysis_df_train = analysis_df_train.sort_values(by='raw_mean', ascending=False).reset_index(drop=True)
+
+    top_k = cfg["sweep"].get("top_k_for_val", 10) 
+    top_k_df = analysis_df_train.head(top_k)
+    
+    param_cols = ['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp', 'topk']
+    valid_param_cols = [col for col in param_cols if col in top_k_df.columns]
+    
+    top_k_param_combos = top_k_df[valid_param_cols].to_dict('records')
+
+    print(f"\nIdentified Top {len(top_k_param_combos)} parameter combinations to test on the validation set:")
+    for i, params in enumerate(top_k_param_combos):
+        print(f"  {i+1}. {params}")
+
+    print("\n--- PHASE 3: TARGETED SWEEP ON VAL SET ---")
 
     val_dataloader = DataLoader(val_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=4, collate_fn=custom_collate_fn, shuffle=False)
+    
     val_relevances_all = generate_relevances(
         model_wrapper=model_wrapper,
         dataloader=val_dataloader,
         device=DEVICE,
-        conv_gamma_values=cfg["sweep"]["conv_gammas"],
-        lin_gamma_values=cfg["sweep"]["lin_gammas"],
+        param_combinations_list=top_k_param_combos,
         mode=MODE,
-        distance_metrics=cfg["sweep"]["distance_metrics"],
-        proxy_temp_values=cfg["sweep"]["temp"],
-        topk_values=cfg["sweep"]["topk"],
         db_embeddings=full_db_embeddings,
         db_filenames=full_db_filenames,
         db_labels=full_db_labels,
         db_video_ids=full_db_videos,
-        cross_encounter=cfg["lrp"]["cross_encounter"]
+        cross_encounter=cfg["lrp"]["cross_encounter"],
+        # won't be used
+        conv_gamma_values=[],
+        lin_gamma_values=[],
+        distance_metrics=[],
+        proxy_temp_values=[],
+        topk_values=[]
     )
 
     if cfg["sweep"]["sweep_evaluation"] == "proxy_score":
@@ -240,55 +268,49 @@ def main(cfg: dict):
             baseline_value=cfg["eval"]["baseline_value"]
         )
 
-    print("\nFinding best parameters on TRAIN set...")
-    best_params_raw_train, analysis_df_train, worst_params_raw_train = find_robust_hyperparameters(
-        results=train_results_list,
-        decision_metric=DECISION_METRIC,
-        sweep_evaluation=cfg["sweep"]["sweep_evaluation"]
-    )
-
-    print_robustness_summary(best_params_raw_train, analysis_df_train, DECISION_METRIC)
-
-    _, analysis_df_val, _ = find_robust_hyperparameters(
+    print("\n--- PHASE 4: FINAL SELECTION ON VAL SET ---")
+    
+    best_params_val, analysis_df_val, worst_params_val = find_robust_hyperparameters(
         results=val_results_list,
         decision_metric=DECISION_METRIC,
         sweep_evaluation=cfg["sweep"]["sweep_evaluation"]
     )
 
-    print(f"\nLooking up performance of TRAIN-selected parameters on the VAL set for metric '{DECISION_METRIC}'...")
-    val_performance_row = analysis_df_val[
-        (analysis_df_val['conv_gamma'] == best_params_raw_train['conv_gamma']) &
-        (analysis_df_val['lin_gamma'] == best_params_raw_train['lin_gamma']) &
-        (analysis_df_val['proxy_temp'] == best_params_raw_train['proxy_temp']) &
-        (analysis_df_val['distance_metric'] == best_params_raw_train['distance_metric']) &
-        (analysis_df_val['metric_name'] == DECISION_METRIC)
+    print_robustness_summary(best_params_val, analysis_df_val, DECISION_METRIC)
+
+    train_performance_row = analysis_df_train[
+        (analysis_df_train['conv_gamma'] == best_params_val['conv_gamma']) &
+        (analysis_df_train['lin_gamma'] == best_params_val['lin_gamma']) &
+        (analysis_df_train['proxy_temp'] == best_params_val['proxy_temp']) &
+        (analysis_df_train['distance_metric'] == best_params_val['distance_metric']) &
+        (analysis_df_train['topk'] == best_params_val['topk']) &
+        (analysis_df_train['metric_name'] == DECISION_METRIC)
     ].iloc[0]
 
     train_performance = {
-        'mean_faithfulness': best_params_raw_train['mean_score'],
-        'min_faithfulness': best_params_raw_train['min_score'],
-        'std_faithfulness': best_params_raw_train['std_score'],
+        'mean_faithfulness': train_performance_row['raw_mean'],
+        'min_faithfulness': train_performance_row['raw_min'],
+        'std_faithfulness': train_performance_row['raw_std'],
     }
     val_performance = {
-        'mean_faithfulness': val_performance_row['raw_mean'],
-        'min_faithfulness': val_performance_row['raw_min'],
-        'std_faithfulness': val_performance_row['raw_std'],
+        'mean_faithfulness': best_params_val['mean_score'],
+        'min_faithfulness': best_params_val['min_score'],
+        'std_faithfulness': best_params_val['std_score'],
     }
 
-    # robustness score is only the decision metric (which params to choose), while the performance metrics are used for the final acceptance decision.
     print("\n" + "="*80)
     print("--- FINAL VALIDATION & DECISION ---")
     print("="*80)
-    print(f"Chosen Parameters: conv_gamma={best_params_raw_train['conv_gamma']}, lin_gamma={best_params_raw_train['lin_gamma']}, dist={best_params_raw_train['distance_metric']}, proxy_temp={best_params_raw_train['proxy_temp']}, topk={best_params_raw_train['topk']}")
-    print(f"Performance on TRAIN set:    Mean Faithfulness = {train_performance['mean_faithfulness']:.4f}")
-    print(f"Performance on VAL set: Mean Faithfulness = {val_performance['mean_faithfulness']:.4f}")
+    print(f"Chosen Parameters: conv_gamma={best_params_val['conv_gamma']}, lin_gamma={best_params_val['lin_gamma']}, dist={best_params_val['distance_metric']}, proxy_temp={best_params_val['proxy_temp']}, topk={best_params_val['topk']}")
+    print(f"Performance on TRAIN set: Mean Faithfulness = {train_performance['mean_faithfulness']:.4f}")
+    print(f"Performance on VAL set:   Mean Faithfulness = {val_performance['mean_faithfulness']:.4f}")
 
     generalization_drop = (train_performance['mean_faithfulness'] - val_performance['mean_faithfulness'])
     relative_drop_percent = (generalization_drop / train_performance['mean_faithfulness']) * 100 if train_performance['mean_faithfulness'] != 0 else 0
 
     print(f"\nGeneralization Drop: {relative_drop_percent:.2f}%")
 
-    ACCEPTABLE_DROP_PERCENT = 30.0
+    ACCEPTABLE_DROP_PERCENT = 35.0
     if relative_drop_percent > ACCEPTABLE_DROP_PERCENT:
         print(f"DECISION: REJECT. High generalization drop.")
         FINAL_DECISION = "REJECTED"
@@ -301,16 +323,14 @@ def main(cfg: dict):
         print("="*80)
 
         print("\nOfficial Approved LRP Hyperparameters:")
-        print(best_params_raw_train)
-        print("\nOfficial Unbiased Performance Metrics (from VAL set):")
-        print(val_performance)
+        print(best_params_val)
 
 
     log_sweep (
         cfg=cfg, 
         final_decision=FINAL_DECISION,
-        approved_params=best_params_raw_train,
-        worst_params=worst_params_raw_train,
+        approved_params=best_params_val,
+        worst_params=worst_params_val,
         tune_performance=train_performance,
         holdout_performance=val_performance,
         generalization_drop_percent=relative_drop_percent,

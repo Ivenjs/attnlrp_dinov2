@@ -403,6 +403,95 @@ def visualize_robustness_analysis(
 
     return saved_paths
 
+def visualize_holdout_performance(
+    analysis_df: pd.DataFrame,
+    hpi_colors: Dict[str, float],
+    save_path: str = "wandb_plots/holdout_performance.png",
+) -> List[str]:
+    """
+    Creates bar chart visualizations for the sparse holdout set analysis.
+
+    Instead of a heatmap, this plots the performance of each top-K candidate.
+    """
+    output_dir = os.path.dirname(save_path)
+    os.makedirs(output_dir, exist_ok=True)
+    saved_paths = []
+
+    metric_names = analysis_df['metric_name'].dropna().unique()
+
+    for eval_metric in metric_names:
+        df_subset = analysis_df[analysis_df['metric_name'] == eval_metric].copy()
+        
+        if df_subset.empty:
+            continue
+
+        df_subset.sort_values(by='raw_mean', ascending=False, inplace=True)
+        
+        # <<< --- CHANGE IS INSIDE THIS FUNCTION --- >>>
+        def create_label(row):
+            parts = []
+            
+            # These should always be present, but good to check
+            if 'conv_gamma' in row and pd.notna(row['conv_gamma']):
+                parts.append(f"conv_gamma: {row['conv_gamma']}")
+            if 'lin_gamma' in row and pd.notna(row['lin_gamma']):
+                parts.append(f"lin_gamma: {row['lin_gamma']}")
+
+            # Safely handle optional string parameters
+            
+            # This is not acively being swept over anymore. No reason to display it
+            """if 'distance_metric' in row and pd.notna(row['distance_metric']):
+                # Check for string placeholders in case they exist
+                if isinstance(row['distance_metric'], str) and row['distance_metric'].upper() != 'NA':
+                    parts.append(f"D:{row['distance_metric']}")"""
+
+            # Safely handle optional numeric parameters with try-except
+            if 'proxy_temp' in row and pd.notna(row['proxy_temp']):
+                try:
+                    parts.append(f"temp: {float(row['proxy_temp'])}")
+                except (ValueError, TypeError):
+                    pass # Ignore if it can't be converted to a float
+
+            if 'topk' in row and pd.notna(row['topk']):
+                try:
+                    parts.append(f"top_k: {int(float(row['topk']))}") # Use float() first to handle cases like 50.0
+                except (ValueError, TypeError):
+                    pass # Ignore if it can't be converted to an int
+
+            return "\n".join(parts)
+
+        df_subset['param_label'] = df_subset.apply(create_label, axis=1)
+
+        plt.style.use('seaborn-v0_8-whitegrid')
+        fig, ax = plt.subplots(figsize=(max(12, 2 * len(df_subset)), 8))
+
+        bar_color = hpi_colors.get("red", "skyblue")
+        
+        sns.barplot(
+            x='param_label',
+            y='raw_mean',
+            data=df_subset,
+            ax=ax,
+            color=bar_color
+        )
+
+        ax.set_title(f"Validation Set Performance of Top Candidates of Train Set - {eval_metric}", fontsize=16)
+        ax.set_xlabel("Hyperparameter Combination", fontsize=12)
+        ax.set_ylabel("Mean Faithfulness Score", fontsize=12)
+        ax.tick_params(axis='x', rotation=0, labelsize=10)
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        
+        for container in ax.containers:
+            ax.bar_label(container, fmt='%.4f')
+            
+        plt.tight_layout()
+        
+        metric_save_path = save_path.replace('.png', f'_{eval_metric}.png')
+        plt.savefig(metric_save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        saved_paths.append(metric_save_path)
+
+    return saved_paths
 
 def print_robustness_summary(
     best_params_raw: Dict, 
@@ -536,12 +625,24 @@ def log_sweep(
     })
 
 
-    tune_paths = visualize_robustness_analysis(analysis_df_tune, hpi_colors=hpi_colors, save_path="wandb_plots/tune_analysis.png")
-    holdout_paths = visualize_robustness_analysis(analysis_df_holdout, hpi_colors=hpi_colors, save_path="wandb_plots/holdout_analysis.png")
+    print("\nGenerating heatmaps for tune set analysis...")
+    tune_paths = visualize_robustness_analysis(
+        analysis_df_tune, 
+        hpi_colors=hpi_colors, 
+        save_path="wandb_plots/tune_analysis.png"
+    )
+
+    # Use the new bar chart for the sparse HOLDOUT set
+    print("Generating bar charts for holdout set performance...")
+    holdout_paths = visualize_holdout_performance(
+        analysis_df_holdout, 
+        hpi_colors=hpi_colors, 
+        save_path="wandb_plots/holdout_performance.png"
+    )
 
     log_payload.update({
         "plots/tune_set_analysis_heatmaps": [wandb.Image(p, caption=os.path.basename(p)) for p in tune_paths],
-        "plots/holdout_set_analysis_heatmaps": [wandb.Image(p, caption=os.path.basename(p)) for p in holdout_paths]
+        "plots/holdout_set_performance_barcharts": [wandb.Image(p, caption=os.path.basename(p)) for p in holdout_paths]
     })
 
     print("\n--- Logging Faithfulness Curves for Approved Parameters (All Metrics) ---")

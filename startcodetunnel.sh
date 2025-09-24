@@ -2,7 +2,7 @@
 set -e
 
 # Use a unique directory specific to THIS project and THIS job
-CLI_DATA_DIR="/workspaces/bachelor_thesis_code/.vscode-cli-data-${SLURM_JOB_ID}"
+CLI_DATA_DIR="/workspaces/cadetunnel/bachelor_thesis_code/.vscode-cli-data-${SLURM_JOB_ID}"
 mkdir -p "$CLI_DATA_DIR"
 
 echo "Using VS Code CLI data directory: $CLI_DATA_DIR"

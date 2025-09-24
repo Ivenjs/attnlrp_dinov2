@@ -94,7 +94,8 @@ def create_batched_exclusion_mask(
         return torch.stack(all_masks, dim=0)
     else:
         return torch.empty((0, len(db_filenames)), dtype=torch.bool, device=device)
-    
+
+
 def perform_knn_ce_evaluation(
     query_embeddings,
     query_labels_int,
@@ -107,7 +108,8 @@ def perform_knn_ce_evaluation(
     batch_size,
     device,
     distance_metric="euclidean",
-    query_filenames=None
+    query_filenames=None,
+    return_raw_preds=False
 ):
     """
     Performs the core, batched Cross-Video K-Nearest Neighbors calculation on the GPU.
@@ -170,19 +172,31 @@ def perform_knn_ce_evaluation(
         all_actuals.append(actual_labels_batch)
 
     if not all_predictions:
-        print("Warning: No predictions were made.")
-        return 0.0
+        if return_raw_preds:
+            return (torch.tensor([], dtype=torch.long), 
+                    torch.tensor([], dtype=torch.long), 
+                    [])
+        else:
+            print("Warning: No predictions were made.")
+            return 0.0, []
 
-    predictions_tensor = torch.cat(all_predictions).cpu().numpy()
-    actuals_tensor = torch.cat(all_actuals).cpu().numpy()
+    predictions_tensor = torch.cat(all_predictions)
+    actuals_tensor = torch.cat(all_actuals)
+
+    if return_raw_preds:
+        return predictions_tensor, actuals_tensor, prediction_details
+
+    predictions_numpy = predictions_tensor.cpu().numpy()
+    actuals_numpy = actuals_tensor.cpu().numpy()
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning) # Ignore warnings for classes with no predictions
-        accuracy = accuracy_score(actuals_tensor, predictions_tensor)
-        balanced_accuracy = balanced_accuracy_score(actuals_tensor, predictions_tensor)
+        warnings.simplefilter("ignore", UserWarning)
+        accuracy = accuracy_score(actuals_numpy, predictions_numpy)
+        balanced_accuracy = balanced_accuracy_score(actuals_numpy, predictions_numpy)
 
     print(f"\nFinal Accuracy: {accuracy:.4f}")
     print(f"Final Balanced Accuracy: {balanced_accuracy:.4f}")
+
     return balanced_accuracy, prediction_details
 
 

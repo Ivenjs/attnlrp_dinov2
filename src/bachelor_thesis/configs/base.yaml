@@ -1,13 +1,16 @@
 data:
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
-  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data3/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated" #TODO change to data3
-  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/body_renamed"
+  dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data3/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated"
+  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/squared_renamed/body"
   #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
   batch_size: 32
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
   output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
   analysis_split: "test"
-  #test or val?
+
+  zoo_subsample_fraction: 0.3
+  coco_json_path: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/squared_renamed/dataset.json" 
+  zoo_video_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/videos"
 
 seed: 161
 
@@ -55,20 +58,32 @@ sweep:
   sweep_evaluation: "accuracy" # "accuracy" or "proxy_score"
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
-  temp: [0.001, 0.005, 0.01, 0.1]
+  top_k_for_val: 50
   #0.01, 0.03, 0.07, 0.15
+  # knn_all: [0.001, 0.005, 0.01]
+  # proto, knn_topk [0.001, 0.005, 0.01, 0.1]
   queries_per_class: 5
-  topk: [5, 100, 750, 1500]
   # maybe pass in diff values for proto_margin and soft_knn_margin_topk
   # 5, 10, 50
-  conv_gammas: [0.25, 0.5, 0.75, 1.0]
   #0.001, 0.05, 0.1, 0.25
   # in paper: 0.05, 0.1, 0.25
   #0.1, 0.15,0.25, 0.7, 1.0
   #[0.1, 0.15,0.25, 0.4, 0.7, 1.0]
-  lin_gammas: [0.0001,0.0005,0.001]
+  # knn_all: [0.001,0.05,0.1,0.25,0.5,1.0]
+  # similarity: [0.01,0.05,0.1,0.5,1.0,5.0,10.0]
+  # proto_margin_base: [0.1,0.25,0.5]
+  # proto_margin_ft: [0.25,0.5,0.75]
+  # knn_topk_base: [0.1,0.25,0.5]
+  # knn_topk_ft: [0.5,0.75,1.0]
   #0.001, 0.05, 0.1, 0.25
     # in paper: 0.05, 0.1, 0.25
   #0.001, 0.025, 0.05, 0.075, 0.1
   #[0.001, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25] 
+  # knn_all: [0.0001,0.0005,0.001,0.005,0.01,0.05,0.1]
+  # similarity: [0.001,0.01,0.05,0.1,0.5,1.0,2.5]
+  # proto_margin_base: [0.0001, 0.0005, 0.001, 0.01]
+  # proto_margin_ft: [0.0001, 0.0005, 0.001, 0.01]
+  # knn_topk_base: [0.00001,0.00005,0.0001, 0.0005]
+  # knn_topk_ft: [0.0005,0.001,0.005,0.1]
+
 

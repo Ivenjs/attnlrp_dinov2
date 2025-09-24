@@ -12,10 +12,7 @@ from knn_helpers import calculate_distance_normalized
 from lrp_helpers import compute_knn_proxy_soft_all, compute_knn_proto_margin, compute_similarity_score, compute_knn_proxy_soft_topk
 from utils import deterministic_randperm, parse_encounter_id
 from model_evaluation import perform_knn_ce_evaluation
-from torch.utils.data import DataLoader, Subset
-from dataset import custom_collate_fn
-import warnings
-from sklearn.metrics import balanced_accuracy_score, accuracy_score
+
 
 PATCH_SIZE = 14  # Size of the patches to average over
 
@@ -425,236 +422,6 @@ def _run_perturbation_experiment_acc(
     final_accuracy_curve = torch.tensor([acc for step, acc in accuracy_curve], device=device)
     return final_accuracy_curve, fraction_accuracies, step_by_step_predictions
 
-def faithfulness_eval_acc_batched( 
-    relevance_maps_dict: Dict[str, torch.Tensor],
-    query_dataset: torch.utils.data.Dataset,
-    global_query_indices: List[int],
-    model: TimmWrapper,
-    db_embeddings: torch.Tensor,
-    db_labels_int: torch.Tensor,
-    db_encounter_ids_int: torch.Tensor,
-    label_to_id: Dict[str, int],
-    encounter_to_id: Dict[str, int],
-    cfg: Dict[str, Any],
-    patch_size: int,
-    patches_per_step: int,
-    baseline_value: str = "mean",
-    seed=161,
-    fractions_to_record: Optional[List[float]] = None,
-    relevances_name: str = None,
-    eval_batch_size: int = 64,
-    step_chunk_size: int = 75
-) -> Dict:
-    device = db_embeddings.device
-    model.to(device)
-    model.eval()
-
-    # --- DataLoader setup for memory efficiency ---
-    valid_indices = [i for i, s in enumerate(query_dataset) if s['filename'] in relevance_maps_dict]
-    print(f"Found relevance maps for {len(valid_indices)} out of {len(query_dataset)} query images.")
-    if not valid_indices: return {}
-
-    filtered_dataset = Subset(query_dataset, valid_indices)
-    filtered_global_indices = [global_query_indices[i] for i in valid_indices]
-    data_loader = DataLoader(
-        filtered_dataset, batch_size=eval_batch_size, shuffle=False,
-        num_workers=4, pin_memory=True, collate_fn=custom_collate_fn
-    )
-
-    # --- Determine all evaluation points (perturbation steps) ---
-    first_fname = query_dataset[valid_indices[0]]['filename']
-    relevance_map_sample = relevance_maps_dict[first_fname]
-    patch_relevance = F.avg_pool2d(relevance_map_sample, kernel_size=patch_size, stride=patch_size)
-    num_patches = patch_relevance.numel()
-
-    steps = {0}
-    patches_at_fraction = {}
-    if fractions_to_record:
-        for f in fractions_to_record:
-            if 0 < f <= 1.0:
-                patch_count = int(f * num_patches)
-                steps.add(patch_count)
-                patches_at_fraction[patch_count] = f
-    else:
-        steps.update(range(patches_per_step, num_patches, patches_per_step))
-    steps.add(num_patches)
-    sorted_steps = sorted(list(steps))
-    print(f"Will evaluate at {len(sorted_steps)} perturbation steps.")
-
-    final_results = {}
-
-    for experiment in ['morf', 'lerf', 'random']:
-        print(f"\n--- Running {experiment.upper()} Experiment ---")
-        
-        # Data accumulators for the entire dataset
-        all_preds_by_step = {step: [] for step in sorted_steps}
-        all_actuals_by_step = {step: [] for step in sorted_steps}
-        all_details_by_step = {step: [] for step in sorted_steps}
-
-        # --- 3. Middle loop over data batches ---
-        for i, batch_samples in enumerate(tqdm(data_loader, desc=f"Processing {experiment.upper()} batches")):
-            batch_images = batch_samples['image'].to(device)
-            batch_size = batch_images.shape[0]
-
-            # --- OPTIMIZATION 1: Pre-compute patch orders for the batch ---
-            orders = []
-            for fname in batch_samples['filename']:
-                relevance_map = relevance_maps_dict[fname]
-                pr_flat = F.avg_pool2d(relevance_map, kernel_size=patch_size, stride=patch_size).flatten()
-                if experiment == 'morf':
-                    orders.append(torch.argsort(pr_flat, descending=True))
-                elif experiment == 'lerf':
-                    orders.append(torch.argsort(pr_flat, descending=False))
-                else: # random
-                    orders.append(deterministic_randperm(len(pr_flat), fname, seed))
-            batch_patch_orders = torch.stack(orders).to(device)
-
-            # --- 4. Inner loop over CHUNKS of steps (Memory Management) ---
-            step_chunks = [sorted_steps[i:i + step_chunk_size] for i in range(0, len(sorted_steps), step_chunk_size)]
-            
-            if baseline_value.lower() == "mean":
-                baseline_fills = batch_images.mean(dim=[2, 3], keepdim=True).to(device)
-            elif baseline_value.lower() == "black":
-                B, C, H, W = batch_images.shape
-                single_baseline = torch.zeros((1, C, 1, 1), device=device, dtype=batch_images.dtype)
-                baseline_fills = single_baseline.expand(B, -1, -1, -1)
-            else:
-                raise ValueError(f"Unknown baseline type: {baseline_value}")
-
-            for step_chunk in step_chunks:
-                # --- OPTIMIZATION 2: Create a super-batch of perturbed images ---
-                superbatch_images = []
-                for step_idx in step_chunk:
-                    if step_idx > 0:
-                        perturbed_images = apply_perturbation_to_batch(
-                            image_batch=batch_images.clone(),
-                            patch_orders=batch_patch_orders,
-                            step_start_idx=0,
-                            step_end_idx=step_idx,
-                            patch_size=patch_size,
-                            precomputed_baselines=baseline_fills 
-                        ).to(device)
-                        superbatch_images.append(perturbed_images)
-                    else: # step 0 is the original
-                        superbatch_images.append(batch_images)
-                
-                superbatch_tensor = torch.cat(superbatch_images).to(device)
-
-                with torch.no_grad(), torch.amp.autocast(device_type=device.type):
-                    superbatch_embeddings = model(superbatch_tensor)
-
-                # --- OPTIMIZATION 3: Run KNN on the entire super-batch ---
-                # Prepare tiled metadata for the KNN function
-                num_steps_in_chunk = len(step_chunk)
-                start_idx, end_idx = i * eval_batch_size, i * eval_batch_size + batch_size
-                batch_global_indices = filtered_global_indices[start_idx:end_idx]
-
-                tiled_labels = torch.tensor([label_to_id[s] for s in batch_samples['label']], device=device).repeat(num_steps_in_chunk)
-                q_encounters = [parse_encounter_id(v) for v in batch_samples['video']]
-                tiled_encounters = torch.tensor([encounter_to_id[s] for s in q_encounters], device=device).repeat(num_steps_in_chunk)
-                tiled_indices = torch.tensor(batch_global_indices, device=device).repeat(num_steps_in_chunk)
-                tiled_filenames = [fn for fn in batch_samples['filename'] for _ in range(num_steps_in_chunk)]
-
-                preds, actuals, details = perform_knn_ce_evaluation(
-                    query_embeddings=superbatch_embeddings,
-                    query_labels_int=tiled_labels,
-                    query_encounter_ids_int=tiled_encounters,
-                    query_original_indices=tiled_indices,
-                    db_embeddings=db_embeddings, db_labels_int=db_labels_int, db_encounter_ids_int=db_encounter_ids_int,
-                    k=cfg["knn"]["k"], batch_size=cfg["data"]["batch_size"], device=device,
-                    distance_metric=cfg["knn"]["distance_metric"], query_filenames=tiled_filenames,
-                    return_raw_preds=True
-                )
-
-                # Unpack results from the super-batch and store them by step
-                preds_by_step = preds.view(num_steps_in_chunk, batch_size)
-                actuals_by_step = actuals.view(num_steps_in_chunk, batch_size)
-                
-                for j, step_idx in enumerate(step_chunk):
-                    all_preds_by_step[step_idx].append(preds_by_step[j].cpu())
-                    all_actuals_by_step[step_idx].append(actuals_by_step[j].cpu())
-                    # Split the details list
-                    details_start = j * batch_size
-                    details_end = (j + 1) * batch_size
-                    all_details_by_step[step_idx].extend(details[details_start:details_end])
-        
-        # --- 5. Post-processing: Calculate global accuracy for each step ---
-        accuracy_curve = []
-        for step_idx in sorted_steps:
-            global_preds = torch.cat(all_preds_by_step[step_idx]).numpy()
-            global_actuals = torch.cat(all_actuals_by_step[step_idx]).numpy()
-            
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", UserWarning)
-                balanced_acc = balanced_accuracy_score(global_actuals, global_preds)
-            accuracy_curve.append((step_idx, balanced_acc))
-        
-        # --- Store results for this experiment ---
-        final_results[f'{experiment}_curve'] = torch.tensor([acc for _, acc in accuracy_curve])
-        final_results[f'{experiment}_details'] = all_details_by_step
-        
-        accuracy_by_step = dict(accuracy_curve)
-
-        # Explicitly get the baseline accuracy for step 0. Default to 0.0 if not found (safety).
-        baseline_acc = accuracy_by_step.get(0, 0.0) 
-        fraction_accuracies = {0.0: baseline_acc}
-
-        # Populate the rest of the fractions
-        for step, acc in accuracy_curve:
-            frac = patches_at_fraction.get(step)
-            if frac is not None: # Only add if it was a requested fraction
-                fraction_accuracies[frac] = acc
-
-        
-        final_results[f'fraction_accuracies_{experiment}'] = fraction_accuracies
-
-    # --- Final calculations and analysis ---
-    morf_curve = final_results['morf_curve']
-    lerf_curve = final_results['lerf_curve']
-    random_curve = final_results['random_curve']
-
-    # You can now call your analysis function
-    analysis_results = analyze_perturbation_results(
-        lerf_details=final_results['lerf_details'],
-        morf_details=final_results['morf_details']
-    )
-    if relevances_name is not None:
-        with open(f"./visualizations/{relevances_name}.json", "w") as f:
-            json.dump(analysis_results, f, indent=4)
-
-    auc_morf = calculate_auc(morf_curve)
-    auc_lerf = calculate_auc(lerf_curve)
-    auc_random = calculate_auc(random_curve)
-    
-    faithfulness_score = auc_lerf - auc_morf
-    morf_vs_random = auc_random - auc_morf
-    lerf_vs_random = auc_lerf - auc_random
-
-    print("\n--- Downstream Faithfulness Results ---")
-    print(f"Area under LeRF curve: {auc_lerf:.4f}")
-    print(f"Area under MoRF curve: {auc_morf:.4f}")
-    print(f"Faithfulness Score (LeRF - MoRF): {faithfulness_score:.4f}")
-    print(f"Improvement vs. Random (Random - MoRF): {morf_vs_random:.4f}")
-    print(f"Improvement vs. Random (LeRF - Random): {lerf_vs_random:.4f}")
-    print("-" * 20)
-
-    return {
-        'faithfulness_score': faithfulness_score,
-        'morf_vs_random': morf_vs_random,
-        'lerf_vs_random': lerf_vs_random,
-        'auc_morf': auc_morf,
-        'auc_lerf': auc_lerf,
-        'auc_random': auc_random,
-        'morf_curve': morf_curve.cpu().numpy(),
-        'lerf_curve': lerf_curve.cpu().numpy(),
-        'random_curve': random_curve.cpu().numpy(),
-        'fraction_accuracies_morf': final_results['fraction_accuracies_morf'],
-        'fraction_accuracies_lerf': final_results['fraction_accuracies_lerf'],
-        'fraction_accuracies_random': final_results['fraction_accuracies_random'],
-        'analysis_by_image': analysis_results
-    }
-
-
 def faithfulness_eval_acc(
     relevance_maps_dict: Dict[str, torch.Tensor],
     query_dataset: torch.utils.data.Dataset,
@@ -673,76 +440,61 @@ def faithfulness_eval_acc(
     fractions_to_record: Optional[List[float]] = None,
     relevances_name: str = None
 ) -> Dict:
-
-    call_kwargs = dict({
-        "relevance_maps_dict": relevance_maps_dict,
-        "query_dataset": query_dataset,
-        "global_query_indices": global_query_indices,
-        "model": model,
-        "db_embeddings": db_embeddings,
-        "db_labels_int": db_labels_int,
-        "db_encounter_ids_int": db_encounter_ids_int,
-        "label_to_id": label_to_id,
-        "encounter_to_id": encounter_to_id,
-        "cfg": cfg,
-        "patch_size": patch_size,
-        "patches_per_step": patches_per_step,
-        "baseline_value": baseline_value,
-        "seed": seed,
-        "fractions_to_record": fractions_to_record,
-        "relevances_name": relevances_name
-    })    
-    return faithfulness_eval_acc_batched(**call_kwargs)
-    """device = db_embeddings.device
+    device = db_embeddings.device
     model.to(device)
 
     print("Pre-computing perturbation orders and preparing query metadata...")
+    query_images_list, query_labels_list, query_videos_list, query_filenames_list = [], [], [], []
+    morf_orders, lerf_orders, random_orders = [], [], []
 
-    valid_filenames = set(relevance_maps_dict.keys())
     filename_to_global_idx = {
-        sample['filename']: global_query_indices[i]
-        for i, sample in enumerate(query_dataset)
-        if sample['filename'] in valid_filenames
+        query_dataset[i]['filename']: global_query_indices[i]
+        for i in range(len(query_dataset))
     }
 
-    query_images, query_labels, query_videos, query_filenames = [], [], [], []
-    morf_orders, lerf_orders, random_orders = [], [], []
+    valid_filenames = set(relevance_maps_dict.keys())
+    
+    # Filter the original dataset to get the items we need, maintaining order
+    query_items = [
+        sample for sample in query_dataset 
+        if sample['filename'] in valid_filenames
+    ]
+    
     final_global_indices = []
 
-    for i, sample in enumerate(tqdm(query_dataset, desc="Preparing Queries")):
-        fname = sample['filename']
-        if fname not in valid_filenames:
+    for sample in tqdm(query_items, desc="Preparing Queries"):
+        filename_no_ext = sample['filename']
+        #hotfix. should not be needed after regenerating relevance maps
+        if not filename_no_ext in filename_to_global_idx:
             continue
+        
+        
+        query_images_list.append(sample['image'])
+        query_labels_list.append(sample['label'])
+        query_videos_list.append(sample['video'])
+        query_filenames_list.append(sample['filename'])
 
-        if fname not in filename_to_global_idx:
-            continue
+        final_global_indices.append(filename_to_global_idx[filename_no_ext])
 
-        query_images.append(sample['image'])
-        query_labels.append(sample['label'])
-        query_videos.append(sample['video'])
-        query_filenames.append(fname)
-
-        final_global_indices.append(filename_to_global_idx[fname])
-
-        relevance_map = relevance_maps_dict[fname]
+        relevance_map = relevance_maps_dict[filename_no_ext]
         patch_relevance = F.avg_pool2d(relevance_map, kernel_size=patch_size, stride=patch_size)
         patch_relevance_flat = patch_relevance.flatten()
 
         morf_orders.append(torch.argsort(patch_relevance_flat, descending=True))
         lerf_orders.append(torch.argsort(patch_relevance_flat, descending=False))
-        random_orders.append(deterministic_randperm(len(patch_relevance_flat), fname, seed))
+        random_orders.append(deterministic_randperm(len(patch_relevance_flat), filename_no_ext, seed))
 
-    query_images_tensor = torch.stack(query_images)
+    query_images_tensor = torch.stack(query_images_list)
     morf_orders_tensor = torch.stack(morf_orders).to(device)
     lerf_orders_tensor = torch.stack(lerf_orders).to(device)
     random_orders_tensor = torch.stack(random_orders).to(device)
-
-    query_labels_int = torch.tensor([label_to_id[s] for s in query_labels], dtype=torch.long, device=device)
-    query_encounters = [parse_encounter_id(v) for v in query_videos]
+    
+    query_labels_int = torch.tensor([label_to_id[s] for s in query_labels_list], dtype=torch.long, device=device)
+    query_encounters = [parse_encounter_id(v) for v in query_videos_list]
     query_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in query_encounters], dtype=torch.long, device=device)
     query_original_indices_tensor = torch.tensor(final_global_indices, dtype=torch.long, device=device)
 
-    print(f"Prepared {len(query_images)} images for evaluation.")
+    print(f"Prepared {len(query_images_list)} images for evaluation.")
 
     perturbation_args = {
         "model": model,
@@ -750,7 +502,7 @@ def faithfulness_eval_acc(
         "query_labels_int": query_labels_int,
         "query_encounter_ids_int": query_encounter_ids_int,
         "query_original_indices": query_original_indices_tensor,
-        "query_filenames": query_filenames, 
+        "query_filenames": query_filenames_list,
         "db_embeddings": db_embeddings,
         "db_labels_int": db_labels_int,
         "db_encounter_ids_int": db_encounter_ids_int,
@@ -791,7 +543,7 @@ def faithfulness_eval_acc(
     print(f"Improvement vs. Random (LeRF - Random): {lerf_vs_random:.4f}")
     print("-" * 20)
 
-    return {
+    results = {
         'faithfulness_score': faithfulness_score,
         'morf_vs_random': morf_vs_random,
         'lerf_vs_random': lerf_vs_random,
@@ -805,8 +557,9 @@ def faithfulness_eval_acc(
         'fraction_accuracies_lerf': fraction_accuracies_lerf,
         'fraction_accuracies_random': fraction_accuracies_random,
         'analysis_by_image': analysis_results
-    }"""
+    }
 
+    return results
 
 def apply_perturbation_to_batch(
     image_batch: torch.Tensor,

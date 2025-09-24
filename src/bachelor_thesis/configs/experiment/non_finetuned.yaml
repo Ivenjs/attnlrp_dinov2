@@ -9,11 +9,38 @@ lrp:
   temp:       ${lrp_params.${lrp.mode}.temp}
   topk:       ${lrp_params.${lrp.mode}.topk}
 
+sweep:
+  temp: ${sweep_params.${lrp.mode}.temp}
+  topk: ${sweep_params.${lrp.mode}.topk}
+  conv_gammas: ${sweep_params.${lrp.mode}.conv_gammas}
+  lin_gammas: ${sweep_params.${lrp.mode}.lin_gammas}
+
+sweep_params:
+  soft_knn_margin_all:
+    temp: [0.001, 0.005, 0.01]
+    topk: null
+    conv_gammas: [0.001,0.05,0.1,0.25,0.5,1.0]
+    lin_gammas: [0.0001,0.0005,0.001,0.005,0.01,0.05,0.1]
+  soft_knn_margin_topk:
+    temp: [0.001, 0.005, 0.01, 0.1]
+    topk: [5, 750, 1500, 7500]
+    conv_gammas: [0.1,0.25,0.5]
+    lin_gammas: [0.0005,0.001,0.005,0.1]
+  proto_margin:
+    temp: [0.001, 0.005, 0.01, 0.1]
+    topk: [5, 750, 1500, 7500]
+    conv_gammas: [0.1,0.25,0.5]
+    lin_gammas: [0.00001,0.00005,0.0001, 0.0005]
+  similarity:
+    temp: null
+    topk: null
+    conv_gammas: [0.01,0.05,0.1,0.5,1.0,5.0,10.0]
+    lin_gammas: [0.001,0.01,0.05,0.1,0.5,1.0,2.5]
 
 lrp_params:
   soft_knn_margin_all:
-    conv_gamma: 1.0
-    lin_gamma: 0.0005
+    conv_gamma: 0.5
+    lin_gamma: 0.001
     temp: 0.005
     topk: null
   soft_knn_margin_topk:
@@ -22,13 +49,13 @@ lrp_params:
     conv_gamma: 0.5
     lin_gamma: 0.0005
   proto_margin:
-    temp: 0.005
-    topk: 750
+    temp: 0.01
+    topk: 7500
     conv_gamma: 0.5
-    lin_gamma: 0.0005
+    lin_gamma: 0.001
   
   similarity:
     temp: null
     topk: null
-    conv_gamma: 0.25
-    lin_gamma: 0.25
+    conv_gamma: 0.01
+    lin_gamma: 0.05

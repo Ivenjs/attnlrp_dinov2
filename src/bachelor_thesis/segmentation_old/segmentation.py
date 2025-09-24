@@ -15,6 +15,9 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from tqdm import tqdm
 
+import re
+import logging
+
 # --- Configuration ---
 # Path to save the output crops and overlays
 OUTPUT_PATH = "/workspaces/bachelor_thesis_code/seg_test_out"
@@ -135,14 +138,17 @@ def overlay_mask_on_image(image_rgb, mask, box, save_path, color=(30, 144, 255),
 
 # --- Data Fetching and Batching ---
 def gather_file_info(image_dir):
-    """Walks the input directory and parses frame_nr, tracking_id, and split from filenames."""
+    """
+    Walks the input directory and parses frame_nr and tracking_id from filenames.
+    This version handles two filename formats:
+    1. Old format: ..._{frame_nr}_{tracking_id}.png (e.g., ..._96_801031.png)
+    2. New format: ..._{frame_nr}_{tracking_id}{Name}.png (e.g., ..._1084_131Djambala.png)
+    """
     records = []
     image_dir = Path(image_dir).resolve()
 
     for dirpath, _, filenames in os.walk(image_dir):
         dirpath = Path(dirpath).resolve()
-
-        # "" if we're in root dir, else use subfolder name as split
         split = "" if dirpath == image_dir else dirpath.name
 
         for filename in filenames:
@@ -152,13 +158,25 @@ def gather_file_info(image_dir):
             try:
                 parts = Path(filename).stem.split("_")
                 frame_nr = int(parts[-2])
-                tracking_id = int(parts[-1])
+                last_part = parts[-1]
+
+                try:
+                    #database
+                    tracking_id = int(last_part)
+                except ValueError:
+                    #coco
+                    match = re.match(r'^\d+', last_part)
+                    if match:
+                        tracking_id = int(match.group(0))
+                    else:
+                        raise ValueError(f"Could not extract numeric tracking_id from '{last_part}'")
+                
                 records.append({"frame_nr": frame_nr, "tracking_id": tracking_id, "split": split})
-            except (ValueError, IndexError):
-                print(f"Warning: Could not parse filename '{filename}'. Skipping.")
+
+            except (ValueError, IndexError) as e:
+                print(f"Warning: Could not parse filename '{filename}'. Reason: {e}. Skipping.")
 
     return pd.DataFrame(records)
-
 
 def fetch_bounding_boxes(file_df):
     """Fetches bounding box data from the database in batches using execute_values."""

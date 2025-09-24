@@ -192,4 +192,4 @@ package-lock.json
 model_training_local/
 video_data/
 
-.htpasswd
+.htpasswddataset.json

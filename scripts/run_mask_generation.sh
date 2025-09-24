@@ -1,16 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=faithfulness_eval
+#SBATCH --job-name=sam_mask_generation
 #SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --mem=450G
-#SBATCH --cpus-per-task=50
-#SBATCH --time=3-00:00:00
+#SBATCH --mem=100G
+#SBATCH --cpus-per-task=20
+#SBATCH --time=2-00:00:00
 #SBATCH --gres=gpu:h100:1
 #SBATCH -p aisc 
 #SBATCH --account=aisc 
-#SBATCH --qos=aisc
-#SBATCH --partition=aisc
+#SBATCH --qos=aisc 
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=slack:iven.schlegelmilch
 #SBATCH --output=logs/%x-%j.out    # %x = jobname, %j = jobid
@@ -40,6 +39,7 @@ srun --container-image=/sc/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatc
      --container-mounts=/sc/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/sc/projects/sci-aisc/gorilla/:/workspaces/vast-gorilla \
      --container-writable \
      bash -c "cd /workspaces/bachelor_thesis_code && \
-              /opt/conda/envs/research/bin/python src/bachelor_thesis/run_faithfulness_eval.py \
+              /opt/conda/envs/research/bin/python src/bachelor_thesis/generate_masks.py \
               --config_name ${EXPERIMENT_NAME} \
               ${CONFIG_OVERRIDES}"
+

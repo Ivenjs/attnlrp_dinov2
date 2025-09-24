@@ -92,6 +92,7 @@ def compute_similarity_lrp_pass(
     db_labels: list,
     db_filenames: list,
     db_video_ids: list,
+    distance_metric: str = "cosine",
     cross_encounter: bool = True,
     verbose: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
@@ -124,7 +125,8 @@ def compute_similarity_lrp_pass(
             db_labels=db_labels, 
             db_filenames=db_filenames,
             db_video_ids=db_video_ids,
-            cross_encounter=cross_encounter
+            cross_encounter=cross_encounter,
+            distance_metric=distance_metric
         )
 
         if verbose:
@@ -305,6 +307,7 @@ def generate_relevances(
     distance_metrics: List[str] = ["cosine"],
     proxy_temp_values: List[float] = [0.1],
     topk_values: List[int] = [50],
+    param_combinations_list: Optional[List[Dict[str, Any]]] = None,
     # --- Control flags ---
     verbose: bool = False,
     # --- Database arguments for relevant modes ---
@@ -349,29 +352,41 @@ def generate_relevances(
         assert db_filenames is not None, f"db_filenames must be provided for '{mode}' mode."
         assert db_labels is not None, f"db_labels must be provided for '{mode}' mode."
 
-    # Create all combinations of parameters to iterate over.
-    # This works even if lists have only one element.
-    base_params = list(itertools.product(conv_gamma_values, lin_gamma_values))
-    if mode == "soft_knn_margin_all":
-        mode_specific_params = list(itertools.product(distance_metrics, proxy_temp_values))
-        param_combinations = list(itertools.product(base_params, mode_specific_params))
-    elif mode == "proto_margin" or mode == "soft_knn_margin_topk":
-        mode_specific_params = list(itertools.product(distance_metrics, proxy_temp_values, topk_values))
-        param_combinations = list(itertools.product(base_params, mode_specific_params))
-    else: # similarity or other future modes
-        param_combinations = base_params
+    if param_combinations_list is not None:
+        print(f"Running with {len(param_combinations_list)} specific parameter combinations.")
+        param_combinations_structured = []
+        for p_dict in param_combinations_list:
+            base_tuple = (p_dict['conv_gamma'], p_dict['lin_gamma'], p_dict['distance_metric'])
+            if mode == "soft_knn_margin_all":
+                mode_tuple = (p_dict['proxy_temp'],)
+                param_combinations_structured.append((base_tuple, mode_tuple))
+            elif mode in ["proto_margin", "soft_knn_margin_topk"]:
+                mode_tuple = (p_dict['proxy_temp'], p_dict['topk'])
+                param_combinations_structured.append((base_tuple, mode_tuple))
+            else: 
+                param_combinations_structured.append(base_tuple)
+    else:
+        base_params = list(itertools.product(conv_gamma_values, lin_gamma_values, distance_metrics))
+        if mode == "soft_knn_margin_all":
+            mode_specific_params = list(itertools.product(proxy_temp_values))
+            param_combinations_structured = list(itertools.product(base_params, mode_specific_params))
+        elif mode in ["proto_margin", "soft_knn_margin_topk"]:
+            mode_specific_params = list(itertools.product(proxy_temp_values, topk_values))
+            param_combinations_structured = list(itertools.product(base_params, mode_specific_params))
+        else: 
+            param_combinations_structured = base_params
 
 
     with DINOPatcher(model_wrapper):
-        for params in param_combinations:
-            if mode=="soft_knn_margin_all":
-                (conv_gamma, lin_gamma), (distance_metric, proxy_temp) = params
-                topk = None
-            elif mode=="proto_margin" or mode == "soft_knn_margin_topk":
-                (conv_gamma, lin_gamma), (distance_metric, proxy_temp, topk) = params
-            else: # similarity
-                conv_gamma, lin_gamma = params
-                distance_metric, proxy_temp, topk = None, None, None
+        for params in param_combinations_structured:
+            if mode == "soft_knn_margin_all":
+                (conv_gamma, lin_gamma, distance_metric), (proxy_temp,) = params
+                topk = None # This mode doesn't use topk
+            elif mode in ["proto_margin", "soft_knn_margin_topk"]:
+                (conv_gamma, lin_gamma, distance_metric), (proxy_temp, topk) = params
+            else: 
+                conv_gamma, lin_gamma, distance_metric = params
+                proxy_temp, topk = None, None
 
             for batch in tqdm(dataloader, desc="Processing batches"):
                 input_batch = batch["image"].to(device)
@@ -424,7 +439,8 @@ def generate_relevances(
                             query_label=label_single, query_filename=filename, query_video_id=video_id,
                             db_embeddings=db_embeddings, db_labels=db_labels, db_filenames=db_filenames,
                             db_video_ids=db_video_ids,
-                            conv_gamma=conv_gamma, lin_gamma=lin_gamma, cross_encounter=cross_encounter, verbose=verbose
+                            conv_gamma=conv_gamma, lin_gamma=lin_gamma, distance_metric=distance_metric,
+                            cross_encounter=cross_encounter, verbose=verbose
                         )
                         # Save the reference embedding used, for evaluation
                         extra_info["reference_embedding"] = reference_embedding.cpu() if reference_embedding is not None else reference_embedding
@@ -446,7 +462,7 @@ def generate_relevances(
                         },
                         "mode": mode,
                         "relevance": relevance_single.detach().cpu(),
-                        "mask": mask_single,
+                        "mask": mask_single, #this should probably not be included here. we have access to the mask with a normal dataloader anyway
                         **extra_info
                     }
                     all_results.append(result_item)
@@ -463,6 +479,8 @@ def get_relevances(
     recompute: bool=False,
     **kwargs
 ) -> Dict[str, Tuple[torch.Tensor, any]]:
+    #TODO: REMOVE THISHISHSIHSISHI!!!!!!!!!!
+    #return torch.load("/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db/ViTG-body_face-spac23+24v3-dedup_bp_transforms_body__subsampled_30pct_soft_knn_margin_all_conv_gamma_0p5_lin_gamma_0p001_proxy_temp_0p005_db.pt", map_location="cpu", weights_only=False)
     if os.path.exists(db_path) and not recompute:
         print(f"Loading cached relevance dictionary from: {db_path}")
         return torch.load(db_path, map_location="cpu", weights_only=False)
@@ -809,6 +827,7 @@ def compute_similarity_score(
         db_filenames: list,
         db_video_ids: list,
         cross_encounter: bool = True,
+        distance_metric: str = "cosine",
         exclude_self: bool = True,
         reference_embedding: torch.Tensor = None
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
@@ -830,6 +849,9 @@ def compute_similarity_score(
         torch.Tensor: A scalar tensor representing the cosine similarity,
                       with a value in the range [-1, 1].
     """
+    if distance_metric != "cosine":
+        raise NotImplementedError("This soft proxy is optimized for cosine similarity.")
+    
     ref_idx = -1
     if reference_embedding is None:
         

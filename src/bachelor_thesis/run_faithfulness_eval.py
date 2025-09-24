@@ -8,6 +8,8 @@ from torch.utils.data import DataLoader, ConcatDataset
 import argparse
 from lxt.efficient import monkey_patch_zennit
 import wandb
+import numpy as np
+from sklearn.model_selection import train_test_split
 
 from eval_helpers import faithfulness_eval_acc
 from utils import get_db_path, get_mask_transform, load_config, get_hpi_colors, parse_encounter_id
@@ -90,10 +92,36 @@ def main(cfg):
         
     else:
         print("Using Zoo dataset for evaluation.")
-        split_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
+        all_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
+
+        subsample_fraction = cfg["data"].get("zoo_subsample_fraction", 1.0)
+
+        if subsample_fraction < 1.0:
+            print(f"Subsampling Zoo dataset to {subsample_fraction:.0%} of its original size.")
+            labels = [f.split('_')[0] for f in all_files]
+
+            discard_fraction = 1.0 - subsample_fraction
+
+            subsampled_files, _ = train_test_split(
+                all_files,
+                test_size=discard_fraction,
+                stratify=labels,
+                random_state=cfg["seed"]
+            )
+            
+            split_name_suffix = f"_subsampled_{int(subsample_fraction*100)}pct"
+
+        else:
+            print("Using the full Zoo dataset (no subsampling).")
+            subsampled_files = all_files
+            split_name_suffix = "_full"
+
+
+        print(f"Using {len(subsampled_files)} images for the Zoo evaluation.")
+
         split_dataset = GorillaReIDDataset(
             image_dir=dataset_dir,
-            filenames=split_files,
+            filenames=subsampled_files,  
             transform=image_transforms,
             base_mask_dir=cfg["data"]["base_mask_dir"],
             mask_transform=mask_transform,
@@ -102,8 +130,10 @@ def main(cfg):
 
         query_dataset_offset = 0
         full_db_dataset = split_dataset
-        full_dataset_splits = os.path.basename(dataset_dir)
+        full_dataset_splits = os.path.basename(dataset_dir) + split_name_suffix
         split_name = full_dataset_splits
+    
+    
 
 
 
@@ -193,8 +223,8 @@ def main(cfg):
         cross_encounter=cfg["lrp"]["cross_encounter"]
     )
     relevance_dict = {item['filename']: item['relevance'] for item in relevances_all}
+    print(f"Loaded relevance maps for {len(relevance_dict)} images.")
 
-    # --- Perturbation Experiments ---
     # Cross checking unperturbed accuracy
     print("\n--- Evaluating Baseline Accuracy (0% Perturbation) ---")
     base_accuracy = evaluate_model(
@@ -212,9 +242,9 @@ def main(cfg):
     encounter_to_id = {enc: i for i, enc in enumerate(unique_encounters)}
     all_db_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in db_encounters], dtype=torch.long, device=DEVICE)
 
-    perturbation_fractions = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1] # 0 will be included by default 
+    perturbation_fractions = [0.125, 0.75, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1] # 0 will be included by default 
 
-
+    print("this is before the chaos")
     relevances_name=os.path.basename(db_path_relevances)
     eval_results = faithfulness_eval_acc(
         relevance_maps_dict=relevance_dict,
@@ -298,6 +328,6 @@ if __name__ == "__main__":
         "--config_name",
         args.config_name
     ] + unknown_args
-    #subprocess.run(command, check=True)
+    subprocess.run(command, check=True)
 
     main(cfg)

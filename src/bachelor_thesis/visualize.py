@@ -60,7 +60,9 @@ class AttentionVisualizer:
         stats: Dict[str, Any],
         intensify: bool = False,
         show_stats: bool = False,
-        category: str = ""
+        category: str = "",
+        heatmap_amp = 1.25,
+        overlay_amp = 2.0,
     ) -> Dict[str, str]:
         """
         Generates and saves individual, themed plots for a single model and image.
@@ -85,9 +87,9 @@ class AttentionVisualizer:
 
         # Normalize relevance for visualization
         relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
-        relevance_intensified = torch.tanh(2 * relevance_norm)
+        relevance_intensified = torch.tanh(overlay_amp * relevance_norm)
         if intensify:
-            relevance_norm = relevance_intensified
+            relevance_norm = torch.tanh(heatmap_amp * relevance_norm)
 
         cmap = plt.get_cmap('coolwarm')
         norm_for_cmap = plt.Normalize(vmin=-1.0, vmax=1.0)
@@ -127,7 +129,7 @@ class AttentionVisualizer:
             fig.text(0.01, 0.99, stats_text, fontsize=10, family='monospace',
                      va='top', ha='left', bbox=dict(boxstyle='round,pad=0.5', fc='aliceblue', alpha=0.8))
 
-        save_path = os.path.join(self.save_dir, category,themes["original"], f"{filename}.svg")
+        save_path = os.path.join(self.save_dir, category,themes["original"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['original_image'] = save_path
@@ -137,7 +139,7 @@ class AttentionVisualizer:
         ax.contour(mask_np, colors='lime', linewidths=1.5)
         ax.set_title("Mask Outline")
         ax.axis('off')
-        save_path = os.path.join(self.save_dir, category, themes["masked"], f"{filename}.svg")
+        save_path = os.path.join(self.save_dir, category, themes["masked"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['mask_outline'] = save_path
@@ -149,7 +151,7 @@ class AttentionVisualizer:
         # Add a colorbar
         mappable = plt.cm.ScalarMappable(norm=norm_for_cmap, cmap=cmap)
         fig.colorbar(mappable, ax=ax, orientation='vertical', fraction=0.046, pad=0.04)
-        save_path = os.path.join(self.save_dir, category, themes["heatmap"], f"{filename}.svg")
+        save_path = os.path.join(self.save_dir, category, themes["heatmap"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['relevance_heatmap'] = save_path
@@ -160,7 +162,7 @@ class AttentionVisualizer:
         ax.contour(mask_np, colors='lime', linewidths=1.5)
         ax.set_title("Relevance Overlay")
         ax.axis('off')
-        save_path = os.path.join(self.save_dir, category, themes["overlay"], f"{filename}.svg")
+        save_path = os.path.join(self.save_dir, category, themes["overlay"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
         plt.close(fig)
         saved_paths['relevance_overlay'] = save_path
@@ -417,38 +419,70 @@ def main(cfg):
     )
 
     # select 50 random images
-    #example_images = random.sample([os.path.splitext(f)[0] for f in split_files], 50)
+    random_images = random.sample([os.path.splitext(f)[0] for f in split_files], 50)
     images_to_visualize = defaultdict(list)
+
+    images_to_visualize["random"] = random_images
+
     images_to_visualize["correct"] = [
+        #finetuned:
         "OE00_R019_20220815_077_60_155860",
-        "ME00_R465_20210924_023_385_1172856",
+        #"ME00_R465_20210924_023_385_1172856",
         "PL02_R465_20220227_163_983_1172733",
-        "PL01_R465_20220204_282_1470_1172870",
-        "GA41_R105_20220819_003_1692_29862",
+        #"PL01_R465_20220204_282_1470_1172870",
+        #"GA41_R105_20220819_003_1692_29862",
         "NN00_R018_20220825_184_1020_766159",
-        "PL00_R018_20220317_027_4548_1109074",
-        "TU03_R118_20220111_261_642_280864",
-        "RC42_R108_20221127_293_768_23067",
-        "RC21_R105_20230201_327_396_329203",
-        "PL61_R103_20230227_071_492_833240",
-        "DU40_R030_20211202_064_1455_1172731"
+        #"PL00_R018_20220317_027_4548_1109074",
+        #"TU03_R118_20220111_261_642_280864",
+        #"RC42_R108_20221127_293_768_23067",
+        #"RC21_R105_20230201_327_396_329203",
+        #"PL61_R103_20230227_071_492_833240",
+        #"DU40_R030_20211202_064_1455_1172731",
+        #base:
+        "OE00_R019_20220815_077_48_155860",
+        "PL02_R465_20220227_163_597_1172733",
+        "NN00_R018_20220825_184_1068_766159",
+        #"PL01_R465_20220204_283_381_1172927",
+        #"PL00_R465_20211017_062_330_1172960",
+        #"ME00_R465_20210924_023_370_1172856",
+        #"GA41_R105_20220827_045_12192_836624",
+        #"RC42_R105_20230201_263_1002_838903",
+        #"RC21_R108_20230128_153_1272_156578",
+        #"TU03_R118_20220314_294_1367_1172959",
+        #"DU40_R030_20211202_060_2666_1172820",
+        #"PL61_R465_20220926_114_3000_884075"
     ]
 
     #TODO why is this one longer?
     images_to_visualize["incorrect"] = [
-        "RC42_R108_20221127_293_7488_23115",
-        "ME00_R465_20211104_151_1245_1172834",
+        #finetuned:
+        #"RC42_R108_20221127_293_7488_23115",
+        #"ME00_R465_20211104_151_1245_1172834",
         "NN00_R018_20220711_050_3546_765937",
         "OE00_R172_20221121_204_78_862780",
-        "PL61_R103_20230227_071_672_833242",
-        "PL01_R465_20220629_005_948_882125",
-        "RC21_R108_20230128_018_1638_847788",
+        #"PL61_R103_20230227_071_672_833242",
+        #"PL01_R465_20220629_005_948_882125",
+        #"RC21_R108_20230128_018_1638_847788",
         "PL02_R465_20220228_205_162_724627",
-        "GA41_R108_20220824_022_1272_843913",
-        "PL00_R465_20221101_317_4338_29555",
-        "DU40_R030_20220325_020_1924_1172823",
-        "AP03_R066_20221118_164_285_1173026",
-        "TU03_R118_20221020_143_1488_261233"
+        #"GA41_R108_20220824_022_1272_843913",
+        #"PL00_R465_20221101_317_4338_29555",
+        #"DU40_R030_20220325_020_1924_1172823",
+        #"AP03_R066_20221118_164_285_1173026",
+        #"TU03_R118_20221020_143_1488_261233",
+        #base:
+        #"ME00_R465_20211104_152_1350_1172861",
+        "OE00_R066_20211012_023_375_1172780",
+        "NN00_R019_20220402_062_192_769264",
+        #"PL00_R465_20220831_144_108_881169",
+        #"PL01_R465_20220204_283_343_1172927",
+        "PL02_R465_20220227_163_720_1172733",
+        #"AP03_R066_20221118_155_1695_1173126",
+        #"RC21_R105_20230204_480_1380_331231",
+        #"GA41_R105_20220819_003_1968_29862",
+        #"DU40_R030_20211202_064_4444_1172731",
+        #"RC42_R106_20221017_047_1633_1173011",
+        #"PL61_R465_20221029_008_4350_884817",
+        #"TU03_R118_20220314_284_10_1172892",
     ]
 
     analysis_json_path = f"./visualizations/{os.path.basename(db_path_relevances)}.json"
@@ -492,7 +526,7 @@ def main(cfg):
                 mask=mask,
                 relevance=relevance,
                 stats={},
-                intensify=False,
+                intensify=True,
                 category=category,
             )
 
