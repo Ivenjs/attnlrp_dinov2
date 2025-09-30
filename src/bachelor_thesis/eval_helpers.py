@@ -673,27 +673,7 @@ def faithfulness_eval_acc(
     fractions_to_record: Optional[List[float]] = None,
     relevances_name: str = None
 ) -> Dict:
-
-    call_kwargs = dict({
-        "relevance_maps_dict": relevance_maps_dict,
-        "query_dataset": query_dataset,
-        "global_query_indices": global_query_indices,
-        "model": model,
-        "db_embeddings": db_embeddings,
-        "db_labels_int": db_labels_int,
-        "db_encounter_ids_int": db_encounter_ids_int,
-        "label_to_id": label_to_id,
-        "encounter_to_id": encounter_to_id,
-        "cfg": cfg,
-        "patch_size": patch_size,
-        "patches_per_step": patches_per_step,
-        "baseline_value": baseline_value,
-        "seed": seed,
-        "fractions_to_record": fractions_to_record,
-        "relevances_name": relevances_name
-    })    
-    return faithfulness_eval_acc_batched(**call_kwargs)
-    """device = db_embeddings.device
+    device = db_embeddings.device
     model.to(device)
 
     print("Pre-computing perturbation orders and preparing query metadata...")
@@ -805,7 +785,7 @@ def faithfulness_eval_acc(
         'fraction_accuracies_lerf': fraction_accuracies_lerf,
         'fraction_accuracies_random': fraction_accuracies_random,
         'analysis_by_image': analysis_results
-    }"""
+    }
 
 
 def apply_perturbation_to_batch(

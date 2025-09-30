@@ -137,7 +137,7 @@ class DINOPatcher:
                 elif isinstance(module, nn.LayerNorm):
                     self.original_forwards[key] = module.forward
                     module.forward = types.MethodType(lrp_layernorm_forward, module)
-                # layerScalse does NOT need to be patched
+                # LayerScale does NOT need to be patched
         
         return self.wrapper
 

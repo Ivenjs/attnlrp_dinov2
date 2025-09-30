@@ -22,6 +22,7 @@ src/bachelor_thesis/heatmaps/*
 /*sample_images*/*
 
 visualizations/*
+visualizations*/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

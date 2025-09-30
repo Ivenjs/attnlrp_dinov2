@@ -9,6 +9,7 @@ from torchvision import transforms
 from typing import Tuple, Union, Dict, Any
 import torch.nn.functional as F
 import json
+from sklearn.model_selection import train_test_split
 
 # Import imgify from zennit
 from zennit.image import imgify
@@ -61,32 +62,25 @@ class AttentionVisualizer:
         intensify: bool = False,
         show_stats: bool = False,
         category: str = "",
-        heatmap_amp = 1.25,
-        overlay_amp = 2.0,
+        heatmap_amp = 1.0,
+        overlay_amp = 2.5,
     ) -> Dict[str, str]:
         """
         Generates and saves individual, themed plots for a single model and image.
 
         Each plot (original, mask, heatmap, overlay) is saved in a separate
         subdirectory within the main save directory.
-
-        Args:
-            filename (str): A descriptive filename, e.g., "reason_originalfilename".
-            image_tensor (torch.Tensor): The input image tensor.
-            mask (Union[torch.Tensor, np.ndarray]): The ground truth segmentation mask.
-            relevance (torch.Tensor): The relevance map from the model.
-            stats (Dict[str, Any]): A dictionary containing all stats for the image.
-            intensify (bool): Whether to apply a tanh intensification to the relevance map.
-            show_stats (bool): If True, adds a stats box to the original image plot.
-
-        Returns:
-            Dict[str, str]: A dictionary mapping plot themes to their save paths.
         """
         img_np = self._preprocess_image(image_tensor)
         mask_np = self._preprocess_mask(mask)
 
         # Normalize relevance for visualization
-        relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
+        if torch.abs(relevance).max() < 1e-12:
+            print(f"Empty relevance map for {filename}")
+            relevance_norm = torch.zeros_like(relevance.squeeze())
+        else:
+            relevance_norm = relevance.squeeze() / torch.abs(relevance).max()
+
         relevance_intensified = torch.tanh(overlay_amp * relevance_norm)
         if intensify:
             relevance_norm = torch.tanh(heatmap_amp * relevance_norm)
@@ -110,7 +104,7 @@ class AttentionVisualizer:
 
         fig, ax = plt.subplots(figsize=(8, 8))
         ax.imshow(img_np)
-        ax.set_title("Original Image")
+        #ax.set_title("Original Image")
         ax.axis('off')
         
         if show_stats:
@@ -137,7 +131,7 @@ class AttentionVisualizer:
         fig, ax = plt.subplots(figsize=(8, 8))
         ax.imshow(img_np)
         ax.contour(mask_np, colors='lime', linewidths=1.5)
-        ax.set_title("Mask Outline")
+        #ax.set_title("Mask Outline")
         ax.axis('off')
         save_path = os.path.join(self.save_dir, category, themes["masked"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
@@ -146,9 +140,8 @@ class AttentionVisualizer:
 
         fig, ax = plt.subplots(figsize=(8, 8))
         im = ax.imshow(heatmap_img)
-        ax.set_title("Relevance Heatmap")
+        #ax.set_title("Relevance Heatmap")
         ax.axis('off')
-        # Add a colorbar
         mappable = plt.cm.ScalarMappable(norm=norm_for_cmap, cmap=cmap)
         fig.colorbar(mappable, ax=ax, orientation='vertical', fraction=0.046, pad=0.04)
         save_path = os.path.join(self.save_dir, category, themes["heatmap"], f"{filename}.png")
@@ -157,10 +150,10 @@ class AttentionVisualizer:
         saved_paths['relevance_heatmap'] = save_path
         
         fig, ax = plt.subplots(figsize=(8, 8))
-        ax.imshow(heatmap_intensified_img)#, alpha=0.2)
+        ax.imshow(heatmap_intensified_img)
         ax.imshow(img_np, alpha=0.5)
         ax.contour(mask_np, colors='lime', linewidths=1.5)
-        ax.set_title("Relevance Overlay")
+        #ax.set_title("Relevance Overlay")
         ax.axis('off')
         save_path = os.path.join(self.save_dir, category, themes["overlay"], f"{filename}.png")
         plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1)
@@ -168,7 +161,6 @@ class AttentionVisualizer:
         saved_paths['relevance_overlay'] = save_path
 
         return saved_paths
-    
     def plot_perturbation(
         self,
         filename: str,
@@ -285,6 +277,267 @@ class AttentionVisualizer:
         plt.close(fig)
         return save_path
     
+
+def get_intersected_categories(mode: str, is_zoo: bool) -> Dict[str, list]:
+    category_to_filename = defaultdict(list)
+    if not is_zoo:
+        if mode == "proto_margin":
+            category_to_filename["intersected_positive_lerf_flippers"] = [
+                "DU40_R030_20211202_060_145_1172820",
+                "GA41_R105_20220819_003_984_29862",
+                "NN00_R018_20220711_050_2640_765937",
+                "PL00_R103_20230204_008_1740_833501",
+                "PL01_R185_20221218_099_642_137052",
+            ]
+            category_to_filename["intersected_robust_morf_successes"] = []
+            category_to_filename["intersected_negative_morf_flippers"] = [
+                "DU40_R030_20220325_020_21_1172823",
+                "GA41_R105_20221226_204_636_838311",
+                "NN00_R018_20220825_184_942_766159",
+                "OE00_R019_20220824_127_42_240609",
+                "TU03_R118_20221020_143_1590_261233",
+            ]
+            category_to_filename["intersected_hard_lerf_failures"] = [
+                "PL02_R103_20230204_012_1578_833193",
+                "RC21_R106_20221017_048_4100_1172721",
+                "PL61_R465_20221029_008_5556_884817",
+                "RC42_R108_20221127_293_7530_23115",
+                "DU40_R030_20211202_060_3759_1172820",
+            ]
+        elif mode == "similarity":
+            category_to_filename["intersected_positive_lerf_flippers"] = [
+                "DU40_R030_20211202_064_1345_1172731",
+                "OE00_R066_20211012_023_1024_1172780",
+                "PL00_R103_20230227_095_48_288215",
+                "PL61_R018_20220317_027_1128_1109080",
+                "RC21_R108_20230128_153_1134_156578",
+            ]
+            category_to_filename["intersected_robust_morf_successes"] = []
+            category_to_filename["intersected_negative_morf_flippers"] = [
+                "DU40_R030_20211202_060_2687_1172820",
+                "GA41_R105_20220819_003_1806_29862",
+                "NN00_R018_20220825_184_1032_766159",
+                "OE00_R019_20220512_133_5874_29277",
+                "PL00_R018_20220317_027_4854_1109074",
+            ]
+            category_to_filename["intersected_hard_lerf_failures"] = [
+                "PL61_R066_20220911_147_1350_830037",
+                "PL02_Tm002_20220706_015_2502_31676",
+                "PL01_R465_20221029_008_4128_884818",
+                "OE00_R172_20221121_220_1026_220799",
+                "NN00_R019_20221229_016_1620_774122",
+            ]
+        elif mode == "soft_knn_margin_all":
+            category_to_filename["intersected_positive_lerf_flippers"] = [
+                "DU40_R030_20220325_020_240_1172823",
+                "GA41_R105_20220827_045_6030_836592",
+                "NN00_R019_20221229_016_1578_774122",
+                "OE00_R066_20211012_023_735_1172780",
+                "PL00_R103_20230204_008_1320_833501",
+            ]
+            category_to_filename["intersected_robust_morf_successes"] = []
+            category_to_filename["intersected_negative_morf_flippers"] = [
+                "GA41_R105_20220819_003_1332_29862",
+                "DU40_R030_20220325_020_79_1172823",
+                "ME00_R465_20210924_023_100_1172856",
+                "NN00_R019_20220107_235_606_604744",
+                "OE00_R019_20220512_133_5280_29277",
+            ]
+            category_to_filename["intersected_hard_lerf_failures"] = [
+                "RC42_R108_20221127_293_7530_23115",
+                "RC21_R108_20230128_018_2634_847788",
+                "PL61_R465_20221029_008_4380_884817",
+                "PL02_Tm002_20220706_015_2316_31676",
+                "OE00_R066_20220116_017_108_661909",
+            ]
+        
+        elif mode == "soft_knn_margin_topk":
+            category_to_filename["intersected_positive_lerf_flippers"] = [
+                "PL00_R465_20220926_114_1818_884067",
+                "PL01_R465_20220425_164_2094_878782",
+                "PL02_R465_20221101_285_3234_886148",
+                "RC21_R106_20221017_048_930_1172721",
+                "RC42_R105_20230201_327_2220_329211",
+            ]
+            category_to_filename["intersected_robust_morf_successes"] = []
+            category_to_filename["intersected_negative_morf_flippers"] = [
+                "DU40_R030_20220325_020_150_1172823",
+                "GA41_R185_20221030_060_216_870310",
+                "ME00_R465_20210924_023_344_1172856",
+                "NN00_R019_20220107_261_1224_1107407",
+                "OE00_R019_20220512_133_5430_29277",
+            ]
+            category_to_filename["intersected_hard_lerf_failures"] = [
+                "DU40_R030_20211202_060_3752_1172820",
+                "NN00_R465_20220905_302_7230_885099",
+                "PL00_R465_20220425_210_2310_878890",
+                "PL01_R018_20220818_144_1002_765597",
+                "RC21_R108_20230128_018_2760_847788",
+            ]
+    else:
+        if mode == "similarity" or mode == "proto_margin":
+            print(f"mode '{mode}' not supported for Zoo dataset.")
+
+        if mode == "soft_knn_margin_all":
+            category_to_filename["intersected_positive_lerf_flippers"] = [
+                "Bibi_zoo_114_114_135_114Bibi",
+                "Djambala_zoo_107_107_316_107Djambala",
+                "MPenzi_zoo_136_136_269_136MPenzi",
+                "Sango_zoo_39_39_2034_39Sango",
+                "Tilla_zoo_101_101_456_101Tilla",
+            ]
+            category_to_filename["intersected_robust_morf_successes"] = []
+            category_to_filename["intersected_negative_morf_flippers"] = [
+                "Bibi_zoo_108_108_371_108Bibi",
+                "Djambala_zoo_145_145_1080_145Djambala",
+                "MPenzi_zoo_42_42_1516_42MPenzi",
+                "Sango_zoo_109_109_308_109Sango",
+                "Tilla_zoo_29_29_1128_29Tilla",
+            ]
+            category_to_filename["intersected_hard_lerf_failures"] = [
+                "Bibi_zoo_100_100_1285_100Bibi",
+                "Djambala_zoo_149_149_31_149Djambala",
+                "MPenzi_zoo_65_65_361_65MPenzi",
+                "Sango_zoo_23_23_612_23Sango",
+                "Tilla_zoo_29_29_1128_29Tilla",
+            ]
+        elif mode == "soft_knn_margin_topk":
+            category_to_filename["intersected_positive_lerf_flippers"] = [
+                "Bibi_zoo_100_100_928_100Bibi",
+                "Djambala_zoo_141_141_697_141Djambala",
+                "MPenzi_zoo_59_59_358_59MPenzi",
+                "Sango_zoo_13_13_487_13Sango",
+                "Tilla_zoo_16_16_1051_16Tilla",
+            ]
+            category_to_filename["intersected_robust_morf_successes"] = []
+            category_to_filename["intersected_negative_morf_flippers"] = [
+                "Bibi_zoo_88_88_800_88Bibi",
+                "Djambala_zoo_101_101_1366_101Djambala",
+                "MPenzi_zoo_12_12_1543_12MPenzi",
+                "MPenzi_zoo_30_30_2738_30MPenzi",
+                "Sango_zoo_109_109_220_109Sango",
+            ]
+            category_to_filename["intersected_hard_lerf_failures"] = [
+                "Bibi_zoo_53_53_419_53Bibi",
+                "Djambala_zoo_145_145_296_145Djambala",
+                "MPenzi_zoo_111_111_248_111MPenzi",
+                "Sango_zoo_23_23_2669_23Sango",
+                "Tilla_zoo_36_36_556_36Tilla",
+            ]
+    
+    return category_to_filename
+
+def sample_nonzero_relevance_diverse(filenames, relevance_dict, n=5):
+    """
+    Sample up to `n` filenames with non-zero relevance, trying to maximize class diversity.
+    Class is determined by the first part of the filename: filename.split('_')[0].
+    """
+    valid_filenames = [f for f in filenames if f in relevance_dict and torch.abs(relevance_dict[f][0]).max() > 1e-12]
+    
+    class_to_files = defaultdict(list)
+    for f in valid_filenames:
+        class_name = f.split('_')[0]
+        class_to_files[class_name].append(f)
+    
+    sampled = []
+    classes = list(class_to_files.keys())
+    random.shuffle(classes)
+    
+    while len(sampled) < n and classes:
+        for cls in classes[:]:
+            if class_to_files[cls]:
+                chosen = random.choice(class_to_files[cls])
+                sampled.append(chosen)
+                class_to_files[cls].remove(chosen)
+            if not class_to_files[cls]:
+                classes.remove(cls)
+            if len(sampled) >= n:
+                break
+    return sampled
+
+
+def visualize_prediction_with_neighbors(
+    prediction_info: Dict[str, Any],
+    category: str,
+    full_dataset: ConcatDataset,
+    full_fname_to_idx: Dict[str, int],
+    relevance_dict: Dict[str, Tuple[torch.Tensor, torch.Tensor]],
+    visualizer: AttentionVisualizer
+):
+    """
+    Visualizes a query image and its top-k neighbors from a prediction entry.
+
+    Args:
+        prediction_info: A dictionary for a single prediction from the JSON file.
+        category: The category of the prediction ('correct' or 'incorrect').
+        full_dataset: The combined dataset to look up image tensors.
+        full_fname_to_idx: A mapping from filename to index in the full_dataset.
+        relevance_dict: Dictionary containing pre-computed relevance maps.
+        visualizer: The AttentionVisualizer instance.
+    """
+    query_filename_ext = prediction_info["filename"]
+    query_filename_base = os.path.splitext(query_filename_ext)[0]
+    predicted_label = prediction_info["predicted_label"]
+    
+    print(f"\n--- Visualizing {category.upper()} prediction for: {query_filename_base} ---")
+
+    neighbor_filenames_ext = prediction_info.get("top_k_neighbor_filenames", [])
+    neighbor_filenames_base = [os.path.splitext(f)[0] for f in neighbor_filenames_ext]
+
+    # Combine the query and its neighbors into a single list for processing
+    all_filenames_to_plot = [query_filename_base] + neighbor_filenames_base
+
+    # Create a unique prefix for this group of images to keep them together
+    group_prefix = f"{category}_{query_filename_base}_pred_{predicted_label}"
+
+    for i, filename in enumerate(all_filenames_to_plot):
+        if i == 0:
+            rank_label = "rank00_query"
+        else:
+            rank_label = f"rank{i:02d}_neighbor"
+
+        # Construct a descriptive filename for saving
+        # e.g., correct_DU40..._pred_DU40_rank00_query_DU40...
+        save_filename = f"{group_prefix}_{rank_label}_{filename}"
+        
+        # --- Data Fetching ---
+        if filename not in full_fname_to_idx:
+            print(f"  [Warning] Filename '{filename}' not found in dataset. Skipping.")
+            continue
+        
+        if filename not in relevance_dict:
+            print(f"  [Warning] Relevance not found for '{filename}'. Skipping.")
+            continue
+            
+        print(f"  -> Plotting {rank_label}: {filename}")
+
+        # Get image tensor and mask from the dataset
+        sample_idx = full_fname_to_idx[filename]
+        sample_data = full_dataset[sample_idx]
+        image_tensor = sample_data["image"]
+        
+        # Get relevance map from the pre-computed dictionary
+        # Note: The mask from relevance_dict might be more accurate if it was 
+        # computed on the same image transform, but using the one from the dataset
+        # is also fine. Here we use the one from relevance_dict.
+        relevance, cached_mask = relevance_dict[filename]
+
+        if cached_mask is None:
+            mask_to_use = sample_data["mask"] 
+        else:
+            mask_to_use = cached_mask
+
+        # --- Visualization Call ---
+        visualizer.plot_and_save_individual_overview(
+            filename=save_filename,
+            image_tensor=image_tensor,
+            mask=mask_to_use,
+            relevance=relevance,
+            stats={},  # You can add stats here if available
+            intensify=False,
+            category=category, # Saves to the correct subdirectory (e.g., .../correct/)
+        )
+
 def main(cfg):
     monkey_patch_zennit(verbose=True)
 
@@ -303,33 +556,101 @@ def main(cfg):
     mask_transform = get_mask_transform(cfg["model"]["img_size"])
 
     # --- Prepare Datasets ---
-    split_name = cfg["data"]["analysis_split"]
-    split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
-    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
-    
-    split_dataset = GorillaReIDDataset(
-        image_dir=split_dir,
-        filenames=split_files,
-        transform=image_transforms,
-        base_mask_dir=cfg["data"]["base_mask_dir"],
-        mask_transform=mask_transform,
-        k=cfg["knn"]["k"],
-    )
-    
-    train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
-    train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
-    train_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=train_files, transform=image_transforms
-    )
-    
+    dataset_dir = cfg["data"]["dataset_dir"]
+    if not "zoo" in dataset_dir:
+        split_name = cfg["data"]["analysis_split"]
+        split_dir = os.path.join(dataset_dir, split_name)
+        split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
+        
+        split_dataset = GorillaReIDDataset(
+            image_dir=split_dir,
+            filenames=split_files,
+            transform=image_transforms,
+            base_mask_dir=cfg["data"]["base_mask_dir"],
+            mask_transform=mask_transform,
+            k=cfg["knn"]["k"],
+        )
+        
+        train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
+        train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
+        train_dataset = GorillaReIDDataset(
+            image_dir=train_dir, filenames=train_files, transform=image_transforms
+        )
+        
 
-    datasets = [split_dataset, train_dataset]
-    full_db_dataset = ConcatDataset(datasets)
-    full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
+        datasets = [split_dataset, train_dataset]
+        full_db_dataset = ConcatDataset(datasets)
+        full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
+
+
+        query_dataset_offset = 0
+        found = False
+        for d in datasets:
+            if d is split_dataset:
+                found = True
+                break
+            query_dataset_offset += len(d)
+
+        print("Query dataset offset in DB:", query_dataset_offset)
+
+        if not found:
+            raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+        
+        all_files_in_order = []
+        for ds in full_db_dataset.datasets:
+            all_files_in_order.extend(ds.filenames)
+        
+    else:
+        print("Using Zoo dataset for evaluation.")
+        all_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
+
+        subsample_fraction = cfg["data"].get("zoo_subsample_fraction", 1.0)
+
+        if subsample_fraction < 1.0:
+            print(f"Subsampling Zoo dataset to {subsample_fraction:.0%} of its original size.")
+            labels = [f.split('_')[0] for f in all_files]
+
+            discard_fraction = 1.0 - subsample_fraction
+
+            subsampled_files, _ = train_test_split(
+                all_files,
+                test_size=discard_fraction,
+                stratify=labels,
+                random_state=cfg["seed"]
+            )
+            
+            split_name_suffix = f"_subsampled_{int(subsample_fraction*100)}pct"
+
+        else:
+            print("Using the full Zoo dataset (no subsampling).")
+            subsampled_files = all_files
+            split_name_suffix = "_full"
+
+
+        print(f"Using {len(subsampled_files)} images for the Zoo evaluation.")
+
+        split_dataset = GorillaReIDDataset(
+            image_dir=dataset_dir,
+            filenames=subsampled_files,  
+            transform=image_transforms,
+            base_mask_dir=cfg["data"]["base_mask_dir"],
+            mask_transform=mask_transform,
+            k=cfg["knn"]["k"],
+        )
+
+        query_dataset_offset = 0
+        full_db_dataset = split_dataset
+        full_dataset_splits = os.path.basename(dataset_dir) + split_name_suffix
+        split_name = full_dataset_splits
+        split_files = subsampled_files
+        all_files_in_order = split_dataset.filenames
+
+
+    full_fname_to_idx = {os.path.splitext(f)[0]: i for i, f in enumerate(all_files_in_order)}
 
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=train_dataset.dataset_name,
+        dataset_name=split_dataset.dataset_name,
         split_name=full_dataset_splits,
         bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]
@@ -344,8 +665,6 @@ def main(cfg):
 
     local_query_indices = split_dataset.images_for_ce_knn
 
-
-    # --- Generate or Load Relevance Maps (for test images only) ---
     split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]
@@ -372,9 +691,10 @@ def main(cfg):
         relevance_db_filenames = all_db_filenames
         relevance_db_videos = all_db_videos
 
+    # --- Get path for current model's relevances ---
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=train_dataset.dataset_name, 
+        dataset_name=split_dataset.dataset_name, 
         split_name=relevance_split_name, 
         bp_transforms=cfg["model"]["bp_transforms"], 
         db_dir=cfg["lrp"]["db_relevances_dir"],
@@ -410,80 +730,67 @@ def main(cfg):
         item['filename']: (item['relevance'], item['mask']) for item in relevances_all
     }
 
+    print(f"Loaded relevance maps for {len(relevance_dict)} images.")
+
     denorm_transform = get_denormalization_transform(mean=model_data_config['mean'], std=model_data_config['std'])
 
+    if "zoo" in cfg["data"]["dataset_dir"].lower():
+        save_dir = f"./visualizations_zoo/{model_type_str}/{cfg['lrp']['mode']}"
+    else:
+        save_dir = f"./visualizations/{model_type_str}/{cfg['lrp']['mode']}"
+
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir, exist_ok=True)
+
     visualizer = AttentionVisualizer(
-        save_dir=f"./visualizations/{model_type_str}/{cfg['lrp']['mode']}",
+        save_dir=save_dir,
         denorm_transform=denorm_transform,
         seed=cfg["seed"]
     )
 
-    # select 50 random images
-    random_images = random.sample([os.path.splitext(f)[0] for f in split_files], 50)
+    base_path = "/sc/home/iven.schlegelmilch/bachelor_thesis_code" #base_zoo_predictions.json
+
+    if "zoo" in cfg["data"]["dataset_dir"].lower():
+        filename = model_type_str + "_zoo_predictions.json"
+        prediction_json_path = os.path.join(base_path, filename)
+    else:
+        filename = model_type_str + "_predictions.json"
+        prediction_json_path = os.path.join(base_path, filename)
+
+    prediction_data = None
+    correct_prediction_lookup = {}
+    incorrect_prediction_lookup = {}
+
+    if os.path.exists(prediction_json_path):
+        with open(prediction_json_path, 'r') as f:
+            prediction_data = json.load(f)
+        
+        # Create efficient lookup maps (filename without extension -> prediction data)
+        correct_prediction_lookup = {
+            os.path.splitext(p['filename'])[0]: p 
+            for p in prediction_data.get('correct_predictions', [])
+        }
+        incorrect_prediction_lookup = {
+            os.path.splitext(p['filename'])[0]: p 
+            for p in prediction_data.get('incorrect_predictions', [])
+        }
+        print(f"Loaded {len(correct_prediction_lookup)} correct and {len(incorrect_prediction_lookup)} incorrect predictions for neighbor lookup.")
+    else:
+        print(f"Warning: Prediction JSON not found at '{prediction_json_path}'. Skipping neighbor visualizations.")
+
+    
+
+    random_images = random.sample([os.path.splitext(f)[0] for f in split_files], 5)
     images_to_visualize = defaultdict(list)
 
     images_to_visualize["random"] = random_images
 
-    images_to_visualize["correct"] = [
-        #finetuned:
-        "OE00_R019_20220815_077_60_155860",
-        #"ME00_R465_20210924_023_385_1172856",
-        "PL02_R465_20220227_163_983_1172733",
-        #"PL01_R465_20220204_282_1470_1172870",
-        #"GA41_R105_20220819_003_1692_29862",
-        "NN00_R018_20220825_184_1020_766159",
-        #"PL00_R018_20220317_027_4548_1109074",
-        #"TU03_R118_20220111_261_642_280864",
-        #"RC42_R108_20221127_293_768_23067",
-        #"RC21_R105_20230201_327_396_329203",
-        #"PL61_R103_20230227_071_492_833240",
-        #"DU40_R030_20211202_064_1455_1172731",
-        #base:
-        "OE00_R019_20220815_077_48_155860",
-        "PL02_R465_20220227_163_597_1172733",
-        "NN00_R018_20220825_184_1068_766159",
-        #"PL01_R465_20220204_283_381_1172927",
-        #"PL00_R465_20211017_062_330_1172960",
-        #"ME00_R465_20210924_023_370_1172856",
-        #"GA41_R105_20220827_045_12192_836624",
-        #"RC42_R105_20230201_263_1002_838903",
-        #"RC21_R108_20230128_153_1272_156578",
-        #"TU03_R118_20220314_294_1367_1172959",
-        #"DU40_R030_20211202_060_2666_1172820",
-        #"PL61_R465_20220926_114_3000_884075"
-    ]
-
-    #TODO why is this one longer?
-    images_to_visualize["incorrect"] = [
-        #finetuned:
-        #"RC42_R108_20221127_293_7488_23115",
-        #"ME00_R465_20211104_151_1245_1172834",
-        "NN00_R018_20220711_050_3546_765937",
-        "OE00_R172_20221121_204_78_862780",
-        #"PL61_R103_20230227_071_672_833242",
-        #"PL01_R465_20220629_005_948_882125",
-        #"RC21_R108_20230128_018_1638_847788",
-        "PL02_R465_20220228_205_162_724627",
-        #"GA41_R108_20220824_022_1272_843913",
-        #"PL00_R465_20221101_317_4338_29555",
-        #"DU40_R030_20220325_020_1924_1172823",
-        #"AP03_R066_20221118_164_285_1173026",
-        #"TU03_R118_20221020_143_1488_261233",
-        #base:
-        #"ME00_R465_20211104_152_1350_1172861",
-        "OE00_R066_20211012_023_375_1172780",
-        "NN00_R019_20220402_062_192_769264",
-        #"PL00_R465_20220831_144_108_881169",
-        #"PL01_R465_20220204_283_343_1172927",
-        "PL02_R465_20220227_163_720_1172733",
-        #"AP03_R066_20221118_155_1695_1173126",
-        #"RC21_R105_20230204_480_1380_331231",
-        #"GA41_R105_20220819_003_1968_29862",
-        #"DU40_R030_20211202_064_4444_1172731",
-        #"RC42_R106_20221017_047_1633_1173011",
-        #"PL61_R465_20221029_008_4350_884817",
-        #"TU03_R118_20220314_284_10_1172892",
-    ]
+    if "zoo" in cfg["data"]["dataset_dir"].lower():
+        images_to_visualize["correct_with_neighbors"] = ["Sango_zoo_98_98_1555_98Sango"]
+        images_to_visualize["incorrect_with_neighbors"] = ["Bibi_zoo_51_51_2779_51Bibi"]
+    else:
+        images_to_visualize["correct_with_neighbors"] = ["GA41_R105_20220819_003_1650_29862"]
+        images_to_visualize["incorrect_with_neighbors"] = ["PL02_R465_20220228_205_54_724627"]
 
     analysis_json_path = f"./visualizations/{os.path.basename(db_path_relevances)}.json"
     if os.path.exists(analysis_json_path):
@@ -492,23 +799,59 @@ def main(cfg):
     else:
         analysis_data = {}
 
-    for category, filenames in analysis_data.items():
+    """for category, filenames in analysis_data.items():
         if category not in images_to_visualize:
             images_to_visualize[category] = []
-        sampled_filenames = random.sample(filenames, min(15, len(filenames)))
-        for filename in sampled_filenames:
-            images_to_visualize[category].append(filename)
+        images_to_visualize[category].extend(
+            sample_nonzero_relevance_diverse(filenames, relevance_dict, n=5) #this is dependant on base/finetuned model anyway. so no point in trying to have the same images
+        )"""
+
+    is_zoo = "zoo" in cfg["data"]["dataset_dir"].lower()
+    intersected_categories = get_intersected_categories(mode=MODE, is_zoo=is_zoo)
+    images_to_visualize.update(intersected_categories)
+
 
 
     fname_to_idx = {
         os.path.splitext(f)[0]: i for i, f in enumerate(split_dataset.filenames)
     }
 
-    #example_images = ["PL02_Tm002_20220706_015_2394_31676", "TU03_R118_20220912_096_42_851638"]
-    for category, filenames in images_to_visualize.items():
-        for filename in filenames:
+    if prediction_data:
+        # Process CORRECT examples
+        for filename in images_to_visualize["correct_with_neighbors"]:
+            prediction_info = correct_prediction_lookup.get(filename)
+            if prediction_info:
+                visualize_prediction_with_neighbors(
+                    prediction_info=prediction_info,
+                    category="correct", # This determines the subfolder
+                    full_dataset=full_db_dataset,
+                    full_fname_to_idx=full_fname_to_idx,
+                    relevance_dict=relevance_dict,
+                    visualizer=visualizer,
+                )
+            else:
+                print(f"[Warning] Showcase file '{filename}' not found in the 'correct_predictions' list of your JSON.")
+        
+        # Process INCORRECT examples
+        for filename in images_to_visualize["incorrect_with_neighbors"]:
+            prediction_info = incorrect_prediction_lookup.get(filename)
+            if prediction_info:
+                visualize_prediction_with_neighbors(
+                    prediction_info=prediction_info,
+                    category="incorrect", # This determines the subfolder
+                    full_dataset=full_db_dataset,
+                    full_fname_to_idx=full_fname_to_idx,
+                    relevance_dict=relevance_dict,
+                    visualizer=visualizer,
+                )
+            else:
+                print(f"[Warning] Showcase file '{filename}' not found in the 'incorrect_predictions' list of your JSON.")
+    special_categories = ["correct_with_neighbors", "incorrect_with_neighbors"]
 
-            # Get the necessary data for plotting
+    for category, filenames in images_to_visualize.items():
+        if category in special_categories:
+            continue
+        for filename in filenames:
             if os.path.splitext(filename)[0] not in fname_to_idx:
                 print(f"Warning: Filename '{filename}' not found in dataset. Skipping.")
                 continue
@@ -516,24 +859,29 @@ def main(cfg):
             sample_data = split_dataset[fname_to_idx[os.path.splitext(filename)[0]]]
             image_tensor = sample_data["image"]
             
-            relevance, mask = relevance_dict[filename]
+            if filename not in relevance_dict:
+                print(f"Warning: Relevance not found for '{filename}'. Skipping.")
+                continue
 
-            frac = 0.75
+            relevance, cached_mask = relevance_dict[filename]
 
-            save_path = visualizer.plot_and_save_individual_overview(
+            if cached_mask is None:
+                mask_to_use = sample_data["mask"] 
+            else:
+                mask_to_use = cached_mask
+
+            visualizer.plot_and_save_individual_overview(
                 filename=filename,
                 image_tensor=image_tensor,
-                mask=mask,
+                mask=mask_to_use,
                 relevance=relevance,
                 stats={},
-                intensify=True,
+                intensify=False,
                 category=category,
             )
 
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run faithfulness eval.")
+    parser = argparse.ArgumentParser(description="Run LRP relevance visualization.")
     parser.add_argument(
         "--config_name", 
         type=str, 
@@ -542,9 +890,5 @@ if __name__ == "__main__":
     )   
     
     args, unknown_args = parser.parse_known_args()
-
     cfg = load_config(args.config_name, unknown_args)
-
-
     main(cfg)
-

@@ -13,7 +13,7 @@ from tqdm import tqdm
 from omegaconf import OmegaConf
 from collections import defaultdict
 from basemodel import TimmWrapper
-from eval_helpers import faithfulness_eval_proxy_score, faithfulness_eval_acc
+from eval_helpers_old_backup import faithfulness_eval_proxy_score, faithfulness_eval_acc
 from utils import get_hpi_colors, parse_encounter_id
 
 

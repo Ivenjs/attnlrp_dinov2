@@ -50,10 +50,15 @@ class GorillaReIDDataset(Dataset):
         self.encounters = [parse_encounter_id(v) for v in self.videos]
 
         if base_mask_dir:
-            # Construct the full path to the specific mask directory
-            mask_dir = os.path.join(base_mask_dir, self.dataset_name, self.split_name)
+            if "zoo" in self.image_dir.lower():
+                mask_dir = os.path.join(base_mask_dir, self.split_name)
+            else:
+                mask_dir = os.path.join(base_mask_dir, self.dataset_name, self.split_name)
+
             self.mask_paths = [os.path.join(mask_dir, os.path.basename(f)) for f in self.filenames]
             self.has_mask = [os.path.exists(p) for p in self.mask_paths]
+            print(f"Mask directory: {mask_dir}")
+            print(f"Found {sum(self.has_mask)} / {len(self.has_mask)} masks.")
         else:
             self.mask_paths = [None] * len(self.filenames)
             self.has_mask = [False] * len(self.filenames)
@@ -144,6 +149,9 @@ class GorillaReIDDataset(Dataset):
             if self.mask_transform:
                 mask = self.mask_transform(mask)
             mask_tensor = (mask > 0).float()
+            #print(f"Loaded mask for {self.filenames[idx]} from {mask_path}")
+        else:
+            print(f"No mask found for {self.filenames[idx]}.")
 
         return {
             "image": image_tensor,

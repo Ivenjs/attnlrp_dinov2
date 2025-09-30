@@ -299,8 +299,11 @@ def load_timm_wrapper(
 def get_model_wrapper(device, cfg):
     model_dtype = getattr(torch, cfg["model_dtype"])
 
-    if device.type == "cuda" and not torch.cuda.is_bf16_supported():
-        model_dtype = torch.bfloat32
+    if device.type == "cuda":
+        if torch.cuda.is_bf16_supported() and model_dtype == "bfloat16":
+            model_dtype = torch.bfloat16
+        elif model_dtype == "float32":
+            model_dtype = torch.float32
 
     print(f"Using model dtype: {model_dtype}")
     model_wrapper, transforms, data_config = load_timm_wrapper(

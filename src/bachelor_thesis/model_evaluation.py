@@ -12,15 +12,22 @@ from sklearn.metrics import balanced_accuracy_score, accuracy_score
 from torchvision import transforms
 from torchvision.transforms import RandAugment
 import os
+from sklearn.model_selection import train_test_split
 import operator
 import torch.nn.functional as F
 from collections import defaultdict
 from knn_helpers import create_exclusion_mask
+import json
 
-def analyze_predictions_by_class(prediction_details, id_to_label, n=50):
+
+import operator
+import json
+import os
+
+def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, output_dir="."):
     """
-    Findet für korrekte und inkorrekte Vorhersagen jeweils die zuversichtlichste
-    Vorhersage pro Klasse und gibt die Top N Ergebnisse davon aus.
+    Finds the most confident correct and incorrect prediction for each class,
+    prints the top N results, and saves all prediction details to a JSON file.
     """
     if not prediction_details:
         return
@@ -28,6 +35,7 @@ def analyze_predictions_by_class(prediction_details, id_to_label, n=50):
     correct_preds = [p for p in prediction_details if p['is_correct']]
     incorrect_preds = [p for p in prediction_details if not p['is_correct']]
 
+    # --- Analysis for Correct Predictions ---
     best_correct_per_class = {}
     for pred in correct_preds:
         label = pred['actual_label']
@@ -39,12 +47,15 @@ def analyze_predictions_by_class(prediction_details, id_to_label, n=50):
     print(f"\n--- Top {n} most confident CORRECT predictions (one per class) ---")
     for pred in sorted_best_correct[:n]:
         label_name = id_to_label.get(pred['actual_label'], 'Unknown')
+        closest_neighbor_file = pred.get('top_k_neighbor_filenames', ['N/A'])[0]
         print(
             f"File: {pred['filename']}, "
             f"Predicted: {label_name}, "
-            f"Distance: {pred['confidence_distance']:.4f}"
+            f"Distance: {pred['confidence_distance']:.4f}, "
+            f"Closest Match: {closest_neighbor_file}"
         )
 
+    # --- Analysis for Incorrect Predictions ---
     best_incorrect_per_class = {}
     for pred in incorrect_preds:
         label = pred['actual_label']
@@ -57,12 +68,56 @@ def analyze_predictions_by_class(prediction_details, id_to_label, n=50):
     for pred in sorted_best_incorrect[:n]:
         actual_name = id_to_label.get(pred['actual_label'], 'Unknown')
         predicted_name = id_to_label.get(pred['predicted_label'], 'Unknown')
+        # MODIFIED: Also print the closest matching neighbor's filename, which caused the error
+        closest_neighbor_file = pred.get('top_k_neighbor_filenames', ['N/A'])[0]
         print(
             f"File: {pred['filename']}, "
             f"Actual: {actual_name}, "
             f"Predicted: {predicted_name}, "
-            f"Distance: {pred['confidence_distance']:.4f}"
+            f"Distance: {pred['confidence_distance']:.4f}, "
+            f"Closest Match (cause): {closest_neighbor_file}"
         )
+    
+    finetuned_str = "finetuned" if cfg["model"].get("finetuned", False) else "base"
+    
+    # --- Prepare JSON Data with all details ---
+    json_data = {
+        "correct_predictions": [
+            {
+                "filename": p['filename'],
+                "actual_label": id_to_label.get(p['actual_label'], 'Unknown'),
+                "predicted_label": id_to_label.get(p['predicted_label'], 'Unknown'),
+                "confidence_distance": p['confidence_distance'],
+                "top_k_distances": p.get('top_k_distances', []),
+                "top_k_neighbor_filenames": p.get('top_k_neighbor_filenames', []),
+                "top_k_neighbor_labels": [id_to_label.get(l, "Unknown") for l in p.get('top_k_neighbor_labels', [])],
+            }
+            for p in correct_preds
+        ],
+        "incorrect_predictions": [
+            {
+                "filename": p['filename'],
+                "actual_label": id_to_label.get(p['actual_label'], 'Unknown'),
+                "predicted_label": id_to_label.get(p['predicted_label'], 'Unknown'),
+                "confidence_distance": p['confidence_distance'],
+                "top_k_distances": p.get('top_k_distances', []),
+                "top_k_neighbor_filenames": p.get('top_k_neighbor_filenames', []),
+                "top_k_neighbor_labels": [id_to_label.get(l, "Unknown") for l in p.get('top_k_neighbor_labels', [])],
+            }
+            for p in incorrect_preds
+        ],
+    }
+
+    # --- Save JSON to file ---
+    os.makedirs(output_dir, exist_ok=True)
+
+    zoo_str = "_zoo" if "zoo" in cfg["data"]["dataset_dir"].lower() else ""
+
+    output_path = os.path.join(output_dir, f"{finetuned_str}{zoo_str}_predictions.json")
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(json_data, f, indent=4, ensure_ascii=False)
+
+    print(f"\n[INFO] Full prediction details written to: {output_path}")
 
 #TODO: use this in perform_knn_ce_evaluation for a unified approach alongside the lrp masking. But would need to update the masking to be wiht integers for lrp of non-integers here
 def create_batched_exclusion_mask(
@@ -109,6 +164,7 @@ def perform_knn_ce_evaluation(
     device,
     distance_metric="euclidean",
     query_filenames=None,
+    db_filenames=None,
     return_raw_preds=False
 ):
     """
@@ -158,14 +214,27 @@ def perform_knn_ce_evaluation(
         predicted_labels_batch = torch.mode(neighbor_labels, dim=1)[0]
         actual_labels_batch = query_labels_int[i:batch_end]
 
-        if query_filenames_batch is not None:
+        if query_filenames_batch is not None and db_filenames is not None: # 
             for j in range(len(predicted_labels_batch)):
+                k_neighbor_db_indices = top_k_db_indices[j].cpu().tolist()
+                
+                k_neighbor_filenames = [db_filenames[idx] for idx in k_neighbor_db_indices]
+                
+                all_k_distances = top_k_distances[j].cpu().tolist()
+                neighbor_labels_list = neighbor_labels[j].cpu().tolist()
+
                 prediction_details.append({
                     'filename': query_filenames_batch[j],
                     'actual_label': actual_labels_batch[j].item(),
                     'predicted_label': predicted_labels_batch[j].item(),
                     'is_correct': (actual_labels_batch[j] == predicted_labels_batch[j]).item(),
-                    'confidence_distance': top_k_distances[j, 0].item()
+                    
+                    'confidence_distance': all_k_distances[0],
+                    'top_k_distances': all_k_distances,
+                    
+                    'top_k_neighbor_filenames': k_neighbor_filenames, 
+                    
+                    'top_k_neighbor_labels': neighbor_labels_list
                 })
 
         all_predictions.append(predicted_labels_batch)
@@ -312,10 +381,11 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
         batch_size=cfg["data"]["batch_size"],
         device=device,
         distance_metric=cfg["knn"]["distance_metric"],
-        query_filenames=query_filenames
+        query_filenames=query_filenames,
+        db_filenames=db_filenames
     )
 
-    analyze_predictions_by_class(prediction_details, id_to_label, n=50)
+    analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50)
     
     return mean_accuracy
 
@@ -332,50 +402,98 @@ def main(cfg):
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     ])"""
 
-    # --- Setup Datasets ---
-    split_name = cfg["data"]["analysis_split"]
-    split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
-    split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
-    split_dataset = GorillaReIDDataset(
-        image_dir=split_dir, filenames=split_files, transform=image_transforms, k=cfg["knn"]["k"]
-    )
+    dataset_dir = cfg["data"]["dataset_dir"]
+    is_zoo = "zoo" in dataset_dir.lower()
 
-    train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
-    train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
-    train_dataset = GorillaReIDDataset(
-        image_dir=train_dir, filenames=train_files, transform=image_transforms
-    )
+    if not is_zoo:
+        # --- Standard Gorilla Dataset Logic (with train/val splits) ---
+        print("Using standard dataset with train/analysis splits.")
+        split_name = cfg["data"]["analysis_split"]
+        split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
+        split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
+        split_dataset = GorillaReIDDataset(
+            image_dir=split_dir, filenames=split_files, transform=image_transforms, k=cfg["knn"]["k"]
+        )
+
+        train_dir = os.path.join(cfg["data"]["dataset_dir"], "train")
+        train_files = [f for f in os.listdir(train_dir) if f.lower().endswith((".jpg", ".png"))]
+        train_dataset = GorillaReIDDataset(
+            image_dir=train_dir, filenames=train_files, transform=image_transforms
+        )
+        
+        # The database consists of both training and validation images
+        datasets = [split_dataset, train_dataset]
+        full_db_dataset = ConcatDataset(datasets)
+        full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
+        
+        print(f"Full database contains {len(full_db_dataset)} images from splits: {full_dataset_splits}")
+
+        all_db_filenames = []
+        for d in datasets:
+            all_db_filenames.extend(d.filenames)
+
+        query_dataset_offset = 0
+        found = False
+        for d in datasets:
+            if d is split_dataset:
+                found = True
+                break
+            query_dataset_offset += len(d)
+
+        print("Query dataset offset in DB:", query_dataset_offset)
+
+        if not found:
+            raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
+
+    else:
+        # --- Zoo Dataset Logic (flat directory) ---
+        print("Using Zoo dataset for evaluation.")
+        all_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
+
+        subsample_fraction = cfg["data"].get("zoo_subsample_fraction", 1.0)
+
+        if subsample_fraction < 1.0:
+            print(f"Subsampling Zoo dataset to {subsample_fraction:.0%} of its original size.")
+            labels = [f.split('_')[0] for f in all_files]
+            subsampled_files, _ = train_test_split(
+                all_files,
+                test_size=(1.0 - subsample_fraction),
+                stratify=labels,
+                random_state=cfg["seed"]
+            )
+            split_name_suffix = f"_subsampled_{int(subsample_fraction*100)}pct"
+        else:
+            print("Using the full Zoo dataset (no subsampling).")
+            subsampled_files = all_files
+            split_name_suffix = "_full"
+        
+        print(f"Using {len(subsampled_files)} images for the Zoo evaluation.")
+
+        split_dataset = GorillaReIDDataset(
+            image_dir=dataset_dir,
+            filenames=subsampled_files,
+            transform=image_transforms,
+            k=cfg["knn"]["k"],
+        )
+
+
+
+        # For the zoo dataset, the full DB is just the split_dataset itself.
+        # These variables are defined to match the structure of the other branch.
+        query_dataset_offset = 0
+        full_db_dataset = split_dataset
+        full_dataset_splits = os.path.basename(dataset_dir) + split_name_suffix
+        split_name = full_dataset_splits
+        all_db_filenames = split_dataset.filenames
+
     
-    # The database consists of both training and validation images
-    datasets = [split_dataset, train_dataset]
-    full_db_dataset = ConcatDataset(datasets)
-    full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
-
-    all_db_filenames = []
-    for d in datasets:
-        all_db_filenames.extend(d.filenames)
-
-    query_dataset_offset = 0
-    found = False
-    for d in datasets:
-        if d is split_dataset:
-            found = True
-            break
-        query_dataset_offset += len(d)
-
-    print("Query dataset offset in DB:", query_dataset_offset)
-
-    if not found:
-        raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
-
     local_query_indices = split_dataset.images_for_ce_knn
-
     global_query_indices = [idx + query_dataset_offset for idx in local_query_indices]
 
     # --- Get KNN Database Embeddings ---
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
-        dataset_name=train_dataset.dataset_name,
+        dataset_name=split_dataset.dataset_name,
         split_name=full_dataset_splits,
         bp_transforms=cfg["model"]["bp_transforms"],
         db_dir=cfg["knn"]["db_embeddings_dir"]

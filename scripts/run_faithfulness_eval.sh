@@ -3,10 +3,11 @@
 #SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --mem=450G
+#SBATCH --mem=250G
 #SBATCH --cpus-per-task=50
-#SBATCH --time=3-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --gres=gpu:h100:1
+#SBATCH --exclude=gx10
 #SBATCH -p aisc 
 #SBATCH --account=aisc 
 #SBATCH --qos=aisc

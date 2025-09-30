@@ -19,7 +19,72 @@ import random
 import torch
 import argparse 
 import wandb
+from collections import defaultdict
 import pandas as pd
+
+def get_combined_analysis_categories(
+    base_analysis_path: str,
+    predictions_json_path: str
+) -> Dict[str, List[str]]:
+    """
+    Creates a new analysis JSON by combining and filtering two sources.
+    It robustly normalizes all filenames by removing their extensions.
+    """
+    print(f"\n--- Combining analysis categories ---")
+
+    # Helper function to guarantee extension is removed
+    def normalize_filename(fname: str) -> str:
+        return os.path.splitext(fname)[0]
+
+    combined_categories = {}
+    categories_to_exclude = {"negative_morf_flippers", "robust_morf_successes"}
+
+    # --- Step 1: Load, filter, and NORMALIZE the base analysis file ---
+    try:
+        with open(base_analysis_path, 'r') as f:
+            base_data = json.load(f)
+        
+        print(f"Loaded base analysis from: {base_analysis_path}")
+        for category, filenames in base_data.items():
+            if category not in categories_to_exclude:
+                # NORMALIZE EVERY FILENAME HERE
+                normalized_filenames = [normalize_filename(f) for f in filenames]
+                combined_categories[category] = normalized_filenames
+                print(f"  - Kept and normalized category '{category}' with {len(normalized_filenames)} images.")
+            else:
+                print(f"  - Excluded category '{category}'.")
+
+    except FileNotFoundError:
+        print(f"Warning: Base analysis file not found at '{base_analysis_path}'. Continuing without it.")
+    except Exception as e:
+        print(f"Error reading base analysis file '{base_analysis_path}': {e}")
+        return {} # Return empty dict on error
+
+    # --- Step 2: Load, add, and NORMALIZE categories from the predictions file ---
+    try:
+        with open(predictions_json_path, 'r') as f:
+            predictions_data = json.load(f)
+        
+        print(f"Loaded predictions from: {predictions_json_path}")
+        
+        # NORMALIZE EVERY FILENAME HERE TOO
+        correct_filenames = [normalize_filename(item['filename']) for item in predictions_data.get('correct_predictions', [])]
+        incorrect_filenames = [normalize_filename(item['filename']) for item in predictions_data.get('incorrect_predictions', [])]
+
+        combined_categories["correct_predictions"] = correct_filenames
+        combined_categories["incorrect_predictions"] = incorrect_filenames
+        print(f"  - Added and normalized category 'correct_predictions' with {len(correct_filenames)} images.")
+        print(f"  - Added and normalized category 'incorrect_predictions' with {len(incorrect_filenames)} images.")
+
+    except FileNotFoundError:
+        print(f"Error: Predictions JSON not found at '{predictions_json_path}'. Cannot add new categories.")
+        return {} # Return empty dict on error
+    except Exception as e:
+        print(f"Error reading predictions file '{predictions_json_path}': {e}")
+        return {} # Return empty dict on error
+
+    print("Successfully created combined analysis categories in memory.")
+    return combined_categories
 
 def _get_relevance_component(relevance_map: np.ndarray, component: str) -> np.ndarray:
     """
@@ -45,7 +110,7 @@ def _get_relevance_component(relevance_map: np.ndarray, component: str) -> np.nd
 def analyze_era_in_mask_ratio(
     dataloader: DataLoader,
     relevance_dict: Dict[str, torch.Tensor],
-    analysis_json_path: str,
+    analysis_categories: Dict[str, List[str]],
     thresholds: List[float] = [0.10, 0.25, 0.50]
 ) -> Dict[str, Dict[str, float]]:
     """
@@ -57,31 +122,28 @@ def analyze_era_in_mask_ratio(
     Args:
         dataloader: Dataloader that provides images, masks, and filenames.
         relevance_dict: Dictionary of filenames to their relevance maps.
-        analysis_json_path: Path to the JSON file with image categories.
         thresholds: List of fractions of the max relevance to define hotspots.
 
     Returns:
         A dictionary with aggregated statistics for each category and relevance type.
     """
     print(f"\n--- Running Hotspot Placement Accuracy (ERA-in-Mask) Analysis ---")
-    try:
-        with open(analysis_json_path, 'r') as f:
-            analysis_results = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Analysis JSON file not found at {analysis_json_path}. Skipping.")
+    analysis_results = analysis_categories
+    if not analysis_results:
+        print("Error: Received empty or invalid analysis categories. Skipping mask analysis.")
         return {}
 
-    filename_to_category = {
-        filename: category
-        for category, filenames in analysis_results.items()
-        for filename in filenames
-    }
+    filename_to_categories = defaultdict(list)
+    for category, filenames in analysis_categories.items():
+        for filename in filenames:
+            filename_to_categories[filename].append(category)
 
     # Structure: {category: {component: {threshold: [list_of_ratios]}}}
     category_ratios = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     baseline_category_name = "all_queries_baseline"
     relevance_components = ['absolute', 'positive', 'negative']
 
+    skipped_masks = 0
     for batch in tqdm(dataloader, desc="Analyzing ERA-in-Mask"):
         masks_batch = batch["mask"]
         filenames_batch = batch["filename"]
@@ -89,6 +151,10 @@ def analyze_era_in_mask_ratio(
         for i, filename in enumerate(filenames_batch):
             relevance_map_orig = relevance_dict.get(filename)
             if relevance_map_orig is None:
+                continue
+
+            if masks_batch[i] is None:
+                skipped_masks += 1
                 continue
 
             if isinstance(relevance_map_orig, torch.Tensor):
@@ -115,10 +181,13 @@ def analyze_era_in_mask_ratio(
                         ratio = intersection_area / total_hotspot_area
                     
                     category_ratios[baseline_category_name][component][t].append(ratio)
-                    category = filename_to_category.get(filename)
-                    if category:
+                    categories_for_file = filename_to_categories.get(filename, [])
+                    for category in categories_for_file:
                         category_ratios[category][component][t].append(ratio)
 
+
+    
+    print(f"Skipped {skipped_masks} images due to missing masks.")
     print("\n--- Hotspot Placement Accuracy (ERA-in-Mask) Results ---")
     aggregated_stats = {}
     sorted_categories = sorted(category_ratios.keys(), key=lambda x: x != baseline_category_name)
@@ -152,7 +221,7 @@ def analyze_era_in_mask_ratio(
 
 def analyze_effective_relevance_area(
     relevance_dict: Dict[str, torch.Tensor],
-    analysis_json_path: str,
+    analysis_categories: Dict[str, List[str]],
     thresholds: List[float] = [0.10, 0.25, 0.50]
 ) -> Dict[str, Dict[str, float]]:
     """
@@ -170,18 +239,15 @@ def analyze_effective_relevance_area(
         A dictionary with aggregated statistics for each category and relevance type.
     """
     print(f"\n--- Running Effective Relevance Area (ERA) Analysis ---")
-    try:
-        with open(analysis_json_path, 'r') as f:
-            analysis_results = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Analysis JSON file not found at {analysis_json_path}. Skipping.")
+    analysis_results = analysis_categories
+    if not analysis_results:
+        print("Error: Received empty or invalid analysis categories. Skipping mask analysis.")
         return {}
 
-    filename_to_category = {
-        filename: category
-        for category, filenames in analysis_results.items()
-        for filename in filenames
-    }
+    filename_to_categories = defaultdict(list)
+    for category, filenames in analysis_categories.items():
+        for filename in filenames:
+            filename_to_categories[filename].append(category)
 
     # Structure: {category: {component: {threshold: [list_of_areas]}}}
     category_areas = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -207,8 +273,8 @@ def analyze_effective_relevance_area(
                 area_percent = hot_pixel_count / total_pixels
                 
                 category_areas[baseline_category_name][component][t].append(area_percent)
-                category = filename_to_category.get(filename)
-                if category:
+                categories_for_file = filename_to_categories.get(filename, [])
+                for category in categories_for_file:
                     category_areas[category][component][t].append(area_percent)
 
     print("\n--- Effective Relevance Area (ERA) Results ---")
@@ -244,7 +310,7 @@ def analyze_effective_relevance_area(
 
 def analyze_relevance_concentration(
     relevance_dict: Dict[str, torch.Tensor],
-    analysis_json_path: str,
+    analysis_categories: Dict[str, List[str]],
     top_k_percent: float = 0.01
 ) -> Dict[str, Dict[str, float]]:
     """
@@ -259,18 +325,15 @@ def analyze_relevance_concentration(
         A dictionary with aggregated statistics for each category and relevance type.
     """
     print(f"\n--- Running Relevance Concentration Analysis ---")
-    try:
-        with open(analysis_json_path, 'r') as f:
-            analysis_results = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Analysis JSON file not found at {analysis_json_path}. Skipping.")
+    analysis_results = analysis_categories
+    if not analysis_results:
+        print("Error: Received empty or invalid analysis categories. Skipping mask analysis.")
         return {}
 
-    filename_to_category = {
-        filename: category
-        for category, filenames in analysis_results.items()
-        for filename in filenames
-    }
+    filename_to_categories = defaultdict(list)
+    for category, filenames in analysis_categories.items():
+        for filename in filenames:
+            filename_to_categories[filename].append(category)
 
     # Structure: {category: {component: {'ginis': [], 'rcis': []}}}
     category_metrics = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -311,8 +374,8 @@ def analyze_relevance_concentration(
             category_metrics[baseline_category_name][component]['ginis'].append(gini_coeff)
             category_metrics[baseline_category_name][component]['rcis'].append(rci)
 
-            category = filename_to_category.get(filename)
-            if category:
+            categories_for_file = filename_to_categories.get(filename, [])
+            for category in categories_for_file:
                 category_metrics[category][component]['ginis'].append(gini_coeff)
                 category_metrics[category][component]['rcis'].append(rci)
 
@@ -352,7 +415,7 @@ def analyze_relevance_concentration(
 
 def analyze_relevance_composition(
     relevance_dict: Dict[str, torch.Tensor],
-    analysis_json_path: str
+    analysis_categories: Dict[str, List[str]]
 ) -> Dict[str, Dict[str, float]]:
     """
     Analyzes relevance maps for two key properties:
@@ -367,26 +430,26 @@ def analyze_relevance_composition(
         A dictionary with aggregated statistics for each category.
     """
     print(f"\n--- Running Relevance Composition and Sparsity Analysis ---")
-    try:
-        with open(analysis_json_path, 'r') as f:
-            analysis_results = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Analysis JSON file not found at {analysis_json_path}. Skipping.")
+    analysis_results = analysis_categories
+    if not analysis_results:
+        print("Error: Received empty or invalid analysis categories. Skipping mask analysis.")
         return {}
 
-    filename_to_category = {
-        filename: category
-        for category, filenames in analysis_results.items()
-        for filename in filenames
-    }
+
+
+    filename_to_categories = defaultdict(list)
+    for category, filenames in analysis_categories.items():
+        for filename in filenames:
+            filename_to_categories[filename].append(category)
+
 
     category_ratios = defaultdict(list)
     category_sparsity = defaultdict(list)
     baseline_category_name = "all_queries_baseline"
-
     for filename, relevance_map in tqdm(relevance_dict.items(), desc="Analyzing relevance composition"):
         if isinstance(relevance_map, torch.Tensor):
             relevance_map = relevance_map.cpu().numpy()
+
 
         pos_relevance = np.sum(relevance_map[relevance_map > 0])
         neg_relevance_abs = np.abs(np.sum(relevance_map[relevance_map < 0]))
@@ -405,15 +468,16 @@ def analyze_relevance_composition(
         category_ratios[baseline_category_name].append(pos_ratio)
         category_sparsity[baseline_category_name].append(sparsity)
 
-        category = filename_to_category.get(filename)
-        if category:
+        categories_for_file = filename_to_categories.get(filename, [])
+        for category in categories_for_file:
             category_ratios[category].append(pos_ratio)
             category_sparsity[category].append(sparsity)
+
 
     print("\n--- Relevance Composition and Sparsity Results ---")
     aggregated_stats = {}
     sorted_categories = sorted(category_ratios.keys(), key=lambda x: x != baseline_category_name)
-
+    print(f"sorted categories are: {sorted_categories}")
     for category in sorted_categories:
         ratios = category_ratios[category]
         sparsities = category_sparsity[category]
@@ -442,7 +506,7 @@ def analyze_relevance_composition(
 def analyze_relevance_with_masks(
     dataloader: DataLoader,
     relevance_dict: Dict[str, torch.Tensor],
-    analysis_json_path: str
+    analysis_categories: Dict[str, List[str]]
 ) -> Dict[str, Dict[str, float]]:
     """
     Analyzes how much of the LRP relevance falls inside/outside a segmentation mask
@@ -457,20 +521,16 @@ def analyze_relevance_with_masks(
         A dictionary with aggregated statistics for each category, including the baseline.
     """
     print(f"\n--- Running Relevance-in-Mask Analysis (with Baseline) ---")
-    print(f"Loading analysis categories from: {analysis_json_path}")
-    try:
-        with open(analysis_json_path, 'r') as f:
-            analysis_results = json.load(f)
-    except FileNotFoundError:
-        print(f"Error: Analysis JSON file not found at {analysis_json_path}. Skipping mask analysis.")
+    analysis_results = analysis_categories
+    if not analysis_results:
+        print("Error: Received empty or invalid analysis categories. Skipping mask analysis.")
         return {}
 
     # Create a reverse mapping for efficient lookup: {filename: category}
-    filename_to_category = {
-        filename: category
-        for category, filenames in analysis_results.items()
-        for filename in filenames
-    }
+    filename_to_categories = defaultdict(list)
+    for category, filenames in analysis_categories.items():
+        for filename in filenames:
+            filename_to_categories[filename].append(category)
 
     # Initialize dictionaries to hold the fractions for each category
     category_fractions = defaultdict(lambda: {'total': [], 'positive': [], 'negative': []})
@@ -478,7 +538,7 @@ def analyze_relevance_with_masks(
     # --- THIS IS THE NEW PART ---
     # We will also treat "all_queries" as a category for our baseline
     baseline_category_name = "all_queries_baseline"
-
+    skipped_masks = 0
     for batch in tqdm(dataloader, desc="Analyzing relevance in masks"):
         masks_batch = batch["mask"]
         filenames_batch = batch["filename"]
@@ -487,6 +547,11 @@ def analyze_relevance_with_masks(
             relevance_map = relevance_dict.get(filename)
             if relevance_map is None:
                 print(f"Warning: Relevance map for '{filename}' not found. Skipping.")
+                continue
+
+            if masks_batch[i] is None:
+                print(f"Warning: Mask for '{filename}' is None. Skipping.")
+                skipped_masks += 1
                 continue
 
             mask_np = masks_batch[i].cpu().numpy()
@@ -500,12 +565,14 @@ def analyze_relevance_with_masks(
 
             # --- ORIGINAL CATEGORY CALCULATION ---
             # Add to a specific category if the image belongs to one
-            category = filename_to_category.get(filename)
-            if category:
+            categories_for_file = filename_to_categories.get(filename, [])
+            for category in categories_for_file:
                 category_fractions[category]['total'].append(total_frac)
                 category_fractions[category]['positive'].append(pos_frac)
                 category_fractions[category]['negative'].append(neg_frac)
 
+
+    print(f"Skipped {skipped_masks} images due to missing masks.")
     # --- Aggregate and Print Results (no changes needed here) ---
     print("\n--- Relevance-in-Mask Analysis Results ---")
     aggregated_stats = {}
@@ -568,6 +635,7 @@ def main(cfg: Dict):
     # --- Prepare Datasets ---
     dataset_dir = cfg["data"]["dataset_dir"]
     if not "zoo" in dataset_dir:
+        predictions_json_path = "/sc/home/iven.schlegelmilch/bachelor_thesis_code/finetuned_predictions.json" if cfg["model"]["finetuned"] else "/sc/home/iven.schlegelmilch/bachelor_thesis_code/base_predictions.json"
         split_name = cfg["data"]["analysis_split"]
         split_dir = os.path.join(dataset_dir, split_name)
         split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
@@ -608,6 +676,7 @@ def main(cfg: Dict):
         
     else:
         print("Using Zoo dataset for evaluation.")
+        predictions_json_path = "/sc/home/iven.schlegelmilch/bachelor_thesis_code/finetuned_zoo_predictions.json" if cfg["model"]["finetuned"] else "/sc/home/iven.schlegelmilch/bachelor_thesis_code/base_zoo_predictions.json"
         all_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
 
         subsample_fraction = cfg["data"].get("zoo_subsample_fraction", 1.0)
@@ -625,12 +694,12 @@ def main(cfg: Dict):
                 random_state=cfg["seed"]
             )
             
-            split_name_suffix = f"subsampled_{int(subsample_fraction*100)}pct"
+            split_name_suffix = f"_subsampled_{int(subsample_fraction*100)}pct"
 
         else:
             print("Using the full Zoo dataset (no subsampling).")
             subsampled_files = all_files
-            split_name_suffix = "full"
+            split_name_suffix = "_full"
 
 
         print(f"Using {len(subsampled_files)} images for the Zoo evaluation.")
@@ -738,44 +807,63 @@ def main(cfg: Dict):
     )
     relevance_dict = {item['filename']: item['relevance'] for item in relevances_all}
 
-    analysis_json_path = f"./visualizations/{os.path.basename(db_path_relevances)}.json"
+    base_analysis_json_path = f"./visualizations/{os.path.basename(db_path_relevances)}.json"
 
-    mask_analysis_stats = analyze_relevance_with_masks(
+    final_analysis_categories = get_combined_analysis_categories(
+        base_analysis_path=base_analysis_json_path,
+        predictions_json_path=predictions_json_path
+    )
+
+    #for each category in final categores print one example filename
+    for category, filenames in final_analysis_categories.items():
+        if filenames:
+            print(f"Category '{category}' example filename: {filenames[0]}")
+        else:
+            print(f"Category '{category}' has no filenames.")
+
+    if final_analysis_categories is None:
+        print("\nHalting analysis due to failure in creating combined category dictionary.")
+        wandb.finish()
+        return
+
+    print(f"\nFinal analysis categories: {list(final_analysis_categories.keys())}")
+    """    composition_analysis_stats = analyze_relevance_composition(
+        relevance_dict=relevance_dict,
+        analysis_categories=final_analysis_categories
+    )"""
+
+    """mask_analysis_stats = analyze_relevance_with_masks(
         dataloader=split_dataloader,
         relevance_dict=relevance_dict,
-        analysis_json_path=analysis_json_path
-    )
+        analysis_categories=final_analysis_categories
+    )"""
 
-    composition_analysis_stats = analyze_relevance_composition(
-        relevance_dict=relevance_dict,
-        analysis_json_path=analysis_json_path
-    )
 
-    concentration_analysis_stats = analyze_relevance_concentration(
+    """concentration_analysis_stats = analyze_relevance_concentration(
         relevance_dict=relevance_dict,
-        analysis_json_path=analysis_json_path,
+        analysis_categories=final_analysis_categories,
         top_k_percent=0.05
-    )
+    )"""
 
-    effective_relevance_area_stats = analyze_effective_relevance_area(
+    """effective_relevance_area_stats = analyze_effective_relevance_area(
         relevance_dict=relevance_dict,
-        analysis_json_path=analysis_json_path,
-        thresholds=[0.01, 0.10, 0.25, 0.50, 0.75, 0.95]
-    )
+        analysis_categories=final_analysis_categories,
+        thresholds=[0.01, 0.10, 0.25, 0.50, 0.75, 0.95, 0.99]
+    )"""
 
     era_in_mask_stats = analyze_era_in_mask_ratio(
         dataloader=split_dataloader,
         relevance_dict=relevance_dict,
-        analysis_json_path=analysis_json_path,
-        thresholds=[0.01, 0.10, 0.25, 0.50, 0.75, 0.95]
+        analysis_categories=final_analysis_categories,
+        thresholds=[0.01, 0.10, 0.25, 0.50, 0.75, 0.95, 0.99]
     )
 
 
     wandb.log({
-        "mask_analysis_stats": wandb.Table(dataframe=pd.DataFrame(mask_analysis_stats)),
-        "composition_analysis_stats": wandb.Table(dataframe=pd.DataFrame(composition_analysis_stats)),
-        "concentration_analysis_stats": wandb.Table(dataframe=pd.DataFrame(concentration_analysis_stats)),
-        "effective_relevance_area_stats": wandb.Table(dataframe=pd.DataFrame(effective_relevance_area_stats)),
+        #"mask_analysis_stats": wandb.Table(dataframe=pd.DataFrame(mask_analysis_stats)),
+        #"composition_analysis_stats": wandb.Table(dataframe=pd.DataFrame(composition_analysis_stats)),
+        #"concentration_analysis_stats": wandb.Table(dataframe=pd.DataFrame(concentration_analysis_stats)),
+        #"effective_relevance_area_stats": wandb.Table(dataframe=pd.DataFrame(effective_relevance_area_stats)),
         "era_in_mask_stats": wandb.Table(dataframe=pd.DataFrame(era_in_mask_stats))
     })
 

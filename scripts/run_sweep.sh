@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --mem=75G
 #SBATCH --cpus-per-task=6
-#SBATCH --time=3-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --gres=gpu:h100:1
 #SBATCH -p aisc 
 #SBATCH --account=aisc 

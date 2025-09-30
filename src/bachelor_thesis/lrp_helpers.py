@@ -13,7 +13,93 @@ from lxt.efficient.rules import identity_rule_implicit
 from tqdm import tqdm
 from typing import Tuple
 from knn_helpers import create_exclusion_mask
+
+from zennit.composites import NameLayerMapComposite
+from zennit.rules import Epsilon, Gamma, Pass
+from zennit.layer import Sum
             
+class AttentionEpsilon(z_rules.Epsilon):
+    def __call__(self, module, *args, **kwargs):
+        # only apply if module is inside attention
+        if "attn" in module.__repr__():
+            return super().__call__(module, *args, **kwargs)
+        # otherwise: return None → Zennit will keep searching for another match
+        return None
+
+class FFNGamma(z_rules.Gamma):
+    def __call__(self, module, *args, **kwargs):
+        # only apply if NOT in attention
+        if "attn" not in module.__repr__():
+            return super().__call__(module, *args, **kwargs)
+        return None
+
+def create_vit_lrp_composite_also_old(conv_gamma: float, lin_gamma: float, epsilon: float = 1e-6):
+    """
+    Vision Transformer LRP composite:
+    - Conv2d → Gamma
+    - Linear in attention → Epsilon
+    - Linear outside attention → Gamma
+    """
+    return LayerMapComposite([
+        (nn.Conv2d, z_rules.Gamma(gamma=conv_gamma)),
+        (nn.Linear, AttentionEpsilon(epsilon=epsilon)),
+        (nn.Linear, FFNGamma(gamma=lin_gamma)),
+    ])
+
+def create_old_composite(conv_gamma: float, lin_gamma: float):
+    return LayerMapComposite([
+        (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
+        (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
+    ])
+
+def create_dinov2_lrp_composite(
+    model: nn.Module,
+    conv_gamma: float,
+    lin_gamma: float,
+    epsilon: float = 1e-6,
+    verbose: bool = False
+):
+    """
+    Creates a Zennit composite for a ViT using NameLayerMapComposite.
+    - Conv2d layers -> Gamma(conv_gamma)
+    - Linear layers in FFN -> Gamma(ffn_gamma)
+    - Linear layers in Attention -> Epsilon(epsilon)
+    """
+    if verbose:
+        print("--- Building DINOv2 LRP Composite ---")
+
+    # 1. Find the names of all Linear layers
+    all_linear_names = {name for name, mod in model.named_modules() if isinstance(mod, nn.Linear)}
+    
+    # 2. Find the names of attention-specific linear layers to override
+    attn_linear_names = {name for name in all_linear_names if '.attn.' in name}
+    
+    # 3. The rest are FFN linear layers
+    ffn_linear_names = all_linear_names - attn_linear_names
+
+    if verbose:
+        print(f"Found {len(attn_linear_names)} attention Linear layers to be mapped to Epsilon.")
+        print("  - Sample:", list(attn_linear_names)[:5])
+        print(f"Found {len(ffn_linear_names)} FFN/other Linear layers to be mapped to Gamma.")
+        print("  - Sample:", list(ffn_linear_names)[:5])
+
+
+    name_map = [
+        (list(attn_linear_names), Epsilon(epsilon=epsilon)),
+    ]
+
+    layer_map = [
+        (nn.Conv2d, Gamma(gamma=conv_gamma)),
+        (nn.Linear, Gamma(gamma=lin_gamma)), 
+    ]
+    
+    
+    if verbose:
+        print("---------------------------------------")
+        
+    # NameLayerMapComposite checks name_map first, then layer_map.
+    return NameLayerMapComposite(name_map, layer_map)
+
 def compute_similarity_proto_margin_pass(
     conv_gamma: float,
     lin_gamma: float,
@@ -38,10 +124,7 @@ def compute_similarity_proto_margin_pass(
     """
     input_tensor.grad = None
 
-    zennit_comp = LayerMapComposite([
-        (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
-        (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
-    ])
+    zennit_comp = create_dinov2_lrp_composite(model_wrapper, conv_gamma, lin_gamma)
     try:
         zennit_comp.register(model_wrapper)
 
@@ -104,12 +187,7 @@ def compute_similarity_lrp_pass(
         
     input_tensor.grad = None
 
-    zennit_comp = LayerMapComposite(
-        [
-            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
-            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
-        ]
-    )
+    zennit_comp = create_dinov2_lrp_composite(model_wrapper, conv_gamma, lin_gamma)
     
     try:
         zennit_comp.register(model_wrapper)
@@ -177,12 +255,7 @@ def compute_knn_topk_attnlrp_pass(
     input_tensor.grad = None
 
     # Zennit rules MUST be set and removed for each pass
-    zennit_comp = LayerMapComposite( #TODO: patch with this the rest of the model
-        [
-            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
-            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
-        ]
-    )
+    zennit_comp = create_dinov2_lrp_composite(model_wrapper, conv_gamma, lin_gamma)
     
     try:
         zennit_comp.register(model_wrapper)
@@ -250,13 +323,8 @@ def compute_knn_all_attnlrp_pass(
     input_tensor.grad = None
 
     # Zennit rules MUST be set and removed for each pass
-    zennit_comp = LayerMapComposite( #TODO: patch with this the rest of the model
-        [
-            (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
-            (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
-        ]
-    )
-    
+    zennit_comp = create_dinov2_lrp_composite(model_wrapper, conv_gamma, lin_gamma)
+
     try:
         zennit_comp.register(model_wrapper)
 
@@ -479,8 +547,6 @@ def get_relevances(
     recompute: bool=False,
     **kwargs
 ) -> Dict[str, Tuple[torch.Tensor, any]]:
-    #TODO: REMOVE THISHISHSIHSISHI!!!!!!!!!!
-    #return torch.load("/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db/ViTG-body_face-spac23+24v3-dedup_bp_transforms_body__subsampled_30pct_soft_knn_margin_all_conv_gamma_0p5_lin_gamma_0p001_proxy_temp_0p005_db.pt", map_location="cpu", weights_only=False)
     if os.path.exists(db_path) and not recompute:
         print(f"Loading cached relevance dictionary from: {db_path}")
         return torch.load(db_path, map_location="cpu", weights_only=False)

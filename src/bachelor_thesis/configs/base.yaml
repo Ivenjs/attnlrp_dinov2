@@ -1,14 +1,12 @@
 data:
-  #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/eval_body_squared_cleaned_open_2024_bigval"
   dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data3/stratified_open_split_NEW/spac23+24-body_face-squared-deduplicated"
   #dataset_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/squared_renamed/body"
-  #dataset_dir: "/workspaces/bachelor_thesis_code/sample_images"
   batch_size: 32
   base_mask_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/masks"
   output_base_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/seg_analysis"
   analysis_split: "test"
 
-  zoo_subsample_fraction: 0.3
+  zoo_subsample_fraction: 0.2
   coco_json_path: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/squared_renamed/dataset.json" 
   zoo_video_dir: "/workspaces/vast-gorilla/gorillawatch/data/berlin_zoo_dataset/videos"
 
@@ -19,7 +17,7 @@ db:
   feature_type: "body"
 
 eval:
-  patches_per_step: 30
+  patches_per_step: 50
   baseline_value: "mean" #mean or black
 
 knn:
@@ -33,7 +31,7 @@ model:
   embedding_dim: 256
   patch_size: 14
   model_dtype: "float32"
-  bp_transforms: True #RAAAAAAAHHHHHH, VERGISS DAS NICHT!!!!!! DAS MUSS EVTL NOCH GEÄNDERT WERDEN!!!!
+  bp_transforms: True #RAAAAAAAHHHHHH, VERGISS DAS NICHT!!!!!! DAS MUSS EVTL NOCH GEÄNDERT WERDEN!!!! -> ist okay
 
 plots:
   red: [162, 41, 64]
@@ -58,11 +56,11 @@ sweep:
   sweep_evaluation: "accuracy" # "accuracy" or "proxy_score"
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
-  top_k_for_val: 50
+  top_k_for_val: 10
   #0.01, 0.03, 0.07, 0.15
   # knn_all: [0.001, 0.005, 0.01]
   # proto, knn_topk [0.001, 0.005, 0.01, 0.1]
-  queries_per_class: 5
+  queries_per_class: 4
   # maybe pass in diff values for proto_margin and soft_knn_margin_topk
   # 5, 10, 50
   #0.001, 0.05, 0.1, 0.25

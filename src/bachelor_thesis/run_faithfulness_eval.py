@@ -11,7 +11,7 @@ import wandb
 import numpy as np
 from sklearn.model_selection import train_test_split
 
-from eval_helpers import faithfulness_eval_acc
+from eval_helpers import faithfulness_eval_acc, faithfulness_eval_acc_batched
 from utils import get_db_path, get_mask_transform, load_config, get_hpi_colors, parse_encounter_id
 from basemodel import get_model_wrapper
 from dataset import GorillaReIDDataset, custom_collate_fn
@@ -49,7 +49,9 @@ def main(cfg):
 
     # --- Prepare Datasets ---
     dataset_dir = cfg["data"]["dataset_dir"]
-    if not "zoo" in dataset_dir:
+    is_zoo = "zoo" in dataset_dir.lower()
+    if not is_zoo:
+        faithfulness_eval_fn = faithfulness_eval_acc
         split_name = cfg["data"]["analysis_split"]
         split_dir = os.path.join(dataset_dir, split_name)
         split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
@@ -92,6 +94,7 @@ def main(cfg):
         
     else:
         print("Using Zoo dataset for evaluation.")
+        faithfulness_eval_fn = faithfulness_eval_acc_batched
         all_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
 
         subsample_fraction = cfg["data"].get("zoo_subsample_fraction", 1.0)
@@ -228,8 +231,13 @@ def main(cfg):
     # Cross checking unperturbed accuracy
     print("\n--- Evaluating Baseline Accuracy (0% Perturbation) ---")
     base_accuracy = evaluate_model(
-        model_wrapper=model_wrapper, query_indices_in_db=global_query_indices, cfg=cfg, device=DEVICE,
-        db_embeddings=all_db_embeddings, db_labels=all_db_labels, db_videos=all_db_videos
+        model_wrapper=model_wrapper, 
+        query_indices_in_db=global_query_indices, 
+        cfg=cfg, 
+        device=DEVICE,
+        db_embeddings=all_db_embeddings, 
+        db_labels=all_db_labels, 
+        db_videos=all_db_videos
     )
     print(f"Baseline Balanced Accuracy: {base_accuracy:.4f}")
 
@@ -246,7 +254,7 @@ def main(cfg):
 
     print("this is before the chaos")
     relevances_name=os.path.basename(db_path_relevances)
-    eval_results = faithfulness_eval_acc(
+    eval_results = faithfulness_eval_fn(
         relevance_maps_dict=relevance_dict,
         query_dataset=split_query_subset, 
         global_query_indices=global_query_indices,
@@ -305,6 +313,7 @@ def main(cfg):
         wandb.log({"perturbation_results": eval_results})
         wandb.log({"perturbation_impact_plot": wandb.Image(save_path, caption=f"Perturbation analysis for {run_name}")})
         print("Successfully logged results and plot to WandB.")
+        os.remove(save_path)
     except Exception as e:
         print(f"Could not log to WandB. Error: {e}")
     
