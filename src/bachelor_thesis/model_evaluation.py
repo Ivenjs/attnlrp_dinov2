@@ -24,7 +24,7 @@ import operator
 import json
 import os
 
-def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, output_dir="."):
+def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, output_dir="./prediction_infos"):
     """
     Finds the most confident correct and incorrect prediction for each class,
     prints the top N results, and saves all prediction details to a JSON file.
