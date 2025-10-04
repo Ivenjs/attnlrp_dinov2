@@ -3,9 +3,9 @@ requires = ['hatchling']
 build-backend = 'hatchling.build'
 
 [project]
-name = 'bachelor_thesis_code'
+name = 'attnlrp_dinov2'
 version = "0.0.1"
-description = 'bachelor_thesis_code'
+description = 'attnlrp_dinov2'
 readme = 'README.md'
 classifiers = [
     'Development Status :: 3 - Alpha',
@@ -51,7 +51,7 @@ packages = ["src/bachelor_thesis"]
 
 [tool.isort]
 line_length = 120
-known_first_party = 'bachelor_thesis_code'
+known_first_party = 'attnlrp_dinov2'
 known_third_party = 'wandb'
 multi_line_output = 3
 include_trailing_comma = true

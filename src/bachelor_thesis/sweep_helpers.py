@@ -338,7 +338,7 @@ def find_robust_hyperparameters(
 def visualize_robustness_analysis(
     analysis_df: pd.DataFrame,
     hpi_colors: Dict[str, float],
-    save_path: str = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/robustness_analysis/robustness_analysis.png",
+    save_path: str = "/workspaces/attnlrp_dinov2/src/bachelor_thesis/robustness_analysis/robustness_analysis.png",
 ) -> List[str]:
     """Creates visualizations for each combination of distance and evaluation metric."""    
     path_root, path_ext = os.path.splitext(save_path)

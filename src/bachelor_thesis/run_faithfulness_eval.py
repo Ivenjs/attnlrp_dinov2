@@ -328,7 +328,7 @@ if __name__ == "__main__":
 
     command = [
         "python",
-        "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py",
+        "/workspaces/attnlrp_dinov2/src/bachelor_thesis/generate_masks.py",
         "--config_name",
         args.config_name
     ] + unknown_args

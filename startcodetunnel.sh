@@ -2,12 +2,12 @@
 set -e
 
 # Use a unique directory specific to this project
-CLI_DATA_DIR="/workspaces/cadetunnel/bachelor_thesis_code/.vscode-cli-data"
+CLI_DATA_DIR="/workspaces/cadetunnel/attnlrp_dinov2/.vscode-cli-data"
 mkdir -p "$CLI_DATA_DIR"
 
 echo "Using VS Code CLI data directory: $CLI_DATA_DIR"
 
-cd /workspaces/bachelor_thesis_code
+cd /workspaces/attnlrp_dinov2
 
 if [ ! -f "code" ]; then
     echo "VS Code CLI not found. Downloading..."

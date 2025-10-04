@@ -41,7 +41,7 @@ model, weights = get_vit_imagenet()
 
 
 # Load and preprocess the input image
-image = Image.open("/workspaces/bachelor_thesis_code/sample_images/train/PL00_R018_20220317_027_5268_1109103.png").convert("RGB")
+image = Image.open("/workspaces/attnlrp_dinov2/sample_images/train/PL00_R018_20220317_027_5268_1109103.png").convert("RGB")
 input_tensor = weights.transforms()(image).unsqueeze(0).to("cuda")
 
 # Store the generated heatmaps

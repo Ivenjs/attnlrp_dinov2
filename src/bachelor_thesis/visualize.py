@@ -709,7 +709,7 @@ def main(cfg):
         seed=cfg["seed"]
     )
 
-    base_path = "/sc/home/iven.schlegelmilch/bachelor_thesis_code" #base_zoo_predictions.json
+    base_path = "/sc/home/iven.schlegelmilch/attnlrp_dinov2" #base_zoo_predictions.json
 
     if "zoo" in cfg["data"]["dataset_dir"].lower():
         filename = model_type_str + "_zoo_predictions.json"

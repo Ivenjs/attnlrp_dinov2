@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sam_mask_generation
-#SBATCH --chdir=/sc/home/iven.schlegelmilch/bachelor_thesis_code
+#SBATCH --chdir=/sc/home/iven.schlegelmilch/attnlrp_dinov2
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=100G
@@ -36,9 +36,9 @@ srun --container-image=/sc/home/iven.schlegelmilch/ivenschlegelmilch+gorillawatc
      --container-mount-home \
      --container-name=gorillawatch \
      --container-workdir=/workspaces \
-     --container-mounts=/sc/home/iven.schlegelmilch/bachelor_thesis_code:/workspaces/bachelor_thesis_code,/sc/projects/sci-aisc/gorilla/:/workspaces/vast-gorilla \
+     --container-mounts=/sc/home/iven.schlegelmilch/attnlrp_dinov2:/workspaces/attnlrp_dinov2,/sc/projects/sci-aisc/gorilla/:/workspaces/vast-gorilla \
      --container-writable \
-     bash -c "cd /workspaces/bachelor_thesis_code && \
+     bash -c "cd /workspaces/attnlrp_dinov2 && \
               /opt/conda/envs/research/bin/python src/bachelor_thesis/generate_masks.py \
               --config_name ${EXPERIMENT_NAME} \
               ${CONFIG_OVERRIDES}"

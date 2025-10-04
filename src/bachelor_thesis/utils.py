@@ -281,7 +281,7 @@ def load_config(config_name: str, cli_overrides: list):
     Loads base config, merges the experiment-specific override,
     and finally merges any command-line overrides.
     """
-    config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
+    config_dir = "/workspaces/attnlrp_dinov2/src/bachelor_thesis/configs"
 
     base_config = OmegaConf.load(os.path.join(config_dir, "base.yaml"))
 

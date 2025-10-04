@@ -613,7 +613,7 @@ def main(cfg: Dict):
 
     dataset_dir = cfg["data"]["dataset_dir"]
     if not "zoo" in dataset_dir:
-        predictions_json_path = "/sc/home/iven.schlegelmilch/bachelor_thesis_code/finetuned_predictions.json" if cfg["model"]["finetuned"] else "/sc/home/iven.schlegelmilch/bachelor_thesis_code/base_predictions.json"
+        predictions_json_path = "/sc/home/iven.schlegelmilch/attnlrp_dinov2/finetuned_predictions.json" if cfg["model"]["finetuned"] else "/sc/home/iven.schlegelmilch/attnlrp_dinov2/base_predictions.json"
         split_name = cfg["data"]["analysis_split"]
         split_dir = os.path.join(dataset_dir, split_name)
         split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
@@ -654,7 +654,7 @@ def main(cfg: Dict):
         
     else:
         print("Using Zoo dataset for evaluation.")
-        predictions_json_path = "/sc/home/iven.schlegelmilch/bachelor_thesis_code/finetuned_zoo_predictions.json" if cfg["model"]["finetuned"] else "/sc/home/iven.schlegelmilch/bachelor_thesis_code/base_zoo_predictions.json"
+        predictions_json_path = "/sc/home/iven.schlegelmilch/attnlrp_dinov2/finetuned_zoo_predictions.json" if cfg["model"]["finetuned"] else "/sc/home/iven.schlegelmilch/attnlrp_dinov2/base_zoo_predictions.json"
         all_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
 
         subsample_fraction = cfg["data"].get("zoo_subsample_fraction", 1.0)
@@ -828,7 +828,7 @@ if __name__ == "__main__":
 
     command = [
         "python", 
-        "/workspaces/bachelor_thesis_code/src/bachelor_thesis/generate_masks.py", 
+        "/workspaces/attnlrp_dinov2/src/bachelor_thesis/generate_masks.py", 
         "--config_name", 
         args.config_name
     ] + unknown_args
