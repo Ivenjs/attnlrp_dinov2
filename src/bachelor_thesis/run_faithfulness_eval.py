@@ -47,7 +47,6 @@ def main(cfg):
         job_type="analysis"
     )
 
-    # --- Prepare Datasets ---
     dataset_dir = cfg["data"]["dataset_dir"]
     is_zoo = "zoo" in dataset_dir.lower()
     if not is_zoo:
@@ -144,7 +143,6 @@ def main(cfg):
 
     global_query_indices = [idx + query_dataset_offset for idx in local_query_indices]
 
-    # --- Create the KNN Search Database ---
     print("Preparing the main KNN database (gallery)...")
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
@@ -162,7 +160,6 @@ def main(cfg):
     )
 
 
-    # --- Generate or Load Relevance Maps (for test images only) ---
     split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]
@@ -172,7 +169,6 @@ def main(cfg):
         batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
 
-    # this loader only contains the subset of images that are used as queries for cross-encounter knn
     split_query_subset = torch.utils.data.Subset(split_dataset, local_query_indices)
 
     split_dataloader = DataLoader(split_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
@@ -228,7 +224,6 @@ def main(cfg):
     relevance_dict = {item['filename']: item['relevance'] for item in relevances_all}
     print(f"Loaded relevance maps for {len(relevance_dict)} images.")
 
-    # Cross checking unperturbed accuracy
     print("\n--- Evaluating Baseline Accuracy (0% Perturbation) ---")
     base_accuracy = evaluate_model(
         model_wrapper=model_wrapper, 

@@ -15,14 +15,11 @@ from model_evaluation import perform_knn_ce_evaluation
 from torch.utils.data import DataLoader, Subset
 from dataset import custom_collate_fn
 import warnings
-from sklearn.metrics import balanced_accuracy_score, accuracy_score
+from sklearn.metrics import balanced_accuracy_score
 
-PATCH_SIZE = 14  # Size of the patches to average over
 
 def calculate_auc(curve: torch.Tensor) -> float:
     """Calculates the Area Under the Curve using the mean, as in the paper."""
-    # The paper defines the area as (1/N) * sum(f_j(x_k)).
-    # This is equivalent to the mean of the curve points.
     return torch.mean(curve).item()
 
 
@@ -62,7 +59,6 @@ def _run_perturbation_experiment_proxy_score(
     else:
         raise ValueError(f"Unknown baseline type: {baseline_value}")
 
-    # Calculate the initial, unperturbed k-NN proxy score
     with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type):
         initial_embedding = model(input_tensor)
 
@@ -105,32 +101,29 @@ def _run_perturbation_experiment_proxy_score(
                 original_patch = input_tensor[..., row:row+patch_size, col:col+patch_size]
                 perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = original_patch
 
-        # After perturbing the chunk, run the model and get the score
         with torch.no_grad(), torch.amp.autocast(device_type=input_tensor.device.type):
             current_embedding = model(perturbed_tensor)
         
         result = score_fn(current_embedding, **score_fn_kwargs)
         if isinstance(result, tuple):
-            score = result[0] #similarity returns reference embedding for easy lookup
+            score = result[0]
         else:
             score = result
         output_scores.append(score.item())
 
-        # Update progress
         num_in_chunk = end_idx - start_idx
         patches_processed_so_far += num_in_chunk
         pbar.update(num_in_chunk)
     
     pbar.close()
 
-    # Convert the list of scores to a tensor for calculations
     return torch.tensor(output_scores, device=input_tensor.device)
 
 
 def faithfulness_eval_proxy_score(
     relevance_map: torch.Tensor,
     input_tensor: torch.Tensor,
-    model: TimmWrapper, # UN-PATCHED model
+    model: TimmWrapper,
     mode: str,
     patch_size: int,
     patches_per_step: int,
@@ -146,7 +139,6 @@ def faithfulness_eval_proxy_score(
     The score function used for perturbation is determined by the `mode`.
     All mode-specific arguments (e.g., db_embeddings, query_label) must be passed via **kwargs.
     """
-    # relevance should be shape (1,1,H,W)
     patch_relevance = F.avg_pool2d(relevance_map, kernel_size=patch_size, stride=patch_size)
     patch_relevance_flat = patch_relevance.flatten()
 
@@ -257,27 +249,8 @@ def faithfulness_eval_proxy_score(
         'random_curve': random_curve.cpu().numpy()
     }
     
-
-    
-
     if plot_curves:
-        fig, ax = plt.subplots(1, 1, figsize=(9, 7))
-        num_eval_steps = len(results['morf_curve'])
-        x_axis = np.linspace(0, 100, num_eval_steps)
-        
-        ax.plot(x_axis, results['morf_curve'], label=f"MoRF (AUC={results['auc_morf']:.3f})", color='red')
-        ax.plot(x_axis, results['lerf_curve'], label=f"LeRF (AUC={results['auc_lerf']:.3f})", color='blue')
-        ax.plot(x_axis, results['random_curve'], label=f"Random (AUC={results['auc_random']:.3f})", color='gray', linestyle='--')
-        ax.set_title(f"Perturbation Curves (Mode: {mode.title()})")
-        ax.set_xlabel('% of Patches Removed')
-        ax.set_ylabel(f"{mode.replace('_', ' ').title()} Score")
-        ax.legend()
-        ax.grid(True, linestyle='--', alpha=0.6)
-
-        plt.suptitle(f'Faithfulness Evaluation for {kwargs.get("query_filename", "Unknown Image")}', fontsize=16)
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plt.show() # Or save to a file
-        plt.close(fig)
+        print("Plotting functionality has been removed")
 
     return {mode: results}
 
@@ -335,10 +308,8 @@ def _run_perturbation_experiment_acc(
     )
     print(f"  Baseline Balanced Accuracy: {baseline_accuracy:.4f}")
     
-    # --- 2. Determine all evaluation points (steps) ---
     steps = set()
     
-    # Add specific fraction-based steps
     fraction_accuracies = {0.0: baseline_accuracy}
     patches_at_fraction = {}
     
@@ -356,7 +327,6 @@ def _run_perturbation_experiment_acc(
         for i in range(patches_per_step, num_patches, patches_per_step):
             steps.add(i)
 
-    # Always include the final step
     steps.add(num_patches)
     
     sorted_steps = sorted(list(steps))
@@ -402,7 +372,6 @@ def _run_perturbation_experiment_acc(
             )
             current_query_embeddings = torch.cat([model(batch[0]) for batch in temp_loader])
 
-        # Evaluate accuracy at this milestone
         current_accuracy, current_details = perform_knn_ce_evaluation(
             query_embeddings=current_query_embeddings,
             **eval_kwargs
@@ -417,7 +386,6 @@ def _run_perturbation_experiment_acc(
             print(f"  Recorded accuracy at {frac*100:.1f}% perturbation ({end_idx} patches): {current_accuracy:.4f}")
 
 
-        # Update the starting point for the next chunk of perturbations
         patches_processed_so_far = end_idx
         
     pbar.close()
@@ -449,7 +417,6 @@ def faithfulness_eval_acc_batched(
     model.to(device)
     model.eval()
 
-    # --- DataLoader setup for memory efficiency ---
     valid_indices = [i for i, s in enumerate(query_dataset) if s['filename'] in relevance_maps_dict]
     print(f"Found relevance maps for {len(valid_indices)} out of {len(query_dataset)} query images.")
     if not valid_indices: return {}
@@ -461,7 +428,6 @@ def faithfulness_eval_acc_batched(
         num_workers=4, pin_memory=True, collate_fn=custom_collate_fn
     )
 
-    # --- Determine all evaluation points (perturbation steps) ---
     first_fname = query_dataset[valid_indices[0]]['filename']
     relevance_map_sample = relevance_maps_dict[first_fname]
     patch_relevance = F.avg_pool2d(relevance_map_sample, kernel_size=patch_size, stride=patch_size)
@@ -486,17 +452,14 @@ def faithfulness_eval_acc_batched(
     for experiment in ['morf', 'lerf', 'random']:
         print(f"\n--- Running {experiment.upper()} Experiment ---")
         
-        # Data accumulators for the entire dataset
         all_preds_by_step = {step: [] for step in sorted_steps}
         all_actuals_by_step = {step: [] for step in sorted_steps}
         all_details_by_step = {step: [] for step in sorted_steps}
 
-        # --- 3. Middle loop over data batches ---
         for i, batch_samples in enumerate(tqdm(data_loader, desc=f"Processing {experiment.upper()} batches")):
             batch_images = batch_samples['image'].to(device)
             batch_size = batch_images.shape[0]
 
-            # --- OPTIMIZATION 1: Pre-compute patch orders for the batch ---
             orders = []
             for fname in batch_samples['filename']:
                 relevance_map = relevance_maps_dict[fname]
@@ -509,7 +472,6 @@ def faithfulness_eval_acc_batched(
                     orders.append(deterministic_randperm(len(pr_flat), fname, seed))
             batch_patch_orders = torch.stack(orders).to(device)
 
-            # --- 4. Inner loop over CHUNKS of steps (Memory Management) ---
             step_chunks = [sorted_steps[i:i + step_chunk_size] for i in range(0, len(sorted_steps), step_chunk_size)]
             
             if baseline_value.lower() == "mean":
@@ -522,7 +484,6 @@ def faithfulness_eval_acc_batched(
                 raise ValueError(f"Unknown baseline type: {baseline_value}")
 
             for step_chunk in step_chunks:
-                # --- OPTIMIZATION 2: Create a super-batch of perturbed images ---
                 superbatch_images = []
                 for step_idx in step_chunk:
                     if step_idx > 0:
@@ -535,7 +496,7 @@ def faithfulness_eval_acc_batched(
                             precomputed_baselines=baseline_fills 
                         ).to(device)
                         superbatch_images.append(perturbed_images)
-                    else: # step 0 is the original
+                    else:
                         superbatch_images.append(batch_images)
                 
                 superbatch_tensor = torch.cat(superbatch_images).to(device)
@@ -543,8 +504,6 @@ def faithfulness_eval_acc_batched(
                 with torch.no_grad(), torch.amp.autocast(device_type=device.type):
                     superbatch_embeddings = model(superbatch_tensor)
 
-                # --- OPTIMIZATION 3: Run KNN on the entire super-batch ---
-                # Prepare tiled metadata for the KNN function
                 num_steps_in_chunk = len(step_chunk)
                 start_idx, end_idx = i * eval_batch_size, i * eval_batch_size + batch_size
                 batch_global_indices = filtered_global_indices[start_idx:end_idx]
@@ -566,19 +525,16 @@ def faithfulness_eval_acc_batched(
                     return_raw_preds=True
                 )
 
-                # Unpack results from the super-batch and store them by step
                 preds_by_step = preds.view(num_steps_in_chunk, batch_size)
                 actuals_by_step = actuals.view(num_steps_in_chunk, batch_size)
                 
                 for j, step_idx in enumerate(step_chunk):
                     all_preds_by_step[step_idx].append(preds_by_step[j].cpu())
                     all_actuals_by_step[step_idx].append(actuals_by_step[j].cpu())
-                    # Split the details list
                     details_start = j * batch_size
                     details_end = (j + 1) * batch_size
                     all_details_by_step[step_idx].extend(details[details_start:details_end])
         
-        # --- 5. Post-processing: Calculate global accuracy for each step ---
         accuracy_curve = []
         for step_idx in sorted_steps:
             global_preds = torch.cat(all_preds_by_step[step_idx]).numpy()
@@ -589,31 +545,26 @@ def faithfulness_eval_acc_batched(
                 balanced_acc = balanced_accuracy_score(global_actuals, global_preds)
             accuracy_curve.append((step_idx, balanced_acc))
         
-        # --- Store results for this experiment ---
         final_results[f'{experiment}_curve'] = torch.tensor([acc for _, acc in accuracy_curve])
         final_results[f'{experiment}_details'] = all_details_by_step
         
         accuracy_by_step = dict(accuracy_curve)
 
-        # Explicitly get the baseline accuracy for step 0. Default to 0.0 if not found (safety).
         baseline_acc = accuracy_by_step.get(0, 0.0) 
         fraction_accuracies = {0.0: baseline_acc}
 
-        # Populate the rest of the fractions
         for step, acc in accuracy_curve:
             frac = patches_at_fraction.get(step)
-            if frac is not None: # Only add if it was a requested fraction
+            if frac is not None:
                 fraction_accuracies[frac] = acc
 
         
         final_results[f'fraction_accuracies_{experiment}'] = fraction_accuracies
 
-    # --- Final calculations and analysis ---
     morf_curve = final_results['morf_curve']
     lerf_curve = final_results['lerf_curve']
     random_curve = final_results['random_curve']
 
-    # You can now call your analysis function
     analysis_results = analyze_perturbation_results(
         lerf_details=final_results['lerf_details'],
         morf_details=final_results['morf_details']

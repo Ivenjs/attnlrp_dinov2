@@ -1,7 +1,6 @@
 from mask_generator import MaskGenerator
 from tqdm import tqdm
 import os
-import torch
 from utils import load_config
 from typing import List, Dict, Optional, Any
 from PIL import Image
@@ -61,7 +60,6 @@ def prepare_segmentation_masks(
             return
 
         for _, row in data_to_process_df.iterrows():
-            # Use original_filename which is consistent across both utils
             mask_filename = row['original_filename']
             mask_path = os.path.join(mask_dir, mask_filename)
             if not os.path.exists(mask_path):
@@ -82,7 +80,6 @@ def prepare_segmentation_masks(
         
         try:
             if generate_masks_from == "cropped":
-                # This part is unchanged
                 image_batch_pil = [Image.open(job['img_path']).convert("RGB") for job in batch_jobs]
                 generated_masks_np = mask_generator.generate_masks_from_crops_batch(image_batch_pil)
                 
@@ -151,7 +148,6 @@ def prepare_segmentation_masks(
 
                 generated_full_frame_masks_np = mask_generator.generate_masks_from_boxes_batch(full_image_batch, box_prompt_batch)
 
-                # Crop with explicit padding and save each mask 
                 for job_data, full_mask_np in zip(jobs_with_crop_info, generated_full_frame_masks_np):
                     h_img, w_img = full_mask_np.shape
                     ideal_box_float = job_data['ideal_box_float']
@@ -172,7 +168,6 @@ def prepare_segmentation_masks(
                     slice_w = src_x_end - src_x_start
                     slice_h = src_y_end - src_y_start
 
-                    # If there's nothing to copy, just save the blank mask.
                     if slice_w <= 0 or slice_h <= 0:
                         mask_pil = Image.fromarray(final_mask_np * 255)
                         mask_pil.save(job_data['job_info']['mask_path'])
@@ -269,7 +264,7 @@ if __name__ == "__main__":
         if not split_dir == root_dir:
             split_name = os.path.basename(split_dir)
         else:
-            split_name = "" #becae data is directly in root dir then
+            split_name = "" #because data is directly in root dir then
 
         split_files = [f for f in os.listdir(split_dir) if f.lower().endswith((".jpg", ".png"))]
         if not split_files:
@@ -289,7 +284,7 @@ if __name__ == "__main__":
             mask_generator=mask_generator,
             cfg=cfg,
             generate_masks_from=GENERATION_MODE,
-            batch_size=cfg["data"]["batch_size"], #128,
+            batch_size=cfg["data"]["batch_size"],
             coco_data=coco_data_preprocessed,
             dataset_root_dir=video_directory 
         )

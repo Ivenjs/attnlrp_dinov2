@@ -28,7 +28,6 @@ class MaskGenerator:
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
         
-        # Reset hydra to ensure it finds our configs correctly.
         hydra.core.global_hydra.GlobalHydra.instance().clear()
         hydra.initialize_config_dir(config_dir=str(Path(model_config_dir).resolve()), version_base="1.2")
         
@@ -48,18 +47,15 @@ class MaskGenerator:
         self.predictor.set_image(image_np_rgb)
         
         h, w, _ = image_np_rgb.shape
-        # The inset helps SAM avoid edge cases.
         box_prompt = np.array([1, 1, w - 1, h - 1]) 
         
-        # 4. Predict
         masks, _, _ = self.predictor.predict(
             point_coords=None,
             point_labels=None,
-            box=box_prompt[None, :], # Predictor expects a batch dimension
+            box=box_prompt[None, :], 
             multimask_output=False,
         )
         
-        # masks shape is [1, 1, H, W], we want [H, W]
         binary_mask = masks.squeeze().cpu().numpy().astype(np.uint8)
         
         return binary_mask
@@ -75,17 +71,14 @@ class MaskGenerator:
         if not image_crops:
             return []
 
-        # 1. Convert all PIL images to NumPy and create box prompts
         image_np_batch = [np.array(img.convert("RGB")) for img in image_crops]
         box_prompts_batch = []
         for img_np in image_np_batch:
             h, w, _ = img_np.shape
             box_prompts_batch.append(np.array([1, 1, w - 1, h - 1]))
 
-        # 2. Set the image batch in the predictor
         self.predictor.set_image_batch(image_np_batch)
 
-        # 3. Predict the batch
         masks_batch, scores, _ = self.predictor.predict_batch(
             None,
             None,
@@ -93,7 +86,6 @@ class MaskGenerator:
             multimask_output=False,
         )
 
-        # masks_batch is a tensor of shape [1, H, W]
         binary_masks = [m.squeeze().astype(np.uint8) for m in masks_batch]
         
         return binary_masks

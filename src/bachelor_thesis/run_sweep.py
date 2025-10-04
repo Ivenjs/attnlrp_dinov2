@@ -18,7 +18,7 @@ from sweep_helpers import (
     )
 from knn_helpers import get_knn_db
 from dataset import GorillaReIDDataset, custom_collate_fn
-from utils import get_db_path, load_config, get_disjunct_individuals
+from utils import get_db_path, load_config
 from lrp_helpers import generate_relevances
 
 
@@ -136,7 +136,6 @@ def main(cfg: dict):
 
     global_val_query_indices = [idx + query_dataset_offset for idx in val_query_indices]
 
-    # This phase generates all necessary data for the 'tune' set.
     print("\n--- RUNNING FULL SWEEP ON TRAIN SET ---")
 
     train_db_path = get_db_path(

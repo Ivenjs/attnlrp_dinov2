@@ -35,7 +35,6 @@ def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, out
     correct_preds = [p for p in prediction_details if p['is_correct']]
     incorrect_preds = [p for p in prediction_details if not p['is_correct']]
 
-    # --- Analysis for Correct Predictions ---
     best_correct_per_class = {}
     for pred in correct_preds:
         label = pred['actual_label']
@@ -55,7 +54,6 @@ def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, out
             f"Closest Match: {closest_neighbor_file}"
         )
 
-    # --- Analysis for Incorrect Predictions ---
     best_incorrect_per_class = {}
     for pred in incorrect_preds:
         label = pred['actual_label']
@@ -68,7 +66,6 @@ def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, out
     for pred in sorted_best_incorrect[:n]:
         actual_name = id_to_label.get(pred['actual_label'], 'Unknown')
         predicted_name = id_to_label.get(pred['predicted_label'], 'Unknown')
-        # MODIFIED: Also print the closest matching neighbor's filename, which caused the error
         closest_neighbor_file = pred.get('top_k_neighbor_filenames', ['N/A'])[0]
         print(
             f"File: {pred['filename']}, "
@@ -80,7 +77,6 @@ def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, out
     
     finetuned_str = "finetuned" if cfg["model"].get("finetuned", False) else "base"
     
-    # --- Prepare JSON Data with all details ---
     json_data = {
         "correct_predictions": [
             {
@@ -108,7 +104,6 @@ def analyze_predictions_by_class(prediction_details, id_to_label, cfg, n=50, out
         ],
     }
 
-    # --- Save JSON to file ---
     os.makedirs(output_dir, exist_ok=True)
 
     zoo_str = "_zoo" if "zoo" in cfg["data"]["dataset_dir"].lower() else ""
@@ -177,7 +172,6 @@ def perform_knn_ce_evaluation(
     all_actuals = []
     prediction_details = []  
 
-    # Process queries in batches to manage memory
     for i in tqdm(range(0, num_queries, batch_size), desc="Running Batched KNN-CE"):
         batch_end = min(i + batch_size, num_queries)
         query_embeddings_batch = query_embeddings[i:batch_end]
@@ -188,25 +182,20 @@ def perform_knn_ce_evaluation(
 
         distance_matrix = calculate_distance_batched_normalized(db_embeddings, query_embeddings_batch, distance_metric)
 
-        # --- Apply Cross-Encounter Mask ---
         same_encounter_mask = (query_encounter_ids_batch.view(-1, 1) == db_encounter_ids_int)
 
-        #same label mask
-        same_label_mask = (query_labels_batch.view(-1, 1) == db_labels_int)
-
-        final_mask = same_encounter_mask & same_label_mask #use this to still allow other labels in same encounter. We would also need to update the cross encounter filtering for proxy scores
+        #Cross-Encounter Mask
         distance_matrix[same_encounter_mask] = float('inf')
 
-        #distance_matrix[same_encounter_mask] = float('inf')
 
-        # --- Apply Self-Match Mask (if query is subset of db) --- Probably not needed with encounter masking but just in case
+        #Self-Match Mask (if query is subset of db). Probably not needed with encounter masking but just in case
         if query_indices_batch is not None:
             batch_indices = torch.arange(len(query_indices_batch), device=device)
             distance_matrix[batch_indices, query_indices_batch] = float('inf')
 
         num_neighbors = min(k, distance_matrix.shape[1] - 1)
         if num_neighbors <= 0:
-            continue  # Skip if no valid neighbors exist
+            continue  
 
         top_k_distances, top_k_db_indices = torch.topk(distance_matrix, k=num_neighbors, largest=False, dim=1)
 
@@ -288,8 +277,6 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
     torch.backends.cudnn.benchmark = True
     model_wrapper.eval()
 
-    # --- 1. Prepare Database Tensors ---
-    # Map string labels/videos to integer IDs for efficient processing
     unique_labels = sorted(list(set(db_labels)))
     label_to_id = {label: i for i, label in enumerate(unique_labels)}
     id_to_label = {i: label for label, i in label_to_id.items()}
@@ -297,7 +284,6 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
 
     
     db_encounters = [parse_encounter_id(v) for v in db_videos]
-    # Map string encounters to integer IDs for efficient processing
     unique_encounters = sorted(list(set(db_encounters)))
     encounter_to_id = {enc: i for i, enc in enumerate(unique_encounters)}
     db_encounter_ids_int = torch.tensor([encounter_to_id[s] for s in db_encounters], dtype=torch.long, device=device)
@@ -308,20 +294,18 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
     query_embeddings = None
     query_labels_int = None
     query_encounter_ids_int = None
-    query_original_indices = None # Used to mask self-matches if queries are from the DB
+    query_original_indices = None 
 
     query_filenames = None
     if query_dataset is None:
         if db_filenames is not None:
             query_filenames = [db_filenames[i] for i in query_indices_in_db]
     else:
-        # For on-the-fly mode, get filenames from the query_dataset
         local_query_indices = query_dataset.images_for_ce_knn
         if db_filenames is not None:
             query_filenames = [query_dataset.filenames[i] for i in local_query_indices]
 
     with torch.no_grad(), torch.amp.autocast(device_type=device.type):
-        # --- 2. Prepare Query Tensors ---
         if query_dataset is None:
             print("Mode: Standard evaluation. Using pre-computed embeddings for queries.")
             query_original_indices = torch.tensor(query_indices_in_db, dtype=torch.long, device=device)
@@ -335,7 +319,6 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
                 print("Warning: No images found for Cross-Encounter KNN in the query dataset. Returning 0 accuracy.")
                 return 0.0
             
-            # The on-the-fly mode also needs the global indices for self-masking.
             if len(local_query_indices) != len(query_indices_in_db):
                  raise ValueError("Mismatch between on-the-fly query indices and provided global indices.")
             
@@ -363,7 +346,6 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
             q_encounters = [parse_encounter_id(v) for v in q_videos]
             query_encounter_ids_int = torch.tensor([encounter_to_id.get(s) for s in q_encounters], dtype=torch.long, device=device)
 
-    # --- 3. Run Evaluation ---
     print(f"Number of queries: {query_embeddings.shape[0]}")
     print(f"Number of database embeddings: {db_embeddings.shape[0]}")
     print("Unique db encounters (len):", len(torch.unique(db_encounter_ids_int, dim=0 if db_encounter_ids_int.dim()>1 else None)))
@@ -391,22 +373,15 @@ def evaluate_model(model_wrapper, query_indices_in_db, cfg, device, db_embedding
 
 
 def main(cfg):
-    """Main function to run a standard evaluation."""
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_wrapper, image_transforms, _ = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
 
-    """image_transforms = transforms.Compose([
-        transforms.Resize((cfg["model"]["img_size"], cfg["model"]["img_size"])),
-        RandAugment(num_ops=0, magnitude=8), 
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])"""
+
 
     dataset_dir = cfg["data"]["dataset_dir"]
     is_zoo = "zoo" in dataset_dir.lower()
 
     if not is_zoo:
-        # --- Standard Gorilla Dataset Logic (with train/val splits) ---
         print("Using standard dataset with train/analysis splits.")
         split_name = cfg["data"]["analysis_split"]
         split_dir = os.path.join(cfg["data"]["dataset_dir"], split_name)
@@ -421,7 +396,6 @@ def main(cfg):
             image_dir=train_dir, filenames=train_files, transform=image_transforms
         )
         
-        # The database consists of both training and validation images
         datasets = [split_dataset, train_dataset]
         full_db_dataset = ConcatDataset(datasets)
         full_dataset_splits = "+".join([os.path.basename(d.image_dir) for d in datasets])
@@ -446,7 +420,6 @@ def main(cfg):
             raise RuntimeError("Query dataset (split_dataset) not found in db_constituents.")
 
     else:
-        # --- Zoo Dataset Logic (flat directory) ---
         print("Using Zoo dataset for evaluation.")
         all_files = [f for f in os.listdir(dataset_dir) if f.lower().endswith((".jpg", ".png"))]
 
@@ -490,7 +463,6 @@ def main(cfg):
     local_query_indices = split_dataset.images_for_ce_knn
     global_query_indices = [idx + query_dataset_offset for idx in local_query_indices]
 
-    # --- Get KNN Database Embeddings ---
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name,
@@ -506,18 +478,14 @@ def main(cfg):
         device=DEVICE
     )
 
-    # --- Run Evaluation ---
-    # In a standard run, the query images are from the validation set,
-    # and we use the fast path (query_dataset=None).
     evaluate_model(
         model_wrapper=model_wrapper,
-        query_indices_in_db=global_query_indices, # Pass the new global indices
+        query_indices_in_db=global_query_indices, 
         cfg=cfg,
         device=DEVICE,
         db_embeddings=db_embeddings,
         db_labels=db_labels,
         db_videos=db_videos,
-        #query_dataset=split_dataset,
         db_filenames=all_db_filenames
     )
 

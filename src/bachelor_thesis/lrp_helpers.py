@@ -17,40 +17,6 @@ from knn_helpers import create_exclusion_mask
 from zennit.composites import NameLayerMapComposite
 from zennit.rules import Epsilon, Gamma, Pass
 from zennit.layer import Sum
-            
-class AttentionEpsilon(z_rules.Epsilon):
-    def __call__(self, module, *args, **kwargs):
-        # only apply if module is inside attention
-        if "attn" in module.__repr__():
-            return super().__call__(module, *args, **kwargs)
-        # otherwise: return None → Zennit will keep searching for another match
-        return None
-
-class FFNGamma(z_rules.Gamma):
-    def __call__(self, module, *args, **kwargs):
-        # only apply if NOT in attention
-        if "attn" not in module.__repr__():
-            return super().__call__(module, *args, **kwargs)
-        return None
-
-def create_vit_lrp_composite_also_old(conv_gamma: float, lin_gamma: float, epsilon: float = 1e-6):
-    """
-    Vision Transformer LRP composite:
-    - Conv2d → Gamma
-    - Linear in attention → Epsilon
-    - Linear outside attention → Gamma
-    """
-    return LayerMapComposite([
-        (nn.Conv2d, z_rules.Gamma(gamma=conv_gamma)),
-        (nn.Linear, AttentionEpsilon(epsilon=epsilon)),
-        (nn.Linear, FFNGamma(gamma=lin_gamma)),
-    ])
-
-def create_old_composite(conv_gamma: float, lin_gamma: float):
-    return LayerMapComposite([
-        (torch.nn.Conv2d, z_rules.Gamma(conv_gamma)),
-        (torch.nn.Linear, z_rules.Gamma(lin_gamma)),
-    ])
 
 def create_dinov2_lrp_composite(
     model: nn.Module,
@@ -68,13 +34,13 @@ def create_dinov2_lrp_composite(
     if verbose:
         print("--- Building DINOv2 LRP Composite ---")
 
-    # 1. Find the names of all Linear layers
+    # Find the names of all Linear layers
     all_linear_names = {name for name, mod in model.named_modules() if isinstance(mod, nn.Linear)}
     
-    # 2. Find the names of attention-specific linear layers to override
+    # Find the names of attention-specific linear layers to override
     attn_linear_names = {name for name in all_linear_names if '.attn.' in name}
     
-    # 3. The rest are FFN linear layers
+    # The rest are FFN linear layers
     ffn_linear_names = all_linear_names - attn_linear_names
 
     if verbose:
@@ -108,10 +74,10 @@ def compute_similarity_proto_margin_pass(
     query_label: str,
     query_filename: str,
     query_video_id: str,
-    db_embeddings: torch.Tensor,    # (N, D)
-    db_labels: list,                # len N
-    db_filenames: list,             # len N
-    db_video_ids: list,             # len N
+    db_embeddings: torch.Tensor,  
+    db_labels: list,                
+    db_filenames: list,             
+    db_video_ids: list,             
     distance_metric: str = "cosine",
     temp: float = 0.05,
     topk_neg: int = 50,
@@ -216,7 +182,6 @@ def compute_similarity_lrp_pass(
             
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
-            # Standard LRP relevance calculation when gradients are present
             relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
 
     finally:
@@ -231,7 +196,6 @@ def compute_knn_topk_attnlrp_pass(
     lin_gamma: float, 
     model_wrapper: nn.Module, 
     input_tensor: torch.Tensor,
-    # parameters required for the k-NN score
     query_label: str,         
     query_filename: str,      
     query_video_id: str,
@@ -251,10 +215,8 @@ def compute_knn_topk_attnlrp_pass(
     This function calculates a differentiable proxy score based on the k-NN
     outcome and backpropagates from it to generate the relevance map.
     """
-    # Reset gradients for this specific pass
     input_tensor.grad = None
 
-    # Zennit rules MUST be set and removed for each pass
     zennit_comp = create_dinov2_lrp_composite(model_wrapper, conv_gamma, lin_gamma)
     
     try:
@@ -284,7 +246,6 @@ def compute_knn_topk_attnlrp_pass(
             
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
-            # Standard LRP relevance calculation when gradients are present
             relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
 
     finally:
@@ -300,7 +261,6 @@ def compute_knn_all_attnlrp_pass(
     lin_gamma: float, 
     model_wrapper: nn.Module, 
     input_tensor: torch.Tensor,
-    # parameters required for the k-NN score
     query_label: str,         
     query_filename: str,      
     query_video_id: str,
@@ -319,10 +279,8 @@ def compute_knn_all_attnlrp_pass(
     This function calculates a differentiable proxy score based on the k-NN
     outcome and backpropagates from it to generate the relevance map.
     """
-    # Reset gradients for this specific pass
     input_tensor.grad = None
 
-    # Zennit rules MUST be set and removed for each pass
     zennit_comp = create_dinov2_lrp_composite(model_wrapper, conv_gamma, lin_gamma)
 
     try:
@@ -352,7 +310,6 @@ def compute_knn_all_attnlrp_pass(
             
             relevance = torch.zeros_like(input_tensor.sum(1, keepdim=True))
         else:
-            # Standard LRP relevance calculation when gradients are present
             relevance = (input_tensor * input_tensor.grad).sum(1, keepdim=True)
 
     finally:
@@ -367,18 +324,14 @@ def generate_relevances(
     model_wrapper: TimmWrapper,
     dataloader: DataLoader,
     device: torch.device,
-    # --- Parameters to sweep over ---
     conv_gamma_values: List[float],
     lin_gamma_values: List[float],
-    # --- Mode and mode-specific parameters ---
     mode: str,
     distance_metrics: List[str] = ["cosine"],
     proxy_temp_values: List[float] = [0.1],
     topk_values: List[int] = [50],
     param_combinations_list: Optional[List[Dict[str, Any]]] = None,
-    # --- Control flags ---
     verbose: bool = False,
-    # --- Database arguments for relevant modes ---
     db_embeddings: Optional[torch.Tensor] = None,
     db_filenames: Optional[List[str]] = None,
     db_labels: Optional[List[str]] = None,
@@ -449,7 +402,7 @@ def generate_relevances(
         for params in param_combinations_structured:
             if mode == "soft_knn_margin_all":
                 (conv_gamma, lin_gamma, distance_metric), (proxy_temp,) = params
-                topk = None # This mode doesn't use topk
+                topk = None 
             elif mode in ["proto_margin", "soft_knn_margin_topk"]:
                 (conv_gamma, lin_gamma, distance_metric), (proxy_temp, topk) = params
             else: 
@@ -462,7 +415,6 @@ def generate_relevances(
                 filenames_batch = batch["filename"]
                 video_ids_batch = batch["video"]
 
-                # Safely get masks only if needed
                 mask_batch = batch.get("mask") 
                 if mask_batch is None:
                     raise ValueError("No 'mask' key found in the dataloader batch.")
@@ -473,7 +425,7 @@ def generate_relevances(
                     video_id = video_ids_batch[j]
 
                     relevance_single = None
-                    extra_info = {} # To store mode-specific data like reference_embedding
+                    extra_info = {} 
                     if mode == "soft_knn_margin_all":
                         relevance_single = compute_knn_all_attnlrp_pass(
                             model_wrapper=model_wrapper, input_tensor=input_tensor_single,
@@ -510,11 +462,9 @@ def generate_relevances(
                             conv_gamma=conv_gamma, lin_gamma=lin_gamma, distance_metric=distance_metric,
                             cross_encounter=cross_encounter, verbose=verbose
                         )
-                        # Save the reference embedding used, for evaluation
                         extra_info["reference_embedding"] = reference_embedding.cpu() if reference_embedding is not None else reference_embedding
                         extra_info["reference_filename"] = db_filenames[ref_idx]
 
-                    # Prepare the mask if requested
                     mask_single = None
                     mask_tensor_single = mask_batch[j]
                     if mask_tensor_single is not None:
@@ -530,7 +480,7 @@ def generate_relevances(
                         },
                         "mode": mode,
                         "relevance": relevance_single.detach().cpu(),
-                        "mask": mask_single, #this should probably not be included here. we have access to the mask with a normal dataloader anyway
+                        "mask": mask_single, # this should probably not be included here. we have access to the mask with a normal dataloader anyway
                         **extra_info
                     }
                     all_results.append(result_item)
@@ -551,7 +501,6 @@ def get_relevances(
         print(f"Loading cached relevance dictionary from: {db_path}")
         return torch.load(db_path, map_location="cpu", weights_only=False)
 
-    # 2. If no cache, perform the computation
     print(f"Relevance db at {db_path} not found. Computing relevances...")
 
     conv_gamma = kwargs.pop('conv_gamma')
@@ -560,7 +509,6 @@ def get_relevances(
     proxy_temp = kwargs.pop('proxy_temp')
     topk = kwargs.pop('topk')
 
-    # Convert single values to the list format required by generate_relevances
     kwargs['conv_gamma_values'] = [conv_gamma]
     kwargs['lin_gamma_values'] = [lin_gamma]
     kwargs['distance_metrics'] = [distance_metric]
@@ -644,7 +592,7 @@ def compute_knn_proto_margin(
     if dbn.dtype != qn.dtype:
         dbn = dbn.to(qn.dtype)
 
-    sims = F.linear(dbn, qn).squeeze(1)  # (N,)
+    sims = F.linear(dbn, qn).squeeze(1)
 
     exclusion_mask = create_exclusion_mask(
         query_filename=query_filename,
@@ -658,22 +606,19 @@ def compute_knn_proto_margin(
 
     sims[exclusion_mask] = torch.finfo(sims.dtype).min
 
-    # masks
     device = sims.device
     labels_tensor = torch.tensor([1 if l == query_label else 0 for l in db_labels], device=device)
 
     pos_mask = (labels_tensor == 1)
     valid_pos_sims = sims[pos_mask]
-    if valid_pos_sims.numel() > 0 and valid_pos_sims.max() > -1e8: # Check if any valid positives exist, e.g. cross video not itself
+    if valid_pos_sims.numel() > 0 and valid_pos_sims.max() > -1e8:
         pos_idx_original = torch.nonzero(pos_mask).squeeze(1)
         sims_pos = sims[pos_idx_original]
         alpha_pos = F.softmax(sims_pos / temp, dim=0)
         proto_pos = (alpha_pos.unsqueeze(1) * dbn[pos_idx_original]).sum(dim=0, keepdim=True)
     else:
-        # Fallback if no valid cross-video positives are found
         proto_pos = torch.zeros_like(qn)
 
-    # proto_neg: topk among negatives
     neg_mask = (labels_tensor == 0)
     neg_idxs = torch.nonzero(neg_mask).squeeze(1)
     if neg_idxs.numel() == 0:
@@ -684,9 +629,8 @@ def compute_knn_proto_margin(
         topk_vals, topk_idx_in_negs = sims_negs.topk(k)
         chosen = neg_idxs[topk_idx_in_negs]
         alpha_neg = F.softmax(topk_vals / temp, dim=0)
-        proto_neg = (alpha_neg.unsqueeze(1) * dbn[chosen]).sum(dim=0, keepdim=True)  # (1, D)
+        proto_neg = (alpha_neg.unsqueeze(1) * dbn[chosen]).sum(dim=0, keepdim=True)
 
-    # similarity scalars
     sim_pos = (qn * proto_pos).sum()
     sim_neg = (qn * proto_neg).sum()
     return sim_pos - sim_neg
@@ -741,16 +685,15 @@ def compute_knn_proxy_soft_all(
 
     # Ensure embeddings are normalized (standard for cosine similarity)
     q_emb = query_embedding.view(1, -1) if query_embedding.dim()==1 else query_embedding
-    # Achtibat:
+    
+    # Suggestion from Achtibat:
     q_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), q_emb)
     db_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), db_embeddings)
 
-    # convert to input dtype, which is float32 for lrp
     if db_norm.dtype != q_norm.dtype:
         db_norm = db_norm.to(q_norm.dtype)
-    # Calculate cosine similarity (higher is better)
-    # Note: F.linear(db_norm, q_norm) is equivalent to db_norm @ q_norm.T
-    similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
+
+    similarities = F.linear(db_norm, q_norm).squeeze(1)
 
     exclusion_mask = create_exclusion_mask(
         query_filename=query_filename,
@@ -769,16 +712,12 @@ def compute_knn_proxy_soft_all(
     # High temp -> considers more neighbors.
     weights = F.softmax(similarities / temp, dim=0)
 
-    # Create a mask to identify friends in the database
     device = weights.device
     friend_mask = torch.tensor([1.0 if label == query_label else 0.0 for label in db_labels], device=device)
     
-    # Calculate the total "probability mass" assigned to friends vs. foes
     prob_friends = (weights * friend_mask).sum()
-    prob_foes = (weights * (1.0 - friend_mask)).sum() # or 1.0 - prob_friends
+    prob_foes = (weights * (1.0 - friend_mask)).sum() 
 
-    # The margin score is the most faithful proxy for a contrastive decision.
-    # Maximizing this score means maximizing friend probability and minimizing foe probability.
     score_margin = prob_friends - prob_foes
 
     return score_margin
@@ -845,7 +784,7 @@ def compute_knn_proxy_soft_topk(
     if db_norm.dtype != q_norm.dtype:
         db_norm = db_norm.to(q_norm.dtype)
     
-    all_similarities = F.linear(db_norm, q_norm).squeeze(1) # Shape: (N,)
+    all_similarities = F.linear(db_norm, q_norm).squeeze(1)
 
     exclusion_mask = create_exclusion_mask(
         query_filename=query_filename,
@@ -939,7 +878,6 @@ def compute_similarity_score(
             cross_encounter=cross_encounter
         )
             
-        # Filter the positive indices to find valid ones
         valid_positive_indices = [
             idx for idx in positive_indices if not exclusion_mask[idx].item()
         ]
@@ -955,7 +893,6 @@ def compute_similarity_score(
         "reference_embedding should be of shape [1, embedding_dim]"
     query_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), query_embedding)
     reference_embedding_norm = identity_rule_implicit(lambda t: F.normalize(t, p=2, dim=1), reference_embedding)
-    # The similarity score is the dot product of the normalized vectors
     similarity_score = (query_embedding_norm * reference_embedding_norm).sum()
     return similarity_score, reference_embedding_norm, ref_idx
 

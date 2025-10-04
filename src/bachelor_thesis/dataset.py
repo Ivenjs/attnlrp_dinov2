@@ -1,14 +1,11 @@
 import os
 from PIL import Image
-import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-from typing import Tuple, List, Optional, Callable, Dict
+from typing import List, Optional, Callable, Dict
 from torch.utils.data.dataloader import default_collate
 from collections import defaultdict
-import numpy as np
-import torch.nn.functional as F
-from utils import deterministic_randperm, parse_encounter_id
+from utils import parse_encounter_id
 
 class GorillaReIDDataset(Dataset):
     """
@@ -74,37 +71,31 @@ class GorillaReIDDataset(Dataset):
         """
         print(f"Filtering images for KNN evaluation with k={self.k}...")
         
-        # 1. Build a map of labels to their encounters and image indices
         data_by_label_and_encounter = defaultdict(lambda: defaultdict(list))
         for i, (label, encounter) in enumerate(zip(self.labels, self.encounters)):
-            if encounter[0] is not None:  # Ensure encounter was parsed correctly
+            if encounter[0] is not None: 
                 data_by_label_and_encounter[label][encounter].append(i)
             else:
                 print(f"Warning: Could not parse encounter for image {self.filenames[idx]}. Skipping KNN filtering for this image.")
 
-        self.images_for_ce_knn = []  # CE: Cross-Encounter
+        self.images_for_ce_knn = []
         self.images_for_standard_knn = []
         
-        # 2. Iterate through each image and apply filtering logic
         for idx, (label, current_encounter) in enumerate(zip(self.labels, self.encounters)):
             if current_encounter[0] is None:
                 print(f"Warning: Could not parse encounter for image {self.filenames[idx]}. Skipping KNN filtering for this image.")
-                continue # Skip images that couldn't be parsed
+                continue 
 
             encounters_with_label = data_by_label_and_encounter[label]
             
-            # --- Cross-Encounter KNN Filter ---
-            # Count how many images with the same label exist in OTHER encounters
             other_encounters_count = sum(
                 len(images) for enc, images in encounters_with_label.items() if enc != current_encounter
             )
             # To have a valid positive match, we need enough images in other encounters.
-            # The k//2 + 1 heuristic ensures a majority vote is possible in KNN.
+            # The k//2 + 1 ensures a majority vote is possible in KNN.
             if other_encounters_count >= self.k // 2 + 1:
                 self.images_for_ce_knn.append(idx)
 
-            # --- Standard KNN Filter ---
-            # Total images for this label, minus the query image itself.
             total_images_with_label = sum(len(images) for images in encounters_with_label.values())
             # We need at least k//2 + 1 other images for a majority vote.
             if total_images_with_label - 1 >= self.k // 2 + 1:
@@ -114,7 +105,6 @@ class GorillaReIDDataset(Dataset):
         print(f"Found {len(self.images_for_ce_knn)} / {len(self)} images suitable for Cross-Encounter KNN.")
         print(f"Found {len(self.images_for_standard_knn)} / {len(self)} images suitable for Standard KNN.")
 
-        # Fallback: if no eligible images are found, use all images to avoid crashing.
         if not self.images_for_standard_knn:
             print("Warning: No images were found suitable for Standard KNN evaluation. Using all images instead.")
             self.images_for_standard_knn = list(range(len(self)))
@@ -133,7 +123,6 @@ class GorillaReIDDataset(Dataset):
         return len(self.filenames)
 
     def __getitem__(self, idx: int) -> Dict[str, any]:
-        # This method remains largely the same, as it was already correct.
         img_path = self.image_paths[idx]
         image = Image.open(img_path).convert("RGB")
         image_tensor = self.transform(image)
@@ -143,13 +132,12 @@ class GorillaReIDDataset(Dataset):
         filename_no_ext = os.path.splitext(self.filenames[idx])[0]
         
         mask_tensor = None
-        if self.has_mask[idx]: # We can rely on the pre-computed check
+        if self.has_mask[idx]:
             mask_path = self.mask_paths[idx]
             mask = Image.open(mask_path).convert("L")
             if self.mask_transform:
                 mask = self.mask_transform(mask)
             mask_tensor = (mask > 0).float()
-            #print(f"Loaded mask for {self.filenames[idx]} from {mask_path}")
         else:
             print(f"No mask found for {self.filenames[idx]}.")
 
@@ -168,14 +156,10 @@ def custom_collate_fn(batch):
     'image', 'label', 'filename' are collated using the default collate.
     'mask' is returned as a list of tensors/Nones.
     """
-    # Separate the masks from the rest of the data
     masks = [item.pop('mask') for item in batch]
     
-    # Use the default collate for the rest of the items
-    # This will create batched tensors for images, and lists for labels/filenames
     collated_batch = default_collate(batch)
     
-    # Add the list of masks back into the collated batch
     collated_batch['mask'] = masks
     
     return collated_batch

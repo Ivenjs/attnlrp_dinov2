@@ -11,7 +11,6 @@ import torch.nn.functional as F
 import json
 from sklearn.model_selection import train_test_split
 
-# Import imgify from zennit
 from zennit.image import imgify
 
 from torch.utils.data import DataLoader, ConcatDataset
@@ -427,34 +426,6 @@ def get_intersected_categories(mode: str, is_zoo: bool) -> Dict[str, list]:
     
     return category_to_filename
 
-def sample_nonzero_relevance_diverse(filenames, relevance_dict, n=5):
-    """
-    Sample up to `n` filenames with non-zero relevance, trying to maximize class diversity.
-    Class is determined by the first part of the filename: filename.split('_')[0].
-    """
-    valid_filenames = [f for f in filenames if f in relevance_dict and torch.abs(relevance_dict[f][0]).max() > 1e-12]
-    
-    class_to_files = defaultdict(list)
-    for f in valid_filenames:
-        class_name = f.split('_')[0]
-        class_to_files[class_name].append(f)
-    
-    sampled = []
-    classes = list(class_to_files.keys())
-    random.shuffle(classes)
-    
-    while len(sampled) < n and classes:
-        for cls in classes[:]:
-            if class_to_files[cls]:
-                chosen = random.choice(class_to_files[cls])
-                sampled.append(chosen)
-                class_to_files[cls].remove(chosen)
-            if not class_to_files[cls]:
-                classes.remove(cls)
-            if len(sampled) >= n:
-                break
-    return sampled
-
 
 def visualize_prediction_with_neighbors(
     prediction_info: Dict[str, Any],
@@ -484,10 +455,8 @@ def visualize_prediction_with_neighbors(
     neighbor_filenames_ext = prediction_info.get("top_k_neighbor_filenames", [])
     neighbor_filenames_base = [os.path.splitext(f)[0] for f in neighbor_filenames_ext]
 
-    # Combine the query and its neighbors into a single list for processing
     all_filenames_to_plot = [query_filename_base] + neighbor_filenames_base
 
-    # Create a unique prefix for this group of images to keep them together
     group_prefix = f"{category}_{query_filename_base}_pred_{predicted_label}"
 
     for i, filename in enumerate(all_filenames_to_plot):
@@ -496,11 +465,8 @@ def visualize_prediction_with_neighbors(
         else:
             rank_label = f"rank{i:02d}_neighbor"
 
-        # Construct a descriptive filename for saving
-        # e.g., correct_DU40..._pred_DU40_rank00_query_DU40...
         save_filename = f"{group_prefix}_{rank_label}_{filename}"
         
-        # --- Data Fetching ---
         if filename not in full_fname_to_idx:
             print(f"  [Warning] Filename '{filename}' not found in dataset. Skipping.")
             continue
@@ -511,15 +477,10 @@ def visualize_prediction_with_neighbors(
             
         print(f"  -> Plotting {rank_label}: {filename}")
 
-        # Get image tensor and mask from the dataset
         sample_idx = full_fname_to_idx[filename]
         sample_data = full_dataset[sample_idx]
         image_tensor = sample_data["image"]
         
-        # Get relevance map from the pre-computed dictionary
-        # Note: The mask from relevance_dict might be more accurate if it was 
-        # computed on the same image transform, but using the one from the dataset
-        # is also fine. Here we use the one from relevance_dict.
         relevance, cached_mask = relevance_dict[filename]
 
         if cached_mask is None:
@@ -533,9 +494,9 @@ def visualize_prediction_with_neighbors(
             image_tensor=image_tensor,
             mask=mask_to_use,
             relevance=relevance,
-            stats={},  # You can add stats here if available
+            stats={},
             intensify=False,
-            category=category, # Saves to the correct subdirectory (e.g., .../correct/)
+            category=category,
         )
 
 def main(cfg):
@@ -792,19 +753,7 @@ def main(cfg):
         images_to_visualize["correct_with_neighbors"] = ["GA41_R105_20220819_003_1650_29862"]
         images_to_visualize["incorrect_with_neighbors"] = ["PL02_R465_20220228_205_54_724627"]
 
-    analysis_json_path = f"./visualizations/{os.path.basename(db_path_relevances)}.json"
-    if os.path.exists(analysis_json_path):
-        with open(analysis_json_path, 'r') as f:
-            analysis_data = json.load(f)
-    else:
-        analysis_data = {}
 
-    """for category, filenames in analysis_data.items():
-        if category not in images_to_visualize:
-            images_to_visualize[category] = []
-        images_to_visualize[category].extend(
-            sample_nonzero_relevance_diverse(filenames, relevance_dict, n=5) #this is dependant on base/finetuned model anyway. so no point in trying to have the same images
-        )"""
 
     is_zoo = "zoo" in cfg["data"]["dataset_dir"].lower()
     intersected_categories = get_intersected_categories(mode=MODE, is_zoo=is_zoo)
@@ -823,7 +772,7 @@ def main(cfg):
             if prediction_info:
                 visualize_prediction_with_neighbors(
                     prediction_info=prediction_info,
-                    category="correct", # This determines the subfolder
+                    category="correct",
                     full_dataset=full_db_dataset,
                     full_fname_to_idx=full_fname_to_idx,
                     relevance_dict=relevance_dict,
@@ -838,7 +787,7 @@ def main(cfg):
             if prediction_info:
                 visualize_prediction_with_neighbors(
                     prediction_info=prediction_info,
-                    category="incorrect", # This determines the subfolder
+                    category="incorrect",
                     full_dataset=full_db_dataset,
                     full_fname_to_idx=full_fname_to_idx,
                     relevance_dict=relevance_dict,

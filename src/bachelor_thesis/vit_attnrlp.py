@@ -8,7 +8,7 @@ from torchvision.models import vision_transformer
 from zennit.composites import LayerMapComposite
 from zennit.image import imgify
 
-
+# Example from the lxt documentation for the standard huggingface ViT model
 
 monkey_patch(vision_transformer, verbose=True)
 monkey_patch_zennit(verbose=True)

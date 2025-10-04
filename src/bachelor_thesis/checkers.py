@@ -2,6 +2,7 @@ import torch.nn as nn
 from typing import List, Dict, Optional, Tuple
 import torch
 
+#TODO: Implement this testing functionality fully
 class LRPConservationChecker:
     """
     A context manager to check for LRP relevance conservation in a PyTorch model.
@@ -22,7 +23,6 @@ class LRPConservationChecker:
         self.model = model
         self.handles: List[torch.utils.hooks.RemovableHandle] = []
         self.results: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
-        # The name of the first layer that processes the input tensor
         self.input_layer_name = input_layer_name
 
     def _create_hook(self, name: str):
@@ -34,7 +34,6 @@ class LRPConservationChecker:
             if grad_input and grad_input[0] is not None:
                 rout = grad_input[0].sum().item()
             elif rin is not None:
-                # For the very first layer, grad_input might be None.
                 rout = rin
             self.results[name] = (rin, rout)
         return hook
@@ -44,7 +43,7 @@ class LRPConservationChecker:
         self.results.clear()
         self.handles.clear()
         for name, module in self.model.named_modules():
-            if not list(module.children()): # Hook leaf modules
+            if not list(module.children()): 
                 full_name = f"{name} ({module.__class__.__name__})"
                 handle = module.register_full_backward_hook(self._create_hook(full_name))
                 self.handles.append(handle)
@@ -67,7 +66,6 @@ class LRPConservationChecker:
                               This is returned regardless of the verbose setting.
         """
         violations = {}
-        # Sort results by name for consistent output order
         sorted_results = sorted(self.results.items())
 
         for name, (rin, rout) in sorted_results:
@@ -107,7 +105,6 @@ class LRPConservationChecker:
             input_layer_full_name = "N/A"
 
             if self.input_layer_name:
-                # Find the full name of the input layer from the results
                 for name in self.results.keys():
                     if name.startswith(self.input_layer_name):
                         input_layer_full_name = name
@@ -149,18 +146,13 @@ class BiasManager:
     def __enter__(self):
         self.original_biases.clear()
         for name, module in self.model.named_modules():
-            # Check for linear and layernorm layers which commonly have biases
             if hasattr(module, 'bias') and module.bias is not None:
-                # Store the original bias and its name
                 self.original_biases[name] = module.bias
-                module.bias = None # Disable it
+                module.bias = None 
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # Restore all original biases
         for name, module in self.model.named_modules():
             if name in self.original_biases:
-                # We stored the tensor itself, so we can re-assign it
-                # We need to wrap it in nn.Parameter to restore its gradient properties
                 module.bias = nn.Parameter(self.original_biases[name])
         self.original_biases.clear()

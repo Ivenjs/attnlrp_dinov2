@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-# Use a unique directory specific to THIS project and THIS job
-CLI_DATA_DIR="/workspaces/cadetunnel/bachelor_thesis_code/.vscode-cli-data-${SLURM_JOB_ID}"
+# Use a unique directory specific to this project
+CLI_DATA_DIR="/workspaces/cadetunnel/bachelor_thesis_code/.vscode-cli-data"
 mkdir -p "$CLI_DATA_DIR"
 
 echo "Using VS Code CLI data directory: $CLI_DATA_DIR"

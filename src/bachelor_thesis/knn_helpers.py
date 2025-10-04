@@ -5,13 +5,8 @@ from tqdm import tqdm
 import torch.nn.functional as F
 from typing import Tuple, List
 from torch.utils.data import DataLoader
-from lxt.efficient.rules import identity_rule_implicit
 import torch
 from utils import parse_encounter_id
-
-
-import numpy as np
-
 from dataset import GorillaReIDDataset, custom_collate_fn
 
 def fill_knn_db(

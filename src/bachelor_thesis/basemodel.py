@@ -1,9 +1,6 @@
 import logging
 from typing import Any, Literal, Optional, Tuple, Union
 
-import os
-import yaml
-
 import timm
 import torch
 import torch.nn as nn
@@ -12,7 +9,6 @@ from torchvision import transforms
 from torchvision.transforms import RandAugment
 from timm.data import create_transform, resolve_model_data_config
 from timm.layers.classifier import ClassifierHead, NormMlpClassifierHead
-from torchvision.models import vision_transformer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -276,20 +272,17 @@ def load_timm_wrapper(
         checkpoint_best = torch.load(checkpoint_path, map_location=device, weights_only=False)
         cleaned_state_dict_wrapper = extract_clean_state_dict_for_wrapper(checkpoint_best)
         msg = model_wrapper.load_state_dict(cleaned_state_dict_wrapper, strict=False)
-        #print(f"State dict loading message: {msg}")
     
     model_wrapper.to(device=device, dtype=model_dtype)
     model_wrapper.to(device)
     model_wrapper.eval()
 
-    # 5. Get the correct preprocessing transforms for the timm backbone.
     if not bp_transforms:
         data_config = resolve_model_data_config(model_wrapper.model)
         transforms = create_transform(**data_config, is_training=False)
         print("Associated model transforms created successfully.")
     else:
         transforms, mean, std = get_transform(image_size)
-        # we need mean and std in data config for visualizations
         data_config = {"mean": mean, "std": std}
         print("Using transforms as we did in the bachelor project")
 

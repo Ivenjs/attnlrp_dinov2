@@ -36,13 +36,12 @@ def _choose_next_index_maxmin(frames: List[Tuple[int, Path]], picked_idx: Set[in
     if not remaining:
         return None
     if not picked_idx:
-        return n // 2  # erster Pick: Mitte
+        return n // 2 
 
     picked_frames = [frames[i][0] for i in picked_idx]
     best_i, best_dist = None, -1
     for i in remaining:
         f = frames[i][0]
-        # min distance zum nächstgelegenen bereits gepickten Frame
         d = min(abs(f - pf) for pf in picked_frames)
         if d > best_dist:
             best_dist = d
@@ -70,10 +69,8 @@ def get_sampled_images_per_class(base_dir: Path, num_images_per_class: int = 1) 
 
     splits_to_scan = ["train", "validation", "test"]
 
-    # {class_label: {video_id: [(frame_nr, path), ...]}}
     all_class_video_frames: Dict[str, Dict[int, List[Tuple[int, Path]]]] = defaultdict(lambda: defaultdict(list))
 
-    # Step 1: Collect frames grouped by class + video
     for split in splits_to_scan:
         split_dir = base_dir / split
         if not split_dir.is_dir():
@@ -93,9 +90,7 @@ def get_sampled_images_per_class(base_dir: Path, num_images_per_class: int = 1) 
 
     class_images: Dict[str, List[Path]] = defaultdict(list)
 
-    # Step 2: Round-robin selection per class
     for class_label, videos in all_class_video_frames.items():
-        # Sort frames within each video by frame_nr for stable distance calc
         for vid in videos:
             videos[vid].sort(key=lambda x: x[0])
 
@@ -105,18 +100,14 @@ def get_sampled_images_per_class(base_dir: Path, num_images_per_class: int = 1) 
                 f"Class '{class_label}' has only {total_available} images, "
                 f"requested {num_images_per_class}."
             )
-            # Nimm alles, was da ist (Video-Priorität ist hier egal, weil wir eh zu wenig haben)
             class_images[class_label].extend([p for frames in videos.values() for (_, p) in frames])
             continue
 
-        # Tracking: pro Video merken wir NUR die gepickten Indices (kein Mutieren der Frames-Liste!)
         videos_picked_idx: Dict[int, Set[int]] = {vid: set() for vid in videos}
         picked_count = 0
 
-        # Deterministische Reihenfolge der Videos (z. B. nach video_id)
         video_order = sorted(videos.keys())
 
-        # Round-Robin bis Ziel erreicht oder alles exhausted
         while picked_count < num_images_per_class:
             progress = False
             for vid in video_order:
@@ -125,13 +116,12 @@ def get_sampled_images_per_class(base_dir: Path, num_images_per_class: int = 1) 
                 frames = videos[vid]
                 idx = _choose_next_index_maxmin(frames, videos_picked_idx[vid])
                 if idx is None:
-                    continue  # dieses Video ist exhausted
+                    continue  
                 videos_picked_idx[vid].add(idx)
                 class_images[class_label].append(frames[idx][1])
                 picked_count += 1
                 progress = True
             if not progress:
-                # alle Videos exhausted (sollte bei total_available >= target nicht passieren)
                 break
 
     found_count = sum(len(paths) for paths in class_images.values())
@@ -177,11 +167,9 @@ def fetch_video_paths_for_df(file_df: pd.DataFrame, db_schema: str, feature_type
                      AND tff.feature_type = v.feature_type
             """
 
-            BATCH = 1000  # oder was bequem passt
+            BATCH = 1000
             for i in range(0, len(data_to_query), BATCH):
                 chunk = data_to_query[i:i+BATCH]
-                # EIN Query pro Chunk => EIN fetchall pro Chunk
-                from psycopg2.extras import execute_values
                 execute_values(cursor, query, chunk, page_size=len(chunk))
                 all_results.extend(cursor.fetchall())
 
@@ -213,7 +201,6 @@ def extract_and_save_whole_frames(df_with_paths: pd.DataFrame, output_dir: Path)
         logging.error("No video paths found in the DataFrame. Cannot extract frames.")
         return
 
-    # Group by video to process each video only once
     for video_path, group in tqdm(df_with_paths.groupby("video_path"), desc="Extracting full frames"):
         if pd.isna(video_path):
             logging.warning(f"Skipping {len(group)} images with no associated video path.")
@@ -229,7 +216,6 @@ def extract_and_save_whole_frames(df_with_paths: pd.DataFrame, output_dir: Path)
         
         logging.info(f"Extracting {len(frame_numbers)} frames from {video_path}")
         
-        # Extract frames in one batch
         try:
             vr = VideoReader(video_path, ctx=cpu(0))
             extracted_frames = vr.get_batch(frame_numbers).asnumpy()
@@ -238,7 +224,6 @@ def extract_and_save_whole_frames(df_with_paths: pd.DataFrame, output_dir: Path)
             logging.error(f"Error reading video {video_path}: {e}. Skipping this video.")
             continue
 
-        # Save the extracted frames
         for req in frame_requests:
             frame_num = req["frame_nr"]
             if frame_num in frame_map:
@@ -248,14 +233,11 @@ def extract_and_save_whole_frames(df_with_paths: pd.DataFrame, output_dir: Path)
             else:
                 logging.warning(f"Failed to extract frame {frame_num} from {video_path}")
 
-# --- Main Orchestrator ---
 
 def main():
     """Main script execution."""
-    # Use your config loader
     cfg = load_config("finetuned", [])
     
-    # --- Configuration ---
     dataset_dir = Path(cfg["data"]['dataset_dir'])
     save_dir = Path("/workspaces/vast-gorilla/gorillawatch/iven_thesis/frames_to_label")
     num_images_per_class = 7
@@ -265,29 +247,23 @@ def main():
     cropped_images_dir.mkdir(parents=True, exist_ok=True)
     whole_images_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Sample N cropped images for each class from the dataset directory
     logging.info(f"Scanning for images in {dataset_dir}...")
     class_images_map = get_sampled_images_per_class(dataset_dir, num_images_per_class)
     
-    # Flatten the list of all sampled image paths
     all_sampled_paths = [path for paths in class_images_map.values() for path in paths]
 
     if not all_sampled_paths:
         logging.info("No images were sampled. Exiting.")
         return
 
-    # 2. Copy the sampled cropped images to the output directory
     logging.info(f"Copying {len(all_sampled_paths)} sampled cropped images to {cropped_images_dir}...")
     for img_path in tqdm(all_sampled_paths, desc="Copying cropped images"):
         shutil.copy(img_path, cropped_images_dir / img_path.name)
     
-    # 3. Parse filenames to get frame_nr and tracking_id
     file_info_df = parse_image_info_to_df(all_sampled_paths)
 
-    # 4. Fetch the corresponding video paths from the database
     df_with_paths = fetch_video_paths_for_df(file_info_df, DB_SCHEMA, FEATURE_TYPE)
 
-    # 5. Extract and save the full frames
     extract_and_save_whole_frames(df_with_paths, whole_images_dir)
 
     logging.info("Processing complete.")

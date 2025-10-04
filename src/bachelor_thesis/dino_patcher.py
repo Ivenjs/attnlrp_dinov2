@@ -90,54 +90,25 @@ class DINOPatcher:
         self.original_forwards = {}
 
     def __enter__(self):
-        if self.conservation_test:
-            # --- CONSERVATION TEST PATCHING ---
-            #TODO: Behaves weirdly at the moment...
-            for name, module in self.wrapper.named_modules():
-                key = name
-                if isinstance(module, nn.Linear):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservation_linear_forward, module)
-                elif isinstance(module, nn.Conv2d):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservation_conv2d_forward, module)
-                
-                elif isinstance(module, Attention):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservation_attention_forward, module)
-
-                elif isinstance(module, nn.LayerNorm):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservation_layernorm_forward, module)
-
-                elif isinstance(module, LayerScale):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservative_identity_forward, module)
-                
-                elif isinstance(module, GluMlp):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(_conservative_identity_forward, module)
+        print("--- Applying LRP patches ---")
+        if self.attention_mode == "cp_lrp":
+            attn_patch_fn = lrp_attention_forward_cp
         else:
-            # --- LRP PATCHING (Normal Operation) ---
-            print("--- Applying LRP patches ---")
-            if self.attention_mode == "cp_lrp":
-                attn_patch_fn = lrp_attention_forward_cp
-            else:
-                attn_patch_fn = lrp_attention_forward
+            attn_patch_fn = lrp_attention_forward
 
-            for name, module in self.wrapper.named_modules():
-                key = name
+        for name, module in self.wrapper.named_modules():
+            key = name
 
-                if isinstance(module, Attention):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(attn_patch_fn, module)
-                elif isinstance(module, GluMlp):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(lrp_glumlp_forward, module)
-                elif isinstance(module, nn.LayerNorm):
-                    self.original_forwards[key] = module.forward
-                    module.forward = types.MethodType(lrp_layernorm_forward, module)
-                # LayerScale does NOT need to be patched
+            if isinstance(module, Attention):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(attn_patch_fn, module)
+            elif isinstance(module, GluMlp):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(lrp_glumlp_forward, module)
+            elif isinstance(module, nn.LayerNorm):
+                self.original_forwards[key] = module.forward
+                module.forward = types.MethodType(lrp_layernorm_forward, module)
+            # LayerScale does NOT need to be patched
         
         return self.wrapper
 
@@ -150,9 +121,7 @@ class DINOPatcher:
         self.original_forwards.clear()    
 
 
-# -------------------------------------------------------------------
-# Forward Pass for timm Attention
-# -------------------------------------------------------------------
+
 """
     https://github.com/rachtibat/LRP-eXplains-Transformers/blob/main/lxt/explicit/modules.py#L87:
     Implementing the CP-LRP (Conservative Propagation - LRP) rule for attention i.e. we don't let relevance flow through the softmax, but only through the value path. 
@@ -180,7 +149,6 @@ def lrp_attention_forward_cp (self, x: torch.Tensor) -> torch.Tensor:
     k = stop_gradient(k)
     # ----------------------------------------------------
 
-    # The rest of the forward pass is standard
     if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
         x = torch.nn.functional.scaled_dot_product_attention(
             q,
@@ -235,9 +203,7 @@ def lrp_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
     x = self.proj_drop(x)
     return x
 
-# -------------------------------------------------------------------
-# Custom Forward Pass for Gated MLP (GluMlp)
-# -------------------------------------------------------------------
+
 def lrp_glumlp_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     Custom forward pass for timm.models.vision_transformer.GluMlp
@@ -263,9 +229,6 @@ def lrp_glumlp_forward(self, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-# -------------------------------------------------------------------
-# Custom Forward Pass for LayerNorm
-# -------------------------------------------------------------------
 def lrp_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
     """
     Custom forward pass for nn.LayerNorm with LRP rules applied.
@@ -284,56 +247,3 @@ def lrp_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
         
     return x_normalized
 
-
-# -------------------------------------------------------------------
-# Custom Forward Pass for DINOV2 Attention with Conservation Test
-# -------------------------------------------------------------------
-def _conservation_linear_forward(self, x: torch.Tensor) -> torch.Tensor:
-    """A perfectly conservative forward pass for nn.Linear for TESTING ONLY."""
-    # A bias-free linear layer is inherently conservative. No special rules needed.
-    return F.linear(x, self.weight, None) # Bias is None via BiasManager
-
-def _conservation_conv2d_forward(self, x: torch.Tensor) -> torch.Tensor:
-    """A perfectly conservative forward pass for nn.Conv2d for TESTING ONLY."""
-    # A bias-free conv layer is inherently conservative.
-    return self._conv_forward(x, self.weight, None) # Bias is None via BiasManager
-
-def _conservation_attention_forward(self, x: torch.Tensor) -> torch.Tensor:
-    """
-    A special forward pass for Attention DESIGNED ONLY FOR LRP CONSERVATION TESTING.
-    It detaches the softmax to ensure relevance is conserved through the value path.
-    """
-    B, N, C = x.shape
-    qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-    q, k, v = qkv.unbind(0)
-    q, k = self.q_norm(q), self.k_norm(k)
-
-    q = q * self.scale
-    attn = torch.matmul(q, k.transpose(-2, -1))
-
-    # Detach the softmax. This treats attention weights as constants, ensuring
-    # relevance only flows through the `v` path, which is conservative.
-    attn = attn.softmax(dim=-1).detach()
-
-    attn = self.attn_drop(attn) 
-    x = torch.matmul(attn, v)
-
-    x = x.transpose(1, 2).reshape(B, N, C)
-    x = self.proj(x)
-    x = self.proj_drop(x)
-    return x
-
-def _conservation_layernorm_forward(self, x: torch.Tensor) -> torch.Tensor:
-    """
-    A conservative LayerNorm forward pass for TESTING ONLY.
-    It performs normalization but SKIPS the non-conservative affine transform
-    and crucially allows gradient to flow through the variance path.
-    """
-    mean = x.mean(dim=-1, keepdim=True)
-    var = torch.var(x, dim=-1, keepdim=True, unbiased=False)
-    x_normalized = (x - mean) / torch.sqrt(var + self.eps)
-    return x_normalized
-
-def _conservative_identity_forward(self, x: torch.Tensor) -> torch.Tensor:
-    """A simple identity forward pass to disable modules like LayerScale for testing."""
-    return x

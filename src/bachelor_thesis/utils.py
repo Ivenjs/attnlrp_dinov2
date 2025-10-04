@@ -1,15 +1,10 @@
 import os
-import yaml
-from pathlib import Path
 from typing import List, Tuple, Dict
 from collections import defaultdict
 import random
-from PIL import Image
 from omegaconf import OmegaConf
 from torchvision import transforms
 import torch
-
-from torch.utils.data import Dataset
 
 import hashlib
 
@@ -25,7 +20,6 @@ def get_denormalization_transform(mean: tuple, std: tuple) -> transforms.Compose
     std_tensor = torch.tensor(std)
 
     return transforms.Compose([
-        # Reshape to (C, 1, 1) to work with image tensors (C, H, W)
         transforms.Lambda(lambda x: x * std_tensor.view(3, 1, 1)),
         transforms.Lambda(lambda x: x + mean_tensor.view(3, 1, 1)),
     ])
@@ -78,13 +72,11 @@ def get_disjunct_individuals(
         if label and encounter_id[0] is not None:
             individuals_to_encounters[label][encounter_id].append(f)
 
-    # 2. Get a list of all unique individuals and shuffle for a random split
     all_individuals = list(individuals_to_encounters.keys())
     random.shuffle(all_individuals)
 
     split_idx = int(len(all_individuals) * holdout_percentage)
 
-    # Edge case handling: ensure both sets are non-empty if possible
     if len(all_individuals) > 1 and split_idx == 0:
         split_idx = 1
     if len(all_individuals) > 1 and split_idx == len(all_individuals):
@@ -123,8 +115,7 @@ def get_balanced_individual_splits_cross_encounter(
         - holdout_query_files: List of query file paths for the holdout set.
         - holdout_db_files: List of all database file paths for the holdout set.
     """
-    # 1. Group files by individual and then by encounter
-    # Structure: {gorilla_id: {encounter_id: [file1, file2, ...]}}
+
     individuals_to_encounters = defaultdict(lambda: defaultdict(list))
     for f in train_files:
         label = get_class_label(f)
@@ -133,15 +124,12 @@ def get_balanced_individual_splits_cross_encounter(
         if label and encounter_id[0] is not None:
             individuals_to_encounters[label][encounter_id].append(f)
 
-    # 2. Get a list of all unique individuals and shuffle for a random split
     all_individuals = list(individuals_to_encounters.keys())
     random.shuffle(all_individuals)
 
-    # 3. Split individuals into tune and holdout sets
     num_individuals = len(all_individuals)
     split_idx = int(num_individuals * holdout_percentage)
 
-    # Edge case handling: ensure both sets are non-empty if possible
     if num_individuals > 1 and split_idx == 0:
         split_idx = 1
     if num_individuals > 1 and split_idx == num_individuals:
@@ -152,7 +140,6 @@ def get_balanced_individual_splits_cross_encounter(
     
     assert set(tune_inds).isdisjoint(holdout_inds), "Individuals must be disjunct"
 
-    # 4. Helper function to select cross-encounter eligible queries
     def _select_eligible_queries(
         individuals: List[str],
         data: Dict[str, Dict[Tuple[str, str], List[str]]]
@@ -163,41 +150,35 @@ def get_balanced_individual_splits_cross_encounter(
         for ind in individuals:
             encounters_map = data[ind]
             
-            # An individual is eligible only if they appear in more than one encounter
             if len(encounters_map) < 2:
                 print(f"    - Individual {ind} skipped (only {len(encounters_map)} encounter).")
-                continue # Skip this individual, they cannot have a cross-encounter query
+                continue 
             
             eligible_inds_count += 1
             
             all_files_for_ind = [f for files in encounters_map.values() for f in files]
             if len(all_files_for_ind) <= 1:
-                continue # Cannot select a query and leave one in the db
-            # Sort encounters by the number of images they have, smallest first
+                continue 
             sorted_encounters = sorted(encounters_map.items(), key=lambda item: len(item[1]))
             
             potential_queries = []
-            # Take all images from the smallest encounters first, as they make the best queries
             for encounter_id, files in sorted_encounters:
                 potential_queries.extend(files)
 
             random.shuffle(potential_queries)
             
-            # Select up to `queries_per_class`, ensuring at least one image is left in the DB overall.
             n_queries = min(queries_per_class, len(all_files_for_ind) - 1)
             query_files.extend(potential_queries[:n_queries])
                 
         print(f"    - Selected queries from {eligible_inds_count}/{len(individuals)} eligible individuals.")
         return query_files
 
-    # 5. Select queries for tune and holdout sets using the new logic
     print("Selecting queries for Tune set:")
     tune_query_files = _select_eligible_queries(tune_inds, individuals_to_encounters)
     
     print("Selecting queries for Holdout set:")
     holdout_query_files = _select_eligible_queries(holdout_inds, individuals_to_encounters)
 
-    # 6. Create database files (all files for the individuals in each set)
     tune_db_files = [
         f for ind in tune_inds
         for encounter_files in individuals_to_encounters[ind].values()
@@ -209,7 +190,6 @@ def get_balanced_individual_splits_cross_encounter(
         for f in encounter_files
     ]
 
-    # 7. Final summary and assertions
     print("\n--- Split Summary ---")
     print(f"Tune Set: {len(tune_inds)} individuals, {len(tune_db_files)} DB images, {len(tune_query_files)} queries")
     print(f"Holdout Set: {len(holdout_inds)} individuals, {len(holdout_db_files)} DB images, {len(holdout_query_files)} queries")
@@ -217,7 +197,6 @@ def get_balanced_individual_splits_cross_encounter(
     assert set(tune_query_files).issubset(set(tune_db_files))
     assert set(holdout_query_files).issubset(set(holdout_db_files))
     
-    # It's possible for a set to have no eligible queries, so we handle this gracefully
     if not holdout_query_files and len(holdout_inds) > 0:
         print("\nWarning: Holdout set has individuals but no cross-encounter eligible queries were found.")
     if not tune_query_files and len(tune_inds) > 0:
@@ -225,7 +204,6 @@ def get_balanced_individual_splits_cross_encounter(
         
     return tune_query_files, tune_db_files, holdout_query_files, holdout_db_files
 
-#TODO: make this deliberately cross video to enable more diverse queries
 def get_balanced_individual_splits(
     train_files: List[str],
     holdout_percentage: float,
@@ -244,19 +222,16 @@ def get_balanced_individual_splits(
         tune_query_files, tune_db_files, holdout_query_files, holdout_db_files
     """
     
-    # Group files by individual
     gorillas_to_files = defaultdict(list)
     for f in train_files:
         label = get_class_label(f)
         gorillas_to_files[label].append(f)
 
-    # Shuffle file order within each individual to avoid bias
     for files in gorillas_to_files.values():
         random.shuffle(files)
 
-    # Get a list of all unique individuals
     individuals = list(gorillas_to_files.keys())
-    random.shuffle(individuals)  # Shuffle to ensure a random split
+    random.shuffle(individuals)
 
     # Calculate the split index
     num_individuals = len(individuals)
@@ -272,12 +247,11 @@ def get_balanced_individual_splits(
 
     assert set(tune_inds).isdisjoint(holdout_inds), "Individuals must be disjunct"
 
-    # Select queries
     tune_query_files = []
     for ind in tune_inds:
         files = gorillas_to_files[ind]
         if len(files) > 1:
-            n_queries = min(queries_per_class, len(files) - 1)  # leave at least 1 for db
+            n_queries = min(queries_per_class, len(files) - 1)
             tune_query_files.extend(random.sample(files, n_queries))
 
     holdout_query_files = []
@@ -309,7 +283,6 @@ def load_config(config_name: str, cli_overrides: list):
     """
     config_dir = "/workspaces/bachelor_thesis_code/src/bachelor_thesis/configs"
 
-    # Load base configuration
     base_config = OmegaConf.load(os.path.join(config_dir, "base.yaml"))
 
     # Load experiment-specific override
@@ -318,7 +291,6 @@ def load_config(config_name: str, cli_overrides: list):
         raise FileNotFoundError(f"Experiment config file not found: {override_path}")
     override_config = OmegaConf.load(override_path)
 
-    # Load command-line overrides passed from sbatch
     cli_config = OmegaConf.from_cli(cli_overrides)
 
     config = OmegaConf.merge(base_config, override_config, cli_config)

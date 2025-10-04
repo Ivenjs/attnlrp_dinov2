@@ -26,24 +26,16 @@ def load_and_preprocess_coco_json(json_path: str) -> Dict[tuple, Any]:
     with open(json_path, 'r') as f:
         data = json.load(f)
 
-    # --- Step 1: Create efficient helper maps ---
-    
-    # Map category ID to a normalized name (e.g., 3 -> 'mpenzi')
     category_id_to_norm_name = {
         cat['id']: _normalize_name(cat['name']) for cat in data['categories']
     }
 
-    # Map image_id to the full image_info dictionary for fast lookups.
-    # This is much more efficient than searching the list every time.
     image_id_to_info = {img['id']: img for img in data['images']}
     
-    # --- Step 2: Build the final map by iterating through ANNOTATIONS ---
-    # This is the core change. We start from the data we know we want (body annotations).
     composite_key_to_data = {}
     
     body_annotation_count = 0
     for ann in data['annotations']:
-        # We only care about body annotations.
         if ann.get('annotation_type') != 'body':
             continue
 
@@ -51,7 +43,6 @@ def load_and_preprocess_coco_json(json_path: str) -> Dict[tuple, Any]:
         image_id = ann.get('image_id')
         category_id = ann.get('category_id')
 
-        # --- Data Validation ---
         if image_id not in image_id_to_info:
             print(f"Warning: Body annotation with ID {ann['id']} points to a non-existent image_id {image_id}. Skipping.")
             continue
@@ -60,14 +51,11 @@ def load_and_preprocess_coco_json(json_path: str) -> Dict[tuple, Any]:
             print(f"Warning: Annotation with ID {ann['id']} has an invalid category_id {category_id}. Skipping.")
             continue
 
-        # --- Retrieve Corresponding Image Info ---
         image_info = image_id_to_info[image_id]
         
-        # --- Extract components for the key ---
         video_filename = image_info.get('video_filename', '')
         video_nr_match = re.search(r'\d+', video_filename)
         if not video_nr_match:
-            # This handles cases where video_filename might be missing or malformed
             continue
         video_nr = int(video_nr_match.group(0))
 
@@ -77,17 +65,11 @@ def load_and_preprocess_coco_json(json_path: str) -> Dict[tuple, Any]:
 
         norm_name = category_id_to_norm_name[category_id]
         
-        # --- Create key and store data ---
         key = (video_nr, frame_nr, norm_name)
         
         if key in composite_key_to_data:
-            # This warning is now more specific. It means there are genuinely two
-            # separate 'body' annotations for the same gorilla in the same frame.
-            # This is rare but possible. We will keep the first one we find.
-            # print(f"Warning: Duplicate 'body' key found for {key}. Using the first one encountered (from ann_id {composite_key_to_data[key]['id']}).")
-            pass # Or decide on a merging strategy
+            pass 
         else:
-            # Combine the image info and annotation info into one record
             combined_data = {**image_info, **ann}
             composite_key_to_data[key] = combined_data
 
@@ -133,9 +115,7 @@ def fetch_bounding_boxes_from_json(
                     'frame_nr': data_record['frame_number'],
                     'bbox': data_record['bbox'],
                 })
-            #else:
-                # This warning is now more meaningful, as we know we're only searching for bodies.
-                #print(f"Warning: No 'body' data match for key {lookup_key} from filename '{fname}'")
+
         
         except (IndexError, ValueError):
             print(f"Warning: Could not parse filename '{fname}'. It does not match expected format. Skipping.")

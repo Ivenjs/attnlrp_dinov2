@@ -10,7 +10,6 @@ import seaborn as sns
 import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from omegaconf import OmegaConf
 from collections import defaultdict
 from basemodel import TimmWrapper
 from eval_helpers_old_backup import faithfulness_eval_proxy_score, faithfulness_eval_acc
@@ -207,7 +206,7 @@ def evaluate_gamma_sweep_acc(
         )
 
         summary_row = {
-            **params_dict,  # Unpack conv_gamma, lin_gamma, etc.
+            **params_dict,
             "metric_name": cfg["lrp"]["mode"],
             "faithfulness_score": srg_results["faithfulness_score"],
             "morf_vs_random": srg_results["morf_vs_random"],
@@ -252,7 +251,6 @@ def find_robust_hyperparameters(
     df = pd.DataFrame(results)
     df = df.fillna("NA") 
     
-    # Group by gamma parameters
     parameter_groups = df.groupby(['conv_gamma', 'lin_gamma', 'distance_metric', 'proxy_temp','metric_name', 'topk'])    
     analysis_data = []
 
@@ -350,12 +348,9 @@ def visualize_robustness_analysis(
     saved_paths = []
 
     plots = [
-        ('Mean Faithfulness', 'raw_mean'),
-        #('Minimum Faithfulness (Worst-Case)', 'raw_min'),
-        #('Overall Robustness Score', 'robustness_score')
+        ('Mean Faithfulness', 'raw_mean')
     ]
 
-    # nur valide Werte nehmen (kein None / NaN)
     metric_names = analysis_df['metric_name'].dropna().unique()
     dist_metrics = analysis_df['distance_metric'].dropna().unique() if 'distance_metric' in analysis_df else [None]
     proxy_temps = analysis_df['proxy_temp'].dropna().unique() if 'proxy_temp' in analysis_df else [None]
@@ -427,37 +422,25 @@ def visualize_holdout_performance(
 
         df_subset.sort_values(by='raw_mean', ascending=False, inplace=True)
         
-        # <<< --- CHANGE IS INSIDE THIS FUNCTION --- >>>
         def create_label(row):
             parts = []
             
-            # These should always be present, but good to check
             if 'conv_gamma' in row and pd.notna(row['conv_gamma']):
                 parts.append(f"conv_gamma: {row['conv_gamma']}")
             if 'lin_gamma' in row and pd.notna(row['lin_gamma']):
                 parts.append(f"lin_gamma: {row['lin_gamma']}")
 
-            # Safely handle optional string parameters
-            
-            # This is not acively being swept over anymore. No reason to display it
-            """if 'distance_metric' in row and pd.notna(row['distance_metric']):
-                # Check for string placeholders in case they exist
-                if isinstance(row['distance_metric'], str) and row['distance_metric'].upper() != 'NA':
-                    parts.append(f"D:{row['distance_metric']}")"""
-
-            # Safely handle optional numeric parameters with try-except
             if 'proxy_temp' in row and pd.notna(row['proxy_temp']):
                 try:
                     parts.append(f"temp: {float(row['proxy_temp'])}")
                 except (ValueError, TypeError):
-                    pass # Ignore if it can't be converted to a float
+                    pass 
 
             if 'topk' in row and pd.notna(row['topk']):
                 try:
-                    parts.append(f"top_k: {int(float(row['topk']))}") # Use float() first to handle cases like 50.0
+                    parts.append(f"top_k: {int(float(row['topk']))}") 
                 except (ValueError, TypeError):
-                    pass # Ignore if it can't be converted to an int
-
+                    pass
             return "\n".join(parts)
 
         df_subset['param_label'] = df_subset.apply(create_label, axis=1)
@@ -562,7 +545,6 @@ def calculate_aggregate_statistics(results: List[Dict]) -> Dict:
     best_by_raw_mean = parameter_stats.loc[parameter_stats['raw_mean'].idxmax()]
     best_by_raw_min = parameter_stats.loc[parameter_stats['raw_min'].idxmax()]
     
-    # Statistics by image (aggregated across gamma combinations), only really makes sense with proxy score evaluation
     image_stats_raw = df.groupby(['image'])['faithfulness_score'].agg([
         'mean', 'median', 'std', 'min', 'max', 'count'
     ]).reset_index()
@@ -632,7 +614,6 @@ def log_sweep(
         save_path="wandb_plots/tune_analysis.png"
     )
 
-    # Use the new bar chart for the sparse HOLDOUT set
     print("Generating bar charts for holdout set performance...")
     holdout_paths = visualize_holdout_performance(
         analysis_df_holdout, 
@@ -688,7 +669,6 @@ def log_sweep(
         if col not in approved_params: approved_params[col] = np.nan
         if col not in worst_params: worst_params[col] = np.nan
     
-    # --- 2. Filter for Approved and Worst Params ---
     approved_tune_df = tune_curves_df[_build_filter(tune_curves_df, approved_params)].copy()
     approved_holdout_df = holdout_curves_df[_build_filter(holdout_curves_df, approved_params)].copy()
     approved_tune_df['split'] = 'tune'
@@ -701,7 +681,6 @@ def log_sweep(
     worst_holdout_df['split'] = 'holdout'
     worst_curves_df = pd.concat([worst_tune_df, worst_holdout_df], ignore_index=True)
 
-    # --- 3. Log the Curve DataFrames for Reproducibility ---
     if not approved_curves_df.empty:
         log_payload["approved_params/curve_data"] = wandb.Table(dataframe=approved_curves_df)
         print(f"Logged {len(approved_curves_df)} rows of curve data for approved parameters.")
@@ -709,12 +688,10 @@ def log_sweep(
         log_payload["worst_params/curve_data"] = wandb.Table(dataframe=worst_curves_df)
         print(f"Logged {len(worst_curves_df)} rows of curve data for worst parameters.")
 
-    # --- 4. Plot and Log Static Curve Images ---
     plot_args = {"hpi_colors": hpi_colors, "mode": mode}
     if mode == "accuracy":
         plot_args["plot_fractions"] = cfg.get("faithfulness", {}).get("fractions_to_record")
 
-    # Static plots for APPROVED parameters
     if not approved_curves_df.empty:
         for eval_metric in approved_curves_df['metric_name'].unique():
             metric_df = approved_curves_df[approved_curves_df['metric_name'] == eval_metric]
@@ -733,24 +710,33 @@ def log_sweep(
                 log_key=log_key_holdout, **plot_args
             )
 
-    # Static plots for WORST parameters
     if not worst_curves_df.empty:
         for eval_metric in worst_curves_df['metric_name'].unique():
-            # ... (logic for plotting worst params, same as before) ...
-            pass # Abridged for clarity, this logic is in the previous answer
+            metric_df = worst_curves_df[worst_curves_df['metric_name'] == eval_metric]
+            log_key_tune = f"plots/worst_curves_tune_{eval_metric}"
+            log_payload[log_key_tune] = plot_and_log_faithfulness_curves(
+                df=metric_df[metric_df['split'] == 'tune'],
+                title_prefix=f"Worst Params {eval_metric} - Train Set",
+                db_set="Train Set",
+                log_key=log_key_tune, **plot_args
+            )
+            log_key_holdout = f"plots/worst_curves_holdout_{eval_metric}"
+            log_payload[log_key_holdout] = plot_and_log_faithfulness_curves(
+                df=metric_df[metric_df['split'] == 'holdout'],
+                title_prefix=f"Worst Params {eval_metric} - Validation Set",
+                db_set="Train + Validation Set",
+                log_key=log_key_holdout, **plot_args
+            )
 
-    # --- 5. Log Interactive Plot for Approved Curves ---
     if not approved_curves_df.empty:
         print("Generating interactive plot for approved parameters...")
         plot_df = approved_curves_df.copy()
         
-        # Determine the x-axis column based on the mode
         if mode == 'accuracy':
             x_col = 'percent_perturbed' if 'percent_perturbed' in plot_df.columns else 'fraction_perturbed'
         else:
             x_col = 'step'
 
-        # wandb.plot.line requires the x-axis to have a consistent name, let's use 'step'
         if x_col != 'step':
             plot_df.rename(columns={x_col: 'step'}, inplace=True)
 
@@ -769,7 +755,6 @@ def log_sweep(
         )
         log_payload["plots/interactive_approved_curves"] = wandb_plot
 
-    # --- Final Logging Step ---
     final_log_payload = {k: v for k, v in log_payload.items() if v is not None}
     
     if final_log_payload:
@@ -783,11 +768,9 @@ def _build_filter(df: pd.DataFrame, params: dict) -> pd.Series:
     mask = pd.Series(True, index=df.index)
     for col, val in params.items():
         if val is None or (isinstance(val, float) and np.isnan(val)):
-            # Skip this param if it's None/NaN → don't filter on it
             continue
         if col not in df.columns:
             continue
-        # choose default depending on dtype
         fill_default = -1 if df[col].dtype.kind in "if" else "NA"
         mask &= (df[col].fillna(fill_default) == val)
     return mask
@@ -798,7 +781,7 @@ def plot_and_log_faithfulness_curves(
     db_set: str,
     log_key: str,
     hpi_colors: Dict[str, float],
-    mode: str, # "accuracy" or "proxy_score"
+    mode: str,
     plot_fractions: Optional[List[float]] = None,
     save_dir: str = "wandb_plots"
 ) -> Optional[wandb.Image]:
@@ -818,7 +801,7 @@ def plot_and_log_faithfulness_curves(
 
     print(f"Plotting '{mode}' curve for {log_key} with {len(df)} data points...")
     plt.style.use('seaborn-v0_8-whitegrid')
-    fig, ax = plt.subplots(figsize=(12, 7)) # Larger figure for long labels
+    fig, ax = plt.subplots(figsize=(12, 7))
     colors = {
         'morf_raw': hpi_colors.get("red", "red"),
         'lerf_raw': hpi_colors.get("yellow", "blue"),
@@ -851,14 +834,11 @@ def plot_and_log_faithfulness_curves(
                 alpha=0.2, color=colors.get(label, 'gray')
             )
     
-    # --- Final Touches ---
     ax.legend()
     ax.grid(True, linestyle='--', alpha=0.6)
-    # Format x-axis ticks as percentages
     ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
     fig.tight_layout()
 
-    # --- Save and Log ---
     os.makedirs(save_dir, exist_ok=True)
     filename = f"{log_key.replace('/', '_')}.png"
     save_path = os.path.join(save_dir, filename)

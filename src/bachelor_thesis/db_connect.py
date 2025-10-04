@@ -43,10 +43,7 @@ def get_db_connection(schema: str = None):
         yield conn.cursor()
     except Exception as e:
         logging.error(f"Database connection or operation failed: {e}")
-        # Re-raise the exception so the calling code knows something went wrong
         raise
     finally:
         if conn:
-            # This block will always run, ensuring the connection is closed
-            # even if errors occurred
             conn.close()

@@ -14,7 +14,6 @@ def gather_file_info(filenames: list[str]) -> pd.DataFrame:
     records = []
     for filename in filenames:
         try:
-            # Assuming filename format is like '..._{frame_nr}_{tracking_id}.png'
             base_name = Path(filename).stem
             parts = base_name.split("_")
             frame_nr = int(parts[-2])
@@ -70,7 +69,7 @@ def fetch_bounding_boxes(file_df: pd.DataFrame, db_schema: str, feature_type: st
                 cursor,
                 query,
                 params_to_query,
-                template='(%s, %s)', # This is the crucial addition
+                template='(%s, %s)',
                 page_size=500,
                 fetch=True
             )
@@ -103,10 +102,8 @@ def extract_frames_batch(video_path: str, frame_numbers: list[int]) -> dict:
         return {}
     try:
         vr = VideoReader(video_path, ctx=cpu(0))
-        # Ensure frame numbers are sorted for efficient access
         unique_frames = sorted(list(set(frame_numbers)))
         frames = vr.get_batch(unique_frames).asnumpy()
-        # Return frames in RGB format
         return {num: cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for num, frame in zip(unique_frames, frames)}
     except Exception as e:
         logging.error(f"Error reading video {video_path}: {e}")

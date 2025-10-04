@@ -1,4 +1,4 @@
-from utils import get_db_path, get_hpi_colors, get_mask_transform, load_config, get_denormalization_transform
+from utils import get_db_path, get_mask_transform, load_config
 from dataset import GorillaReIDDataset, custom_collate_fn
 from lxt.efficient import monkey_patch_zennit
 from basemodel import get_model_wrapper
@@ -32,14 +32,12 @@ def get_combined_analysis_categories(
     """
     print(f"\n--- Combining analysis categories ---")
 
-    # Helper function to guarantee extension is removed
     def normalize_filename(fname: str) -> str:
         return os.path.splitext(fname)[0]
 
     combined_categories = {}
     categories_to_exclude = {"negative_morf_flippers", "robust_morf_successes"}
 
-    # --- Step 1: Load, filter, and NORMALIZE the base analysis file ---
     try:
         with open(base_analysis_path, 'r') as f:
             base_data = json.load(f)
@@ -47,7 +45,6 @@ def get_combined_analysis_categories(
         print(f"Loaded base analysis from: {base_analysis_path}")
         for category, filenames in base_data.items():
             if category not in categories_to_exclude:
-                # NORMALIZE EVERY FILENAME HERE
                 normalized_filenames = [normalize_filename(f) for f in filenames]
                 combined_categories[category] = normalized_filenames
                 print(f"  - Kept and normalized category '{category}' with {len(normalized_filenames)} images.")
@@ -58,16 +55,14 @@ def get_combined_analysis_categories(
         print(f"Warning: Base analysis file not found at '{base_analysis_path}'. Continuing without it.")
     except Exception as e:
         print(f"Error reading base analysis file '{base_analysis_path}': {e}")
-        return {} # Return empty dict on error
+        return {} 
 
-    # --- Step 2: Load, add, and NORMALIZE categories from the predictions file ---
     try:
         with open(predictions_json_path, 'r') as f:
             predictions_data = json.load(f)
         
         print(f"Loaded predictions from: {predictions_json_path}")
         
-        # NORMALIZE EVERY FILENAME HERE TOO
         correct_filenames = [normalize_filename(item['filename']) for item in predictions_data.get('correct_predictions', [])]
         incorrect_filenames = [normalize_filename(item['filename']) for item in predictions_data.get('incorrect_predictions', [])]
 
@@ -78,10 +73,10 @@ def get_combined_analysis_categories(
 
     except FileNotFoundError:
         print(f"Error: Predictions JSON not found at '{predictions_json_path}'. Cannot add new categories.")
-        return {} # Return empty dict on error
+        return {} 
     except Exception as e:
         print(f"Error reading predictions file '{predictions_json_path}': {e}")
-        return {} # Return empty dict on error
+        return {}
 
     print("Successfully created combined analysis categories in memory.")
     return combined_categories
@@ -102,7 +97,6 @@ def _get_relevance_component(relevance_map: np.ndarray, component: str) -> np.nd
     elif component == 'positive':
         return np.maximum(0, relevance_map)
     elif component == 'negative':
-        # Return the absolute value of negative parts for magnitude analysis
         return np.abs(np.minimum(0, relevance_map))
     else:
         raise ValueError(f"Unknown relevance component: {component}")
@@ -138,7 +132,6 @@ def analyze_era_in_mask_ratio(
         for filename in filenames:
             filename_to_categories[filename].append(category)
 
-    # Structure: {category: {component: {threshold: [list_of_ratios]}}}
     category_ratios = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     baseline_category_name = "all_queries_baseline"
     relevance_components = ['absolute', 'positive', 'negative']
@@ -249,7 +242,6 @@ def analyze_effective_relevance_area(
         for filename in filenames:
             filename_to_categories[filename].append(category)
 
-    # Structure: {category: {component: {threshold: [list_of_areas]}}}
     category_areas = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     baseline_category_name = "all_queries_baseline"
     relevance_components = ['absolute', 'positive', 'negative']
@@ -335,7 +327,6 @@ def analyze_relevance_concentration(
         for filename in filenames:
             filename_to_categories[filename].append(category)
 
-    # Structure: {category: {component: {'ginis': [], 'rcis': []}}}
     category_metrics = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     baseline_category_name = "all_queries_baseline"
     relevance_components = ['absolute', 'positive', 'negative']
@@ -356,10 +347,8 @@ def analyze_relevance_concentration(
         for component in relevance_components:
             relevance_component_map = _get_relevance_component(relevance_map_orig, component)
             
-            # --- Gini Coefficient ---
             gini_coeff = gini(relevance_component_map)
             
-            # --- Relevance Concentration Index (RCI) ---
             flat_relevance = relevance_component_map.flatten()
             total_relevance = np.sum(flat_relevance)
             
@@ -481,7 +470,7 @@ def analyze_relevance_composition(
     for category in sorted_categories:
         ratios = category_ratios[category]
         sparsities = category_sparsity[category]
-        if not ratios: # If one is empty, the other will be too
+        if not ratios: 
             continue
         
         avg_ratio = np.nanmean(ratios)
@@ -526,17 +515,13 @@ def analyze_relevance_with_masks(
         print("Error: Received empty or invalid analysis categories. Skipping mask analysis.")
         return {}
 
-    # Create a reverse mapping for efficient lookup: {filename: category}
     filename_to_categories = defaultdict(list)
     for category, filenames in analysis_categories.items():
         for filename in filenames:
             filename_to_categories[filename].append(category)
 
-    # Initialize dictionaries to hold the fractions for each category
     category_fractions = defaultdict(lambda: {'total': [], 'positive': [], 'negative': []})
-    
-    # --- THIS IS THE NEW PART ---
-    # We will also treat "all_queries" as a category for our baseline
+
     baseline_category_name = "all_queries_baseline"
     skipped_masks = 0
     for batch in tqdm(dataloader, desc="Analyzing relevance in masks"):
@@ -557,14 +542,10 @@ def analyze_relevance_with_masks(
             mask_np = masks_batch[i].cpu().numpy()
             total_frac, pos_frac, neg_frac = attention_inside_mask(relevance_map, mask_np)
 
-            # --- BASELINE CALCULATION ---
-            # Always add the result to our baseline category
             category_fractions[baseline_category_name]['total'].append(total_frac)
             category_fractions[baseline_category_name]['positive'].append(pos_frac)
             category_fractions[baseline_category_name]['negative'].append(neg_frac)
 
-            # --- ORIGINAL CATEGORY CALCULATION ---
-            # Add to a specific category if the image belongs to one
             categories_for_file = filename_to_categories.get(filename, [])
             for category in categories_for_file:
                 category_fractions[category]['total'].append(total_frac)
@@ -573,10 +554,8 @@ def analyze_relevance_with_masks(
 
 
     print(f"Skipped {skipped_masks} images due to missing masks.")
-    # --- Aggregate and Print Results (no changes needed here) ---
     print("\n--- Relevance-in-Mask Analysis Results ---")
     aggregated_stats = {}
-    # Sort categories to ensure the baseline is printed first or last for clarity
     sorted_categories = sorted(category_fractions.keys(), key=lambda x: x != baseline_category_name)
 
     for category in sorted_categories:
@@ -632,7 +611,6 @@ def main(cfg: Dict):
         job_type="analysis"
     )
 
-    # --- Prepare Datasets ---
     dataset_dir = cfg["data"]["dataset_dir"]
     if not "zoo" in dataset_dir:
         predictions_json_path = "/sc/home/iven.schlegelmilch/bachelor_thesis_code/finetuned_predictions.json" if cfg["model"]["finetuned"] else "/sc/home/iven.schlegelmilch/bachelor_thesis_code/base_predictions.json"
@@ -724,7 +702,6 @@ def main(cfg: Dict):
 
     global_query_indices = [idx + query_dataset_offset for idx in local_query_indices]
 
-    # --- Create the KNN Search Database ---
     print("Preparing the main KNN database (gallery)...")
     db_path = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
@@ -742,7 +719,6 @@ def main(cfg: Dict):
     )
 
 
-    # --- Generate or Load Relevance Maps (for test images only) ---
     split_db_path_knn = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name, split_name=split_name, bp_transforms=cfg["model"]["bp_transforms"], db_dir=cfg["knn"]["db_embeddings_dir"]
@@ -752,7 +728,6 @@ def main(cfg: Dict):
         batch_size=cfg["data"]["batch_size"], device=DEVICE
     )
 
-    # this loader only contains the subset of images that are used as queries for cross-encounter knn
     split_query_subset = torch.utils.data.Subset(split_dataset, local_query_indices)
 
     split_dataloader = DataLoader(split_query_subset, batch_size=cfg["data"]["batch_size"], num_workers=0, shuffle=False, collate_fn=custom_collate_fn)
@@ -814,7 +789,6 @@ def main(cfg: Dict):
         predictions_json_path=predictions_json_path
     )
 
-    #for each category in final categores print one example filename
     for category, filenames in final_analysis_categories.items():
         if filenames:
             print(f"Category '{category}' example filename: {filenames[0]}")
@@ -826,31 +800,6 @@ def main(cfg: Dict):
         wandb.finish()
         return
 
-    print(f"\nFinal analysis categories: {list(final_analysis_categories.keys())}")
-    """    composition_analysis_stats = analyze_relevance_composition(
-        relevance_dict=relevance_dict,
-        analysis_categories=final_analysis_categories
-    )"""
-
-    """mask_analysis_stats = analyze_relevance_with_masks(
-        dataloader=split_dataloader,
-        relevance_dict=relevance_dict,
-        analysis_categories=final_analysis_categories
-    )"""
-
-
-    """concentration_analysis_stats = analyze_relevance_concentration(
-        relevance_dict=relevance_dict,
-        analysis_categories=final_analysis_categories,
-        top_k_percent=0.05
-    )"""
-
-    """effective_relevance_area_stats = analyze_effective_relevance_area(
-        relevance_dict=relevance_dict,
-        analysis_categories=final_analysis_categories,
-        thresholds=[0.01, 0.10, 0.25, 0.50, 0.75, 0.95, 0.99]
-    )"""
-
     era_in_mask_stats = analyze_era_in_mask_ratio(
         dataloader=split_dataloader,
         relevance_dict=relevance_dict,
@@ -860,10 +809,6 @@ def main(cfg: Dict):
 
 
     wandb.log({
-        #"mask_analysis_stats": wandb.Table(dataframe=pd.DataFrame(mask_analysis_stats)),
-        #"composition_analysis_stats": wandb.Table(dataframe=pd.DataFrame(composition_analysis_stats)),
-        #"concentration_analysis_stats": wandb.Table(dataframe=pd.DataFrame(concentration_analysis_stats)),
-        #"effective_relevance_area_stats": wandb.Table(dataframe=pd.DataFrame(effective_relevance_area_stats)),
         "era_in_mask_stats": wandb.Table(dataframe=pd.DataFrame(era_in_mask_stats))
     })
 
