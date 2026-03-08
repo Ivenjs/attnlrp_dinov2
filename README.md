@@ -1,12 +1,12 @@
 # AttnLRP for DINOv2 – Gorilla Re-Identification
 
-> Bachelor thesis project: Explainability for gorilla re-identification using Attention-based Layer-wise Relevance Propagation (LRP) on DINOv2 Vision Transformers.
+> Bachelor thesis project: Explainability for gorilla re-identification using Attention-Aware Layer-wise Relevance Propagation (LRP) on DINOv2 Vision Transformers.
 
 ---
 
 ## Overview
 
-This project applies **AttnLRP** (Attention-guided Layer-wise Relevance Propagation) to a **DINOv2** Vision Transformer (ViT-Giant) fine-tuned for **gorilla re-identification (Re-ID)**. The goal is to generate interpretable relevance maps that reveal which image patches the model uses when deciding whether two gorilla images show the same individual.
+This project applies **AttnLRP** (Attention-Aware Layer-wise Relevance Propagation) to a **DINOv2** Vision Transformer (ViT-Giant) fine-tuned for **gorilla re-identification (Re-ID)**. The goal is to generate interpretable relevance maps that reveal which image patches the model uses when deciding whether two gorilla images show the same individual.
 
 Key capabilities:
 - **Hyperparameter sweep** – automated grid search over LRP gamma values to find the best explanation quality
@@ -191,7 +191,7 @@ base.yaml  ←  experiment/<config_name>.yaml  ←  CLI overrides
 
 | Mode | Description |
 |---|---|
-| `soft_knn_margin_all` | Soft-margin score over all k-NN neighbours (recommended) |
+| `soft_knn_margin_all` | Soft-margin score over all k-NN neighbours |
 | `soft_knn_margin_topk` | Same as above, but only considers the top-K most similar neighbours |
 | `proto_margin` | Uses a class prototype as the positive anchor |
 | `similarity` | Raw cosine similarity to the nearest neighbour |
@@ -217,10 +217,8 @@ Mode-specific parameters (`temp`, `topk`, `conv_gamma`, `lin_gamma`) are defined
 
 3. Mask Analysis (run_mask_analysis.py)
    ├── Load precomputed relevance maps
-   └── Report positive/negative relevance fractions per mask category
+   └── Report positive/negative relevance fractions per different mask categories
 ```
-
-All experiments log results to **WandB** (project `bachelor_thesis`, entity `gorillawatch`).
 
 ---
 
@@ -230,4 +228,4 @@ All experiments log results to **WandB** (project `bachelor_thesis`, entity `gor
 - PyTorch ≥ 2.0 with CUDA 12.1
 - See `environment.yml` for the full dependency list
 
-Key libraries: `timm`, `zennit`, `lxt`, `sam2`, `wandb`, `faiss-cpu`, `scikit-learn`, `omegaconf`
+Do not forget to set up wandb
