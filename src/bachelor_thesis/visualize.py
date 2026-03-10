@@ -270,7 +270,7 @@ class AttentionVisualizer:
 
         plt.tight_layout(rect=[0, 0, 1, 0.95]) # Adjust for suptitle
 
-        # --- 3. Save and Return (Unchanged) ---
+        # --- 3. Save and Return ---
         save_path = os.path.join(self.save_dir, f"{filename}_perturb_{perturbation_fraction}_{perturbation_mode}.png")
         plt.savefig(save_path, bbox_inches='tight')
         plt.close(fig)
@@ -279,6 +279,7 @@ class AttentionVisualizer:
 
 def get_intersected_categories(mode: str, is_zoo: bool) -> Dict[str, list]:
     category_to_filename = defaultdict(list)
+    # These images were taken from the visualization jsons that contain the flipper-infos (might need to be re-generated)
     if not is_zoo:
         if mode == "proto_margin":
             category_to_filename["intersected_positive_lerf_flippers"] = [
