@@ -60,7 +60,6 @@ def evaluate_gamma_sweep_proxy_score(
 
         print(f"\n=== Evaluating Image: {input_filename} ===")
         
-        # Iterate through all generated relevance maps for this image
         for relevance_data in relevances_by_file[input_filename]:
             params = relevance_data["params"]
             mode = relevance_data["mode"]

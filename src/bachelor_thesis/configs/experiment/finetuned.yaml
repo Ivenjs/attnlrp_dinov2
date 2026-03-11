@@ -1,15 +1,6 @@
 model:
   finetuned: True
   checkpoint_path: /workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24v3-dedup.pth
-  #/workspaces/attnlrp_dinov2/src/bachelor_thesis/20250908_014924hard.pth
-  #/workspaces/attnlrp_dinov2/src/bachelor_thesis/20250908_014504simple.pth
-  #/workspaces/attnlrp_dinov2/src/bachelor_thesis/20250904_223641.pth
-  #/workspaces/attnlrp_dinov2/src/bachelor_thesis/20250905_200756.pth
-  #/workspaces/attnlrp_dinov2/src/bachelor_thesis/20250905_125209for_me.pth
-  #/workspaces/attnlrp_dinov2/src/bachelor_thesis/20250905_142140for_me.pth
-  #/workspaces/attnlrp_dinov2/giantbodybest74ens82.pth
-  #/workspaces/vast-gorilla/gorillawatch/models/ViTG-body_face-spac23+24.pth
-  #/workspaces/vast-gorilla/gorillawatch/models/20250909_135105_array-1227346-1.pth
 
 lrp:
   mode: "soft_knn_margin_all"  # default
@@ -25,51 +16,6 @@ sweep:
   lin_gammas: ${sweep_params.${lrp.mode}.lin_gammas}
 
 sweep_params:
-#OLD COMPOSITE
-  # soft_knn_margin_all:
-  #   temp: [0.001, 0.005, 0.01]
-  #   topk: null
-  #   conv_gammas: [0.001,0.05,0.1,0.25,0.5,1.0]
-  #   lin_gammas: [0.0001,0.0005,0.001,0.005,0.01,0.05,0.1]
-  # soft_knn_margin_topk:
-  #   temp: [0.001, 0.005, 0.01, 0.1]
-  #   topk: [5, 750, 1500, 7500]
-  #   conv_gammas: [0.5,0.75,1.0]
-  #   lin_gammas: [0.0005,0.001,0.005,0.1]
-  # proto_margin:
-  #   temp: [0.001, 0.005, 0.01, 0.1]
-  #   topk: [5, 750, 1500, 7500]
-  #   conv_gammas: [0.25,0.5,0.75]
-  #   lin_gammas: [0.0001, 0.0005, 0.001, 0.01]
-  # similarity:
-  #   temp: null
-  #   topk: null
-  #   conv_gammas: [0.01,0.05,0.1,0.5,1.0,5.0,10.0]
-  #   lin_gammas: [0.001,0.01,0.05,0.1,0.5,1.0,2.5]
-
-  #NEW COMPOSITE
-  #First iteration -> similar to achtibat 
-  # soft_knn_margin_all:
-  #   temp: [0.001, 0.005, 0.01]
-  #   topk: null
-  #   conv_gammas: [0.05,0.1,0.25,0.5]
-  #   lin_gammas: [0.01,0.05,0.1,0.25]
-  # soft_knn_margin_topk:
-  #   temp: [0.005, 0.01]
-  #   topk: [50, 1500, 7500]
-  #   conv_gammas: [0.05,0.1,0.25,0.5]
-  #   lin_gammas: [0.01,0.05,0.1,0.25]
-  # proto_margin:
-  #   temp: [0.005, 0.01]
-  #   topk: [50, 1500, 7500]
-  #   conv_gammas: [0.05,0.1,0.25,0.5]
-  #   lin_gammas: [0.01,0.05,0.1,0.25]
-  # similarity:
-  #   temp: null
-  #   topk: null
-  #   conv_gammas: [0.05,0.1,0.25,0.5]
-  #   lin_gammas: [0.01,0.05,0.1,0.25]
-  #second iteration -> explore promising areas
   soft_knn_margin_all:
     temp: [0.001, 0.005, 0.01]
     topk: null
@@ -92,49 +38,6 @@ sweep_params:
     lin_gammas: [0.0001,0.001,0.005,0.01]
 
 lrp_params:
-  #OLD COMPOSITE
-  # soft_knn_margin_all:
-  #   temp: 0.005
-  #   topk: null
-  #   conv_gamma: 0.5 
-  #   lin_gamma: 0.001
-  # soft_knn_margin_topk:
-  #   temp: 0.005 
-  #   topk: 15000
-  #   conv_gamma: 1.0
-  #   lin_gamma: 0.001
-  # proto_margin:
-  #   temp: 0.01
-  #   topk: 1500
-  #   conv_gamma: 1.0
-  #   lin_gamma: 0.0001
-  # similarity:
-  #   temp: null
-  #   topk: null
-  #   conv_gamma: 0.01
-  #   lin_gamma: 0.1
-
-  #OLD COMPOSITE 2
-  # soft_knn_margin_all:
-  #   temp: 0.005
-  #   topk: null
-  #   conv_gamma: 0.5 
-  #   lin_gamma: 0.01
-  # soft_knn_margin_topk:
-  #   temp: 0.005 
-  #   topk: 7500
-  #   conv_gamma: 0.5
-  #   lin_gamma: 0.05
-  # proto_margin:
-  #   temp: 0.01
-  #   topk: 7500
-  #   conv_gamma: 0.5
-  #   lin_gamma: 0.1
-  # similarity:
-  #   temp: null
-  #   topk: null
-  #   conv_gamma: 3.0
-  #   lin_gamma: 0.005
 
   soft_knn_margin_all:
     temp: 0.005

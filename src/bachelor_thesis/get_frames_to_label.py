@@ -10,14 +10,11 @@ from decord import VideoReader, cpu
 from psycopg2.extras import execute_values
 from tqdm import tqdm
 from typing import List, Tuple, Set, Dict
-# Assuming these utilities are in your project
 from utils import load_config 
 from db_connect import get_db_connection
 
-# --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Constants ---
 FEATURE_TYPE = "body"
 DB_SCHEMA = "public"
 VIDEO_PATH_REPLACE_TUPLE = ("gorillatracker/video_data", "vast-gorilla")
@@ -25,11 +22,13 @@ VIDEO_PATH_REPLACE_TUPLE = ("gorillatracker/video_data", "vast-gorilla")
 
 def _choose_next_index_maxmin(frames: List[Tuple[int, Path]], picked_idx: Set[int]) -> int | None:
     """
-    Wählt in 'frames' den Index des nächsten Frames so, dass
-    der minimale Abstand (in frame_nr) zu bereits gepickten maximal wird.
-    frames: [(frame_nr, path)] – muss sortiert nach frame_nr sein.
-    picked_idx: bereits gewählte Indices.
-    Returns: Index in 'frames' oder None, falls nichts mehr verfügbar.
+    Selects the index of the next frame from 'frames' such that the 
+    minimum distance (in terms of frame_nr) to already selected frames is maximized.
+
+    frames: [(frame_nr, path)] – must be sorted by frame_nr.
+    picked_idx: indices that have already been selected.
+
+    Returns: Index within 'frames' or None if no frames are available.
     """
     n = len(frames)
     remaining = [i for i in range(n) if i not in picked_idx]

@@ -31,7 +31,7 @@ model:
   embedding_dim: 256
   patch_size: 14
   model_dtype: "float32"
-  bp_transforms: True #RAAAAAAAHHHHHH, VERGISS DAS NICHT!!!!!! DAS MUSS EVTL NOCH GEÄNDERT WERDEN!!!! -> ist okay
+  bp_transforms: True # Should the transforms from the previous BP's work be used or the transforms that come from timm
 
 plots:
   red: [162, 41, 64]
@@ -47,41 +47,17 @@ lrp:
   mode: "soft_knn_margin_all"
   distance_metric: "cosine" # so far, all of the scores work with cosine similarity
   cross_encounter: True
-  # "soft_knn_margin_all" or "proto_margin" or "similarity" or "soft_knn_margin_all_topk"
   db_relevances_dir: "/workspaces/vast-gorilla/gorillawatch/iven_thesis/relevance_db"
   eval_db: "all" # "all" (for train + test) or "test"
 
 
 sweep:
-  sweep_evaluation: "accuracy" # "accuracy" or "proxy_score"
+  sweep_evaluation: "accuracy" # "accuracy" or "proxy_score" to evaluate over the proxy score itself. Rather use accuracy
   distance_metrics: ["cosine"]
   holdout_percentage: 0.2
   top_k_for_val: 10
-  #0.01, 0.03, 0.07, 0.15
-  # knn_all: [0.001, 0.005, 0.01]
-  # proto, knn_topk [0.001, 0.005, 0.01, 0.1]
+  acceptable_drop_percent: 35.0
   queries_per_class: 4
-  # maybe pass in diff values for proto_margin and soft_knn_margin_topk
-  # 5, 10, 50
-  #0.001, 0.05, 0.1, 0.25
-  # in paper: 0.05, 0.1, 0.25
-  #0.1, 0.15,0.25, 0.7, 1.0
-  #[0.1, 0.15,0.25, 0.4, 0.7, 1.0]
-  # knn_all: [0.001,0.05,0.1,0.25,0.5,1.0]
-  # similarity: [0.01,0.05,0.1,0.5,1.0,5.0,10.0]
-  # proto_margin_base: [0.1,0.25,0.5]
-  # proto_margin_ft: [0.25,0.5,0.75]
-  # knn_topk_base: [0.1,0.25,0.5]
-  # knn_topk_ft: [0.5,0.75,1.0]
-  #0.001, 0.05, 0.1, 0.25
-    # in paper: 0.05, 0.1, 0.25
-  #0.001, 0.025, 0.05, 0.075, 0.1
-  #[0.001, 0.025, 0.05, 0.075, 0.1, 0.15, 0.25] 
-  # knn_all: [0.0001,0.0005,0.001,0.005,0.01,0.05,0.1]
-  # similarity: [0.001,0.01,0.05,0.1,0.5,1.0,2.5]
-  # proto_margin_base: [0.0001, 0.0005, 0.001, 0.01]
-  # proto_margin_ft: [0.0001, 0.0005, 0.001, 0.01]
-  # knn_topk_base: [0.00001,0.00005,0.0001, 0.0005]
-  # knn_topk_ft: [0.0005,0.001,0.005,0.1]
+
 
 
