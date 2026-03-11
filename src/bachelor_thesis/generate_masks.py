@@ -234,7 +234,7 @@ if __name__ == "__main__":
 
 
 
-    sam_checkpoint_path = "/workspaces/attnlrp_dinov2/sam2.1_l_finetuned.pt"#"/workspaces/vast-gorilla/gorillawatch/model_checkpoints/sam2.1_hiera_large.pt"
+    sam_checkpoint_path = "/workspaces/attnlrp_dinov2/sam2.1_l_finetuned.pt"
     config_dir = "/workspaces/attnlrp_dinov2/src/bachelor_thesis/configs"
     mask_generator = MaskGenerator(
         model_checkpoint_path=sam_checkpoint_path,

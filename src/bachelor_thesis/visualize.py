@@ -103,7 +103,6 @@ class AttentionVisualizer:
 
         fig, ax = plt.subplots(figsize=(8, 8))
         ax.imshow(img_np)
-        #ax.set_title("Original Image")
         ax.axis('off')
         
         if show_stats:
@@ -193,7 +192,6 @@ class AttentionVisualizer:
             str: The full path to the saved visualization.
         """
         print(f"Plotting perturbation for {filename} with mode '{perturbation_mode}' and baseline '{baseline_value}'...")
-        # --- 1. Perturbation Logic (Unchanged) ---
         patch_relevance = F.avg_pool2d(
             relevance_map,
             kernel_size=patch_size,
@@ -232,11 +230,9 @@ class AttentionVisualizer:
             perturbed_tensor[..., row:row+patch_size, col:col+patch_size] = \
                 baseline_fill[..., row:row+patch_size, col:col+patch_size]
 
-        # Prepare all necessary images for plotting
         perturbed_img_np = self._preprocess_image(perturbed_tensor)
         original_img_np = self._preprocess_image(image_tensor)
         
-        # Create the relevance heatmap image using logic from plot_heatmap
         relevance_norm = relevance_map.squeeze() / torch.abs(relevance_map).max()
 
         if intensify:
@@ -244,7 +240,6 @@ class AttentionVisualizer:
 
         heatmap_img = imgify(relevance_norm, vmin=-1.0, vmax=1.0)
 
-        # Create the plot
         fig, axs = plt.subplots(1, 3, figsize=(12, 6))
         
         title = (f"Perturbation Analysis: {perturbation_mode.upper()} "
@@ -268,9 +263,8 @@ class AttentionVisualizer:
         axs[2].axis('off')
 
 
-        plt.tight_layout(rect=[0, 0, 1, 0.95]) # Adjust for suptitle
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
 
-        # --- 3. Save and Return ---
         save_path = os.path.join(self.save_dir, f"{filename}_perturb_{perturbation_fraction}_{perturbation_mode}.png")
         plt.savefig(save_path, bbox_inches='tight')
         plt.close(fig)
@@ -279,7 +273,8 @@ class AttentionVisualizer:
 
 def get_intersected_categories(mode: str, is_zoo: bool) -> Dict[str, list]:
     category_to_filename = defaultdict(list)
-    # These images were taken from the visualization jsons that contain the flipper-infos (might need to be re-generated)
+    # These images were hand-picked from the visualization jsons that contain the flipper-infos (might need to be re-generated)
+    # from the analyze_perturbation_results function
     if not is_zoo:
         if mode == "proto_margin":
             category_to_filename["intersected_positive_lerf_flippers"] = [
@@ -489,7 +484,6 @@ def visualize_prediction_with_neighbors(
         else:
             mask_to_use = cached_mask
 
-        # --- Visualization Call ---
         visualizer.plot_and_save_individual_overview(
             filename=save_filename,
             image_tensor=image_tensor,
@@ -517,7 +511,6 @@ def main(cfg):
     model_wrapper, image_transforms, model_data_config = get_model_wrapper(device=DEVICE, cfg=cfg["model"])
     mask_transform = get_mask_transform(cfg["model"]["img_size"])
 
-    # --- Prepare Datasets ---
     dataset_dir = cfg["data"]["dataset_dir"]
     if not "zoo" in dataset_dir:
         split_name = cfg["data"]["analysis_split"]
@@ -653,7 +646,6 @@ def main(cfg):
         relevance_db_filenames = all_db_filenames
         relevance_db_videos = all_db_videos
 
-    # --- Get path for current model's relevances ---
     db_path_relevances = get_db_path(
         model_checkpoint_path=cfg["model"]["checkpoint_path"],
         dataset_name=split_dataset.dataset_name, 
@@ -710,7 +702,7 @@ def main(cfg):
         seed=cfg["seed"]
     )
 
-    base_path = "/sc/home/iven.schlegelmilch/attnlrp_dinov2" #base_zoo_predictions.json
+    base_path = "/sc/home/iven.schlegelmilch/attnlrp_dinov2" 
 
     if "zoo" in cfg["data"]["dataset_dir"].lower():
         filename = model_type_str + "_zoo_predictions.json"
@@ -727,7 +719,6 @@ def main(cfg):
         with open(prediction_json_path, 'r') as f:
             prediction_data = json.load(f)
         
-        # Create efficient lookup maps (filename without extension -> prediction data)
         correct_prediction_lookup = {
             os.path.splitext(p['filename'])[0]: p 
             for p in prediction_data.get('correct_predictions', [])
@@ -767,7 +758,6 @@ def main(cfg):
     }
 
     if prediction_data:
-        # Process CORRECT examples
         for filename in images_to_visualize["correct_with_neighbors"]:
             prediction_info = correct_prediction_lookup.get(filename)
             if prediction_info:
@@ -782,7 +772,6 @@ def main(cfg):
             else:
                 print(f"[Warning] Showcase file '{filename}' not found in the 'correct_predictions' list of your JSON.")
         
-        # Process INCORRECT examples
         for filename in images_to_visualize["incorrect_with_neighbors"]:
             prediction_info = incorrect_prediction_lookup.get(filename)
             if prediction_info:
